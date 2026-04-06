@@ -290,6 +290,11 @@ pub fn delete_webhook(db: State<'_, Database>, id: i64) -> Result<(), String> {
     db.delete_webhook(id)
 }
 
+#[tauri::command]
+pub fn toggle_webhook(db: State<'_, Database>, id: i64, enabled: bool) -> Result<(), String> {
+    db.toggle_webhook(id, enabled)
+}
+
 // ─── Device templates ───────────────────────────────────────────────────────
 
 #[tauri::command]

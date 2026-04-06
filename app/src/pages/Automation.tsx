@@ -371,13 +371,19 @@ export default function Automation() {
           ) : (
             <div className="space-y-2">
               {webhooks.map((w) => (
-                <div key={w.id} className="flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl">
+                <div key={w.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!w.enabled ? "opacity-50" : ""}`}>
                   <div>
                     <p className="text-sm font-medium text-zinc-200">{w.label}</p>
                     <p className="text-xs text-zinc-500 mt-0.5">{w.event_type} → <span className="font-mono">{w.url.slice(0, 50)}{w.url.length > 50 ? "..." : ""}</span></p>
                   </div>
-                  <button onClick={() => { invoke("delete_webhook", { id: w.id }); loadAll(); }}
-                    className="text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => { invoke("toggle_webhook", { id: w.id, enabled: !w.enabled }); loadAll(); }}
+                      className="text-zinc-500 hover:text-zinc-300">
+                      {w.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
+                    </button>
+                    <button onClick={() => { invoke("delete_webhook", { id: w.id }); loadAll(); }}
+                      className="text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                  </div>
                 </div>
               ))}
             </div>

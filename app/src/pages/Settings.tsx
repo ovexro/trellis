@@ -15,7 +15,7 @@ export default function Settings() {
       const scenes = localStorage.getItem("trellis-scenes");
 
       const config = {
-        version: "0.1.0",
+        version: "0.1.3",
         exported_at: new Date().toISOString(),
         devices: savedDevices,
         scenes: scenes ? JSON.parse(scenes) : [],

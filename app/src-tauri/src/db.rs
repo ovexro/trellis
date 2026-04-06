@@ -463,6 +463,13 @@ impl Database {
         Ok(())
     }
 
+    pub fn toggle_webhook(&self, id: i64, enabled: bool) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE webhooks SET enabled = ?1 WHERE id = ?2", rusqlite::params![enabled, id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ─── Device templates ────────────────────────────────────────────────
 
     pub fn create_template(

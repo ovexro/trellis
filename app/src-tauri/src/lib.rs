@@ -4,6 +4,7 @@ mod db;
 mod device;
 mod discovery;
 mod ota;
+mod scheduler;
 mod serial;
 
 use commands::*;
@@ -68,6 +69,7 @@ pub fn run() {
             create_webhook,
             get_webhooks,
             delete_webhook,
+            toggle_webhook,
             create_template,
             get_templates,
             delete_template,
@@ -138,7 +140,10 @@ pub fn run() {
                 });
             }
 
-            log::info!("[Trellis] Background discovery started");
+            // Start schedule execution engine
+            scheduler::start_scheduler(app.handle().clone(), connection_manager.clone());
+
+            log::info!("[Trellis] Background discovery + scheduler started");
             Ok(())
         })
         .run(tauri::generate_context!())
