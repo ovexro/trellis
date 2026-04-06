@@ -77,7 +77,7 @@ export default function Scenes() {
   };
 
   return (
-    <div className="max-w-xl">
+    <div>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-bold text-zinc-100">Scenes</h1>

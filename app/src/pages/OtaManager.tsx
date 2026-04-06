@@ -124,7 +124,7 @@ export default function OtaManager() {
   };
 
   return (
-    <div className="max-w-xl">
+    <div>
       <h1 className="text-xl font-bold text-zinc-100 mb-2">
         Firmware Update (OTA)
       </h1>

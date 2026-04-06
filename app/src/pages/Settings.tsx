@@ -258,7 +258,7 @@ export default function Settings() {
   };
 
   return (
-    <div className="max-w-xl">
+    <div>
       <h1 className="text-xl font-bold text-zinc-100 mb-6">Settings</h1>
 
       <div className="space-y-8">

@@ -210,7 +210,7 @@ export default function Automation() {
   }
 
   return (
-    <div className="max-w-3xl">
+    <div>
       <h1 className="text-xl font-bold text-zinc-100 mb-1">Automation</h1>
       <p className="text-sm text-zinc-500 mb-6">
         Schedules run actions at specific times. Rules trigger actions when sensor values change. Webhooks notify external services.

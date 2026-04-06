@@ -117,7 +117,7 @@ export default function DeviceDetail() {
   const hasSensors = device.capabilities.filter((c) => c.type === "sensor").length > 0;
 
   return (
-    <div className="max-w-4xl">
+    <div>
       <button
         onClick={() => navigate("/")}
         className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 mb-6 transition-colors"
