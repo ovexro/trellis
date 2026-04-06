@@ -15,8 +15,8 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device card grid layout
 - [x] Device card: name, status indicator, RSSI, uptime, firmware version, chip type
 - [x] Click card → device detail view
-- [ ] Device grouping / tagging (e.g., "Kitchen", "Greenhouse")
-- [ ] Search / filter devices
+- [x] Device grouping / tagging (nicknames, tags, pills on cards)
+- [x] Search / filter devices (by name, nickname, IP, platform, chip, tags)
 
 ### Auto-Generated Controls
 - [x] Switch (toggle) — maps to `type: "switch"`
@@ -28,7 +28,7 @@ Single source of truth for all features. Check items as they are implemented and
 
 ### Charts & Metrics
 - [x] Time-series chart for sensor data
-- [ ] System metrics panel (RSSI, heap, uptime)
+- [x] System metrics panel (RSSI, heap charts — shown for all devices)
 - [x] Metric history stored in SQLite
 - [x] Configurable chart time range
 
@@ -42,17 +42,17 @@ Single source of truth for all features. Check items as they are implemented and
 
 ### OTA Updates
 - [ ] Drag & drop .bin firmware file
-- [x] Upload firmware to selected device (ESP32 only)
-- [ ] Progress bar during OTA
-- [ ] Success/failure notification
+- [x] Upload firmware to selected device (ESP32, native file picker)
+- [x] Progress bar during OTA (WebSocket events from device)
+- [x] Success/failure notification
 - [ ] Firmware version comparison (current vs new)
 
 ### Settings & Preferences
 - [x] Dark theme (default)
 - [ ] Scan interval configuration (persisted)
-- [ ] Device nicknames (override reported name)
+- [x] Device nicknames (inline edit, persisted in SQLite)
 - [ ] Window state persistence (size, position)
-- [ ] Minimize to system tray
+- [x] Minimize to system tray (close hides, tray restores, right-click quit)
 
 ### App Shell
 - [x] Sidebar navigation
