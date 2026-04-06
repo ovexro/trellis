@@ -1,0 +1,596 @@
+# Trellis User Guide
+
+A complete walkthrough of every feature. From installing the app to automating your devices.
+
+---
+
+## Table of Contents
+
+1. [Install the Desktop App](#1-install-the-desktop-app)
+2. [Set Up Your First Device](#2-set-up-your-first-device)
+3. [WiFi Provisioning (No Hardcoded Passwords)](#3-wifi-provisioning)
+4. [The Dashboard](#4-the-dashboard)
+5. [Device Detail Page](#5-device-detail-page)
+6. [Controls](#6-controls)
+7. [Charts & Metrics](#7-charts--metrics)
+8. [Alerts](#8-alerts)
+9. [Device Groups & Rooms](#9-device-groups--rooms)
+10. [Scenes](#10-scenes)
+11. [Automation: Schedules, Rules, Webhooks](#11-automation)
+12. [Serial Monitor](#12-serial-monitor)
+13. [OTA Firmware Updates](#13-ota-firmware-updates)
+14. [Quick Flash (Compile & Upload)](#14-quick-flash)
+15. [REST API](#15-rest-api)
+16. [Web Dashboard](#16-web-dashboard)
+17. [Push Notifications (ntfy.sh)](#17-push-notifications)
+18. [Settings & Config Backup](#18-settings--config-backup)
+19. [System Tray](#19-system-tray)
+20. [Arduino Library Reference](#20-arduino-library-reference)
+21. [Troubleshooting](#21-troubleshooting)
+
+---
+
+## 1. Install the Desktop App
+
+### One-command install (Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ovexro/trellis/main/install.sh | bash
+```
+
+This installs the `.deb` or `.rpm` depending on your distro, adds it to your app menu, and optionally sets up Arduino CLI.
+
+### Manual install
+
+Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
+- **Ubuntu / Linux Mint / Debian** → `.deb` file, install with `sudo dpkg -i Trellis_*.deb`
+- **Fedora / RHEL** → `.rpm` file, install with `sudo rpm -i Trellis-*.rpm`
+- **Any Linux** → `.AppImage` file, make executable and run
+
+After installing, open "Trellis" from your app menu. The app starts scanning for devices immediately.
+
+---
+
+## 2. Set Up Your First Device
+
+### What you need
+
+- An **ESP32** or **Raspberry Pi Pico W** board
+- **Arduino IDE** or **arduino-cli** installed
+- The **Trellis** and **ArduinoJson** and **WebSockets** libraries installed
+
+### Install the libraries
+
+In Arduino IDE: *Sketch > Include Library > Manage Libraries*, search for:
+- `Trellis`
+- `ArduinoJson`
+- `WebSockets`
+
+Or with arduino-cli:
+```bash
+arduino-cli lib install Trellis ArduinoJson WebSockets
+```
+
+### Write a minimal sketch
+
+```cpp
+#include <Trellis.h>
+
+Trellis trellis("My First Device");
+
+void setup() {
+  trellis.addSwitch("led", "Built-in LED", 2);
+  trellis.addSensor("temp", "Temperature", "C");
+  trellis.begin("YourWiFiName", "YourWiFiPassword");
+}
+
+void loop() {
+  trellis.setSensor("temp", analogRead(34) * 0.1);
+  trellis.loop();
+  delay(2000);
+}
+```
+
+### Flash it
+
+Upload to your board. Open the Serial Monitor at 115200 baud — you'll see:
+
+```
+[Trellis] Connecting to YourWiFiName...
+[Trellis] Connected! IP: 192.168.1.42
+[Trellis] My First Device ready at http://192.168.1.42:8080
+```
+
+### Open the Trellis app
+
+Your device appears automatically on the dashboard within seconds. Click it to see the controls.
+
+---
+
+## 3. WiFi Provisioning
+
+Hardcoding WiFi credentials is fine for testing, but for a "real" device you want the user to enter their own WiFi details. Trellis has a built-in captive portal for this.
+
+Replace `trellis.begin("ssid", "password")` with:
+
+```cpp
+void setup() {
+  // ... add capabilities ...
+
+  if (!trellis.beginAutoConnect()) {
+    Serial.println("WiFi failed! Restarting...");
+    delay(3000);
+    ESP.restart();
+  }
+}
+```
+
+**First boot**: The device creates a WiFi hotspot named `Trellis-My-First-Device`. Connect to it with your phone or laptop. A captive portal page opens where you enter your WiFi name and password. The credentials are saved — on next boot, it connects automatically.
+
+**To reset WiFi**: Flash the sketch again, or erase the flash memory.
+
+---
+
+## 4. The Dashboard
+
+The main page shows all your devices as cards.
+
+**Each card shows:**
+- Device name (or nickname if you set one)
+- Online/Offline status with a colored badge
+- IP address and port
+- Chip type (ESP32, RP2040, etc.)
+- Firmware version
+- WiFi signal strength (RSSI)
+- Uptime
+- Tags (if assigned)
+- Number of controls
+- When offline: "Last seen: 2h ago" instead of stale metrics
+
+**Features:**
+- **Search bar** — filter by name, nickname, IP, platform, chip, or tags
+- **Add by IP** — if mDNS doesn't work (e.g., cross-subnet), manually enter an IP address
+- **Groups** — organize devices into named groups with colors (see [Groups](#9-device-groups--rooms))
+
+Click any device card to open the [Device Detail](#5-device-detail-page) page.
+
+---
+
+## 5. Device Detail Page
+
+Shows everything about one device:
+
+- **Header**: name (editable nickname), IP, chip, firmware version, online status
+- **Controls**: auto-generated from the device's capability declarations
+- **System stats**: live RSSI, free heap, uptime (when online)
+- **Sensor charts**: time-series graphs for each sensor
+- **System charts**: historical WiFi signal and heap usage
+- **Alerts**: threshold rules that trigger notifications
+- **Logs**: messages sent from the device via `trellis.logInfo()` etc.
+- **Tags**: custom labels (e.g., "kitchen", "outdoor", "test")
+- **Remove device**: deletes all stored data for this device
+
+---
+
+## 6. Controls
+
+Controls are auto-generated based on what the device declares. You don't design them — the device says "I have a switch called Pump" and the app renders a toggle.
+
+| Type | What It Looks Like | Arduino Code |
+|------|-------------------|--------------|
+| **Switch** | Toggle on/off | `addSwitch("pump", "Water Pump", 13)` |
+| **Sensor** | Read-only number with unit | `addSensor("temp", "Temperature", "C")` |
+| **Slider** | Range control | `addSlider("fan", "Fan Speed", 0, 100, 25)` |
+| **Color** | Color picker with hex value | `addColor("led", "LED Color")` |
+| **Text** | Text display | `addText("status", "Status Message")` |
+
+**Switches** toggle GPIO pins directly. **Sliders** apply PWM via `analogWrite()`. **Sensors** are read-only — update them from your firmware with `trellis.setSensor("temp", value)`.
+
+To handle commands with custom logic (not just GPIO), register a callback:
+
+```cpp
+void onCommand(const char* id, JsonVariant value) {
+  if (strcmp(id, "pump") == 0) {
+    bool on = value.as<bool>();
+    // your custom logic here
+  }
+}
+
+void setup() {
+  trellis.onCommand(onCommand);
+  // ...
+}
+```
+
+---
+
+## 7. Charts & Metrics
+
+Every sensor value is stored in SQLite. The Device Detail page shows time-series charts for each sensor.
+
+- **Time ranges**: 1 hour, 6 hours, 24 hours, 7 days
+- **Auto-refresh**: charts update every 10 seconds
+- **CSV export**: click the download icon to export data as CSV
+- **System metrics**: WiFi signal (RSSI) and free heap are charted automatically for every device
+
+Data older than 30 days is automatically cleaned up.
+
+---
+
+## 8. Alerts
+
+Create threshold-based alerts on the Device Detail page, under the "Alerts" section.
+
+**Example**: "If temperature goes above 35, notify me."
+
+1. Click **Add rule**
+2. Name it: "High temp warning"
+3. Select the sensor: Temperature
+4. Set condition: above 35
+5. Click **Create alert**
+
+When triggered:
+- A **desktop notification** appears
+- If configured, a **push notification** is sent to your phone via ntfy.sh (see [Push Notifications](#17-push-notifications))
+
+Alerts have a 60-second debounce — they won't fire repeatedly for the same condition.
+
+---
+
+## 9. Device Groups & Rooms
+
+Organize devices into named groups — like rooms in a house.
+
+1. On the dashboard, click **Manage Groups**
+2. Create a group: name it "Living Room", pick a color
+3. On each device card, click the small colored dot (bottom-right) to assign it to a group
+
+The dashboard switches to a grouped view — devices sorted under their group headers, collapsible, with the group's color dot. Ungrouped devices appear at the bottom.
+
+---
+
+## 10. Scenes
+
+Scenes let you control multiple devices with one button. Like "Good Night" = turn off all lights + set thermostat to 18.
+
+1. Go to **Scenes** in the sidebar
+2. Click **New Scene**
+3. Name it: "Good Night"
+4. Click **+ Add action** for each device you want to control
+5. Pick the device, capability, and target value
+6. Click **Create**
+
+Hit **Run** to execute all actions in sequence. Scenes are stored locally.
+
+---
+
+## 11. Automation
+
+Go to **Automation** in the sidebar. Three tabs:
+
+### Schedules (cron-based)
+
+Run actions at specific times. Examples:
+- "Turn on pump at 6:00 AM every day" → cron: `0 6 * * *`
+- "Turn off lights at midnight" → cron: `0 0 * * *`
+- "Check sensor every 5 minutes" → cron: `*/5 * * * *`
+
+Create a schedule: pick a device, capability, value, and cron expression.
+
+### Rules (if/then)
+
+Trigger actions based on sensor readings. Example:
+- "If greenhouse temperature above 30, turn on fan"
+
+Create a rule: pick a source sensor, condition (above/below), threshold, then a target device and what to set it to. Rules are checked on every sensor update with a 30-second debounce.
+
+### Webhooks
+
+Send HTTP POST requests to external services when events happen.
+
+Supported events:
+- `device_offline` — a device went unreachable
+- `device_online` — a device came back
+- `alert_triggered` — a threshold alert fired
+- `sensor_update` — a sensor value changed
+
+Use this to integrate with Slack, Discord, Telegram bots, or any HTTP endpoint.
+
+---
+
+## 12. Serial Monitor
+
+A built-in USB serial terminal. Go to **Serial** in the sidebar.
+
+1. Select a port (e.g., `/dev/ttyUSB0`)
+2. Pick a baud rate (default: 115200)
+3. Click **Connect**
+
+Features:
+- Send text commands (type and press Enter)
+- Color-coded output: your commands in green, device output in white, system messages in gray
+- Auto-scroll toggle
+- Copy all output to clipboard
+- Clear buffer
+- 5000-line history
+
+---
+
+## 13. OTA Firmware Updates
+
+Update your ESP32's firmware over WiFi — no USB cable needed.
+
+1. Go to **OTA** in the sidebar
+2. Select the target device (must be online)
+3. Either **drag & drop** a `.bin` file onto the drop zone, or click **Browse**
+4. Click **Upload Firmware**
+
+The app starts a temporary HTTP server on your PC, tells the device to download the firmware from it, and shows a progress bar. The device reboots automatically when done.
+
+**Firmware history**: every upload is saved. You can **rollback** to a previous firmware version with one click. The currently running firmware is marked with a "current" badge.
+
+> OTA is currently ESP32-only. Pico W OTA support is planned.
+
+---
+
+## 14. Quick Flash
+
+Compile and flash directly from the Trellis app — no need to open Arduino IDE.
+
+1. Go to **New Device** in the sidebar
+2. Pick capabilities (switch, sensor, slider, etc.)
+3. The generated sketch appears on the right
+4. Expand the **Quick Flash** panel at the bottom
+5. Select your serial port
+6. Click **Compile & Flash**
+
+Requirements:
+- `arduino-cli` must be installed
+- Board cores and libraries are auto-detected; click **Install** if anything is missing
+
+You can also **Save .ino** to disk or **Copy to clipboard** to paste into Arduino IDE.
+
+---
+
+## 15. REST API
+
+Trellis runs an HTTP API on port **9090** alongside the desktop app. Use it for scripting, integration, or building your own tools.
+
+**Base URL**: `http://localhost:9090/api`
+
+### Key endpoints
+
+```bash
+# List all devices
+curl http://localhost:9090/api/devices
+
+# Get one device
+curl http://localhost:9090/api/devices/trellis-aabbccdd
+
+# Send a command to a device
+curl -X POST http://localhost:9090/api/devices/trellis-aabbccdd/command \
+  -H "Content-Type: application/json" \
+  -d '{"command":"set","id":"pump","value":true}'
+
+# Get sensor metrics (last 24 hours)
+curl "http://localhost:9090/api/devices/trellis-aabbccdd/metrics/temp?hours=24"
+
+# Export metrics as CSV
+curl "http://localhost:9090/api/devices/trellis-aabbccdd/metrics/temp/csv?hours=24"
+
+# List schedules
+curl http://localhost:9090/api/schedules
+
+# List groups
+curl http://localhost:9090/api/groups
+```
+
+Full CRUD is available for devices, groups, schedules, rules, webhooks, alerts, templates, firmware history, and settings. CORS headers are included for browser access.
+
+---
+
+## 16. Web Dashboard
+
+A responsive web UI is served at `http://localhost:9090` — open it on your phone, tablet, or any browser on your network.
+
+Features:
+- Device cards with live status
+- Grouped view (if you have groups)
+- Interactive controls (toggle switches, move sliders, pick colors)
+- Automation overview (schedules, rules, webhooks)
+- Settings (ntfy topic, groups)
+- Auto-refresh every 5 seconds
+
+The web dashboard is a single HTML file with zero external dependencies — no React, no npm, no CDN. It works offline once loaded.
+
+---
+
+## 17. Push Notifications
+
+Get alerts on your phone when a sensor threshold is crossed or a device goes offline.
+
+Uses [ntfy.sh](https://ntfy.sh) — a free, open-source notification service. No account needed.
+
+### Setup
+
+1. Install the **ntfy** app on your phone ([Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy) / [iOS](https://apps.apple.com/app/ntfy/id1625396347))
+2. Subscribe to a topic name (e.g., `my-trellis-alerts`)
+3. In Trellis, go to **Settings**
+4. Under "Push Notifications", enter the same topic name
+5. Click **Save**, then **Test** to verify
+
+Now you'll get push notifications for:
+- Alert rules firing (sensor thresholds)
+- Devices going offline
+
+---
+
+## 18. Settings & Config Backup
+
+### Scan Interval
+
+Under **Settings > Discovery**, choose how often Trellis checks if devices are still online: 10s, 30s (default), 60s, or 120s. Lower values detect changes faster but use more network traffic.
+
+### Config Export / Import
+
+**Export** saves everything to a JSON file:
+- Device nicknames and tags
+- Groups
+- Scenes
+- Schedules, rules, webhooks
+- Alert rules
+- Device templates
+
+**Import** restores from a backup file — useful when moving to a new PC.
+
+### Diagnostics
+
+The Settings page shows warnings for any device with:
+- Weak WiFi signal (RSSI below -80 dBm)
+- Low free heap (below 20 KB — possible memory leak)
+
+---
+
+## 19. System Tray
+
+Trellis runs in the system tray. When you close the window, the app keeps running in the background — devices stay connected, schedules keep firing, webhooks keep working.
+
+- **Click the tray icon** to show the window
+- **Right-click** for a menu: Show Trellis / Quit
+
+---
+
+## 20. Arduino Library Reference
+
+### Initialization
+
+```cpp
+Trellis trellis("Device Name");
+// or with custom port:
+Trellis trellis("Device Name", 8080);
+```
+
+### WiFi Connection
+
+```cpp
+// Option A: hardcoded credentials
+trellis.begin("SSID", "password");
+
+// Option B: captive portal provisioning (recommended)
+trellis.beginAutoConnect();
+```
+
+### Capabilities
+
+```cpp
+trellis.addSwitch("id", "Label", gpio_pin);
+trellis.addSensor("id", "Label", "unit");
+trellis.addSlider("id", "Label", min, max, gpio_pin);
+trellis.addColor("id", "Label");
+trellis.addText("id", "Label");
+```
+
+### Updating Values
+
+```cpp
+trellis.setSensor("id", float_value);
+trellis.setSwitch("id", true_or_false);
+trellis.setText("id", "new text");
+trellis.setColor("id", "#ff6600");
+```
+
+### Reading Values
+
+```cpp
+float temp = trellis.getSensor("id");
+bool state = trellis.getSwitch("id");
+```
+
+### Custom Command Handler
+
+```cpp
+void onCommand(const char* id, JsonVariant value) {
+  if (strcmp(id, "pump") == 0) {
+    bool on = value.as<bool>();
+    // do something custom
+  }
+}
+
+void setup() {
+  trellis.onCommand(onCommand);
+}
+```
+
+### Logging
+
+```cpp
+trellis.logInfo("Pump started");
+trellis.logWarn("Water level low");
+trellis.logError("Sensor disconnected");
+```
+
+Logs are sent via WebSocket to the desktop app and appear in the Device Detail > Logs section.
+
+### Firmware Version
+
+```cpp
+trellis.setFirmwareVersion("1.2.0");
+```
+
+The desktop app displays this on device cards and in the OTA history.
+
+### Main Loop
+
+```cpp
+void loop() {
+  // update your sensors
+  trellis.setSensor("temp", readTemp());
+
+  // MUST call this — handles WebSocket, heartbeat, broadcasts
+  trellis.loop();
+
+  delay(2000); // sensor read interval
+}
+```
+
+### Limits
+
+- Maximum 16 capabilities per device
+- String values (text, color) are limited to 31 characters
+- Heartbeat is sent every 10 seconds
+- Sensor values are broadcast every 5 seconds
+
+---
+
+## 21. Troubleshooting
+
+### Device doesn't appear in the app
+
+- **Same network?** The device and your PC must be on the same subnet. mDNS doesn't cross subnets (e.g., 192.168.1.x can't see 192.168.2.x).
+- **WiFi connected?** Check Serial Monitor at 115200 baud — you should see the IP address.
+- **Firewall?** Trellis uses ports 8080 (HTTP), 8081 (WebSocket), and 9090 (REST API). Make sure they're not blocked.
+- **Manual fallback**: Click "Add by IP" on the dashboard and enter the device's IP and port.
+
+### Device shows "Offline" but it's running
+
+- The health check runs every 30 seconds (configurable in Settings). Wait a cycle.
+- Check if the device's WiFi disconnected (RSSI very low = unstable connection).
+- Try power-cycling the device.
+
+### OTA update fails
+
+- OTA only works on ESP32 (Pico W support is planned).
+- The device must be able to reach your PC's IP on the port shown in the logs. Check for firewalls.
+- Make sure the `.bin` file is a valid compiled firmware for your board.
+
+### Controls don't respond
+
+- Check that the device is online (green badge).
+- Open the Device Detail page and check the Logs section for errors.
+- Make sure your `trellis.loop()` is being called in your Arduino `loop()`.
+
+### Charts show no data
+
+- Sensor data is only stored when the app is running and the device is connected.
+- Check that you're calling `trellis.setSensor()` in your loop.
+- Try a shorter time range (1 hour) if you just started.

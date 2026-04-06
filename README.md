@@ -8,7 +8,7 @@ Trellis is a desktop app + microcontroller library that makes your boards feel l
 > **No config.** Devices describe themselves. Controls render automatically.
 > **No complexity.** One command to install. 15 lines to integrate.
 >
-> Read the full story: **[What is Trellis?](ABOUT.md)**
+> Read the full story: **[What is Trellis?](ABOUT.md)** | **[User Guide](docs/guide.md)**
 
 ## How it works
 
