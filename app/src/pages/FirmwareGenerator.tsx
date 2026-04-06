@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Cpu,
   Trash2,
+  Save,
+  FolderOpen,
   ToggleLeft,
   Thermometer,
   SlidersHorizontal,
@@ -50,11 +53,56 @@ function highlightLine(line: string): string {
   return "text-zinc-300";
 }
 
+interface TemplateDef {
+  id: number;
+  name: string;
+  description: string;
+  capabilities: string;
+  created_at: string;
+}
+
 export default function FirmwareGenerator() {
   const [deviceName, setDeviceName] = useState("My Device");
   const [board, setBoard] = useState<"esp32" | "picow">("esp32");
   const [capabilities, setCapabilities] = useState<CapabilityDef[]>([]);
   const [copied, setCopied] = useState(false);
+  const [templates, setTemplates] = useState<TemplateDef[]>([]);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  useEffect(() => { loadTemplates(); }, []);
+
+  const loadTemplates = async () => {
+    try {
+      const t = await invoke<TemplateDef[]>("get_templates");
+      setTemplates(t);
+    } catch {}
+  };
+
+  const saveAsTemplate = async () => {
+    if (capabilities.length === 0) return;
+    const name = prompt("Template name:", deviceName);
+    if (!name) return;
+    await invoke("create_template", {
+      name,
+      description: `${capabilities.length} capabilities`,
+      capabilities: JSON.stringify(capabilities),
+    });
+    loadTemplates();
+  };
+
+  const loadTemplate = (t: TemplateDef) => {
+    try {
+      const caps = JSON.parse(t.capabilities) as CapabilityDef[];
+      setCapabilities(caps);
+      setDeviceName(t.name);
+      setShowTemplates(false);
+    } catch {}
+  };
+
+  const deleteTemplate = async (id: number) => {
+    await invoke("delete_template", { id });
+    loadTemplates();
+  };
 
   const addCapability = (type: CapabilityDef["type"]) => {
     const count = capabilities.filter((c) => c.type === type).length;
@@ -211,9 +259,41 @@ export default function FirmwareGenerator() {
         <h1 className="text-xl font-bold text-zinc-100 mb-1">
           New Device
         </h1>
-        <p className="text-sm text-zinc-500 mb-6">
+        <p className="text-sm text-zinc-500 mb-4">
           Pick capabilities and get a ready-to-flash Arduino sketch.
         </p>
+
+        <div className="flex gap-1.5 mb-5">
+          <button
+            onClick={() => setShowTemplates(!showTemplates)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
+          >
+            <FolderOpen size={12} /> Templates {templates.length > 0 && `(${templates.length})`}
+          </button>
+          <button
+            onClick={saveAsTemplate}
+            disabled={capabilities.length === 0}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
+          >
+            <Save size={12} /> Save as template
+          </button>
+        </div>
+
+        {showTemplates && templates.length > 0 && (
+          <div className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
+            {templates.map((t) => (
+              <div key={t.id} className="flex items-center justify-between p-2 hover:bg-zinc-800/50 rounded-lg">
+                <button onClick={() => loadTemplate(t)} className="text-left flex-1">
+                  <p className="text-xs text-zinc-300 font-medium">{t.name}</p>
+                  <p className="text-[11px] text-zinc-600">{t.description}</p>
+                </button>
+                <button onClick={() => deleteTemplate(t.id)} className="p-1 text-zinc-600 hover:text-red-400">
+                  <Trash2 size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="space-y-4">
           <div>

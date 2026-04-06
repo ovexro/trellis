@@ -326,6 +326,234 @@ impl Database {
         logs.reverse(); // Oldest first
         Ok(logs)
     }
+    // ─── Schedules ─────────────────────────────────────────────────────
+
+    pub fn create_schedule(
+        &self, device_id: &str, capability_id: &str, value: &str,
+        cron: &str, label: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO schedules (device_id, capability_id, value, cron, label, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            rusqlite::params![device_id, capability_id, value, cron, label],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_schedules(&self) -> Result<Vec<Schedule>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, device_id, capability_id, value, cron, label, enabled, last_run FROM schedules"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Schedule {
+                id: row.get(0)?, device_id: row.get(1)?, capability_id: row.get(2)?,
+                value: row.get(3)?, cron: row.get(4)?, label: row.get(5)?,
+                enabled: row.get(6)?, last_run: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn delete_schedule(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM schedules WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_schedule_last_run(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE schedules SET last_run = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn toggle_schedule(&self, id: i64, enabled: bool) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE schedules SET enabled = ?1 WHERE id = ?2", rusqlite::params![enabled, id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── Conditional rules ───────────────────────────────────────────────
+
+    pub fn create_rule(
+        &self, source_device_id: &str, source_metric_id: &str,
+        condition: &str, threshold: f64,
+        target_device_id: &str, target_capability_id: &str, target_value: &str,
+        label: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
+             target_device_id, target_capability_id, target_value, label, enabled)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)",
+            rusqlite::params![source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_rules(&self) -> Result<Vec<Rule>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_device_id, source_metric_id, condition, threshold,
+             target_device_id, target_capability_id, target_value, label, enabled FROM rules"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Rule {
+                id: row.get(0)?, source_device_id: row.get(1)?, source_metric_id: row.get(2)?,
+                condition: row.get(3)?, threshold: row.get(4)?, target_device_id: row.get(5)?,
+                target_capability_id: row.get(6)?, target_value: row.get(7)?,
+                label: row.get(8)?, enabled: row.get(9)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn delete_rule(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM rules WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn toggle_rule(&self, id: i64, enabled: bool) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("UPDATE rules SET enabled = ?1 WHERE id = ?2", rusqlite::params![enabled, id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── Webhooks ────────────────────────────────────────────────────────
+
+    pub fn create_webhook(
+        &self, event_type: &str, device_id: Option<&str>, url: &str, label: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO webhooks (event_type, device_id, url, label, enabled) VALUES (?1, ?2, ?3, ?4, 1)",
+            rusqlite::params![event_type, device_id, url, label],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_webhooks(&self) -> Result<Vec<Webhook>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, event_type, device_id, url, label, enabled FROM webhooks"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Webhook {
+                id: row.get(0)?, event_type: row.get(1)?, device_id: row.get(2)?,
+                url: row.get(3)?, label: row.get(4)?, enabled: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn delete_webhook(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── Device templates ────────────────────────────────────────────────
+
+    pub fn create_template(
+        &self, name: &str, description: &str, capabilities: &str,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_templates (name, description, capabilities) VALUES (?1, ?2, ?3)",
+            rusqlite::params![name, description, capabilities],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_templates(&self) -> Result<Vec<DeviceTemplate>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, capabilities, created_at FROM device_templates ORDER BY created_at DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DeviceTemplate {
+                id: row.get(0)?, name: row.get(1)?, description: row.get(2)?,
+                capabilities: row.get(3)?, created_at: row.get(4)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn delete_template(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM device_templates WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── CSV export ──────────────────────────────────────────────────────
+
+    pub fn export_metrics_csv(
+        &self, device_id: &str, metric_id: &str, hours: u32,
+    ) -> Result<String, String> {
+        let points = self.get_metrics(device_id, metric_id, hours)?;
+        let mut csv = String::from("timestamp,value\n");
+        for p in points {
+            csv.push_str(&format!("{},{}\n", p.timestamp, p.value));
+        }
+        Ok(csv)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Schedule {
+    pub id: i64,
+    pub device_id: String,
+    pub capability_id: String,
+    pub value: String,
+    pub cron: String,
+    pub label: String,
+    pub enabled: bool,
+    pub last_run: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Rule {
+    pub id: i64,
+    pub source_device_id: String,
+    pub source_metric_id: String,
+    pub condition: String,
+    pub threshold: f64,
+    pub target_device_id: String,
+    pub target_capability_id: String,
+    pub target_value: String,
+    pub label: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Webhook {
+    pub id: i64,
+    pub event_type: String,
+    pub device_id: Option<String>,
+    pub url: String,
+    pub label: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceTemplate {
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub capabilities: String,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -387,6 +615,50 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             message TEXT NOT NULL,
             timestamp TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS schedules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            capability_id TEXT NOT NULL,
+            value TEXT NOT NULL,
+            cron TEXT NOT NULL,
+            label TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run TEXT,
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_device_id TEXT NOT NULL,
+            source_metric_id TEXT NOT NULL,
+            condition TEXT NOT NULL,
+            threshold REAL NOT NULL,
+            target_device_id TEXT NOT NULL,
+            target_capability_id TEXT NOT NULL,
+            target_value TEXT NOT NULL,
+            label TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (source_device_id) REFERENCES devices(id),
+            FOREIGN KEY (target_device_id) REFERENCES devices(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS webhooks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            device_id TEXT,
+            url TEXT NOT NULL,
+            label TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS device_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            capabilities TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE INDEX IF NOT EXISTS idx_metrics_device_time

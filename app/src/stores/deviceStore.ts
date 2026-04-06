@@ -55,6 +55,77 @@ async function checkAlerts(deviceId: string, metricId: string, value: number, de
   } catch {}
 }
 
+// Check conditional rules and execute actions
+interface RuleDef {
+  id: number;
+  source_device_id: string;
+  source_metric_id: string;
+  condition: string;
+  threshold: number;
+  target_device_id: string;
+  target_capability_id: string;
+  target_value: string;
+  enabled: boolean;
+}
+
+const firedRules = new Map<string, number>();
+
+async function checkRules(deviceId: string, metricId: string, value: number, devices: Device[]) {
+  try {
+    const rules = await invoke<RuleDef[]>("get_rules");
+    for (const rule of rules) {
+      if (!rule.enabled) continue;
+      if (rule.source_device_id !== deviceId || rule.source_metric_id !== metricId) continue;
+
+      const triggered =
+        (rule.condition === "above" && value > rule.threshold) ||
+        (rule.condition === "below" && value < rule.threshold);
+
+      if (!triggered) continue;
+
+      // Debounce: 30 seconds between rule fires
+      const key = `rule-${rule.id}`;
+      const lastFired = firedRules.get(key) || 0;
+      if (Date.now() - lastFired < 30000) continue;
+      firedRules.set(key, Date.now());
+
+      // Execute action
+      const target = devices.find((d) => d.id === rule.target_device_id);
+      if (!target || !target.online) continue;
+
+      const val = rule.target_value === "true" ? true
+        : rule.target_value === "false" ? false
+        : isNaN(Number(rule.target_value)) ? rule.target_value
+        : Number(rule.target_value);
+
+      invoke("send_command", {
+        deviceId: target.id,
+        ip: target.ip,
+        port: target.port,
+        command: { command: "set", id: rule.target_capability_id, value: val },
+      }).catch(() => {});
+    }
+  } catch {}
+}
+
+// Fire webhooks for events
+async function fireWebhooks(eventType: string, deviceId: string, data: Record<string, unknown>) {
+  try {
+    const webhooks = await invoke<Array<{ url: string; event_type: string; device_id: string | null; enabled: boolean }>>("get_webhooks");
+    for (const wh of webhooks) {
+      if (!wh.enabled) continue;
+      if (wh.event_type !== eventType) continue;
+      if (wh.device_id && wh.device_id !== deviceId) continue;
+
+      fetch(wh.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: eventType, device_id: deviceId, ...data, timestamp: new Date().toISOString() }),
+      }).catch(() => {});
+    }
+  } catch {}
+}
+
 interface DeviceState {
   devices: Device[];
   initialized: boolean;
@@ -140,6 +211,13 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         }
       } catch {}
 
+      // Fire webhooks for device state changes
+      if (event === "lost") {
+        fireWebhooks("device_offline", device.id, { name: device.name });
+      } else if (event === "found") {
+        fireWebhooks("device_online", device.id, { name: device.name });
+      }
+
       set((state) => {
         if (event === "lost") {
           return {
@@ -182,6 +260,8 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
                   value: payload.value,
                 }).catch(() => {});
                 checkAlerts(device_id, payload.id, payload.value, d.name);
+                checkRules(device_id, payload.id, payload.value, get().devices);
+                fireWebhooks("sensor_update", device_id, { metric: payload.id, value: payload.value });
               }
 
               return {

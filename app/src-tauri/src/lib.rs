@@ -57,6 +57,22 @@ pub fn run() {
             get_device_logs,
             store_log_entry,
             remove_device,
+            create_schedule,
+            get_schedules,
+            delete_schedule,
+            toggle_schedule,
+            create_rule,
+            get_rules,
+            delete_rule,
+            toggle_rule,
+            create_webhook,
+            get_webhooks,
+            delete_webhook,
+            create_template,
+            get_templates,
+            delete_template,
+            export_metrics_csv,
+            run_terminal_command,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

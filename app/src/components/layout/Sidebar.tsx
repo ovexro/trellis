@@ -2,9 +2,11 @@ import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
   Terminal,
+  TerminalSquare,
   Upload,
   Cpu,
   Zap,
+  GitBranch,
   Settings,
   Radio,
 } from "lucide-react";
@@ -13,7 +15,9 @@ const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Devices" },
   { to: "/new-device", icon: Cpu, label: "New Device" },
   { to: "/scenes", icon: Zap, label: "Scenes" },
+  { to: "/automation", icon: GitBranch, label: "Automation" },
   { to: "/serial", icon: Terminal, label: "Serial" },
+  { to: "/terminal", icon: TerminalSquare, label: "Terminal" },
   { to: "/ota", icon: Upload, label: "OTA" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];

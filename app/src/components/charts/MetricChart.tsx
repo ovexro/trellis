@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Download } from "lucide-react";
 import {
   LineChart,
   Line,
@@ -77,7 +78,7 @@ export default function MetricChart({
           {label}
           {unit && <span className="text-zinc-500 ml-1">({unit})</span>}
         </h3>
-        <div className="flex gap-1">
+        <div className="flex gap-1 items-center">
           {TIME_RANGES.map((range) => (
             <button
               key={range.hours}
@@ -91,6 +92,26 @@ export default function MetricChart({
               {range.label}
             </button>
           ))}
+          {data.length > 0 && (
+            <button
+              onClick={async () => {
+                try {
+                  const csv = await invoke<string>("export_metrics_csv", { deviceId, metricId, hours });
+                  const blob = new Blob([csv], { type: "text/csv" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${metricId}_${hours}h.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch {}
+              }}
+              className="p-1 rounded text-zinc-600 hover:text-zinc-400 transition-colors ml-1"
+              title="Export CSV"
+            >
+              <Download size={12} />
+            </button>
+          )}
         </div>
       </div>
 

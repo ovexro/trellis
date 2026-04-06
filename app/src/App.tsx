@@ -6,6 +6,8 @@ import SerialMonitor from "./pages/SerialMonitor";
 import OtaManager from "./pages/OtaManager";
 import FirmwareGenerator from "./pages/FirmwareGenerator";
 import Scenes from "./pages/Scenes";
+import Automation from "./pages/Automation";
+import TerminalPage from "./pages/TerminalPage";
 import Settings from "./pages/Settings";
 
 function App() {
@@ -18,6 +20,8 @@ function App() {
         <Route path="/ota" element={<OtaManager />} />
         <Route path="/new-device" element={<FirmwareGenerator />} />
         <Route path="/scenes" element={<Scenes />} />
+        <Route path="/automation" element={<Automation />} />
+        <Route path="/terminal" element={<TerminalPage />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
     </Shell>

@@ -1,5 +1,5 @@
 use crate::connection::ConnectionManager;
-use crate::db::{AlertRule, Database, LogEntry, MetricPoint, SavedDevice};
+use crate::db::{AlertRule, Database, DeviceTemplate, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::ota;
@@ -216,4 +216,128 @@ pub fn store_log_entry(
     message: String,
 ) -> Result<(), String> {
     db.store_log(&device_id, &severity, &message)
+}
+
+// ─── Schedules ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_schedule(
+    db: State<'_, Database>, device_id: String, capability_id: String,
+    value: String, cron: String, label: String,
+) -> Result<i64, String> {
+    db.create_schedule(&device_id, &capability_id, &value, &cron, &label)
+}
+
+#[tauri::command]
+pub fn get_schedules(db: State<'_, Database>) -> Result<Vec<Schedule>, String> {
+    db.get_schedules()
+}
+
+#[tauri::command]
+pub fn delete_schedule(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_schedule(id)
+}
+
+#[tauri::command]
+pub fn toggle_schedule(db: State<'_, Database>, id: i64, enabled: bool) -> Result<(), String> {
+    db.toggle_schedule(id, enabled)
+}
+
+// ─── Conditional rules ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_rule(
+    db: State<'_, Database>, source_device_id: String, source_metric_id: String,
+    condition: String, threshold: f64, target_device_id: String,
+    target_capability_id: String, target_value: String, label: String,
+) -> Result<i64, String> {
+    db.create_rule(&source_device_id, &source_metric_id, &condition, threshold,
+        &target_device_id, &target_capability_id, &target_value, &label)
+}
+
+#[tauri::command]
+pub fn get_rules(db: State<'_, Database>) -> Result<Vec<Rule>, String> {
+    db.get_rules()
+}
+
+#[tauri::command]
+pub fn delete_rule(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_rule(id)
+}
+
+#[tauri::command]
+pub fn toggle_rule(db: State<'_, Database>, id: i64, enabled: bool) -> Result<(), String> {
+    db.toggle_rule(id, enabled)
+}
+
+// ─── Webhooks ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_webhook(
+    db: State<'_, Database>, event_type: String, device_id: Option<String>,
+    url: String, label: String,
+) -> Result<i64, String> {
+    db.create_webhook(&event_type, device_id.as_deref(), &url, &label)
+}
+
+#[tauri::command]
+pub fn get_webhooks(db: State<'_, Database>) -> Result<Vec<Webhook>, String> {
+    db.get_webhooks()
+}
+
+#[tauri::command]
+pub fn delete_webhook(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_webhook(id)
+}
+
+// ─── Device templates ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_template(
+    db: State<'_, Database>, name: String, description: String, capabilities: String,
+) -> Result<i64, String> {
+    db.create_template(&name, &description, &capabilities)
+}
+
+#[tauri::command]
+pub fn get_templates(db: State<'_, Database>) -> Result<Vec<DeviceTemplate>, String> {
+    db.get_templates()
+}
+
+#[tauri::command]
+pub fn delete_template(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_template(id)
+}
+
+// ─── CSV export ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn export_metrics_csv(
+    db: State<'_, Database>, device_id: String, metric_id: String, hours: u32,
+) -> Result<String, String> {
+    db.export_metrics_csv(&device_id, &metric_id, hours)
+}
+
+// ─── Terminal ───────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn run_terminal_command(command: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&command)
+            .output()
+            .map_err(|e| format!("Failed to run command: {}", e))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.is_empty() && stdout.is_empty() {
+            Ok(stderr)
+        } else if !stderr.is_empty() {
+            Ok(format!("{}\n{}", stdout, stderr))
+        } else {
+            Ok(stdout)
+        }
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
 }
