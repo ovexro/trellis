@@ -142,6 +142,81 @@ case "$PKG_MANAGER" in
     *)       warn "Unknown package manager. You may need to install WebKit2GTK 4.1 manually." ;;
 esac
 
+# ─── Build from source (fallback) ────────────────────────────────────────────
+
+build_from_source() {
+    info "Installing build dependencies..."
+
+    case "$PKG_MANAGER" in
+        apt)
+            sudo apt-get install -y -qq \
+                libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+                patchelf libssl-dev pkg-config libudev-dev build-essential git 2>/dev/null
+            ;;
+        dnf)
+            sudo dnf install -y webkit2gtk4.1-devel libayatana-appindicator-gtk3-devel \
+                librsvg2-devel openssl-devel pkg-config systemd-devel git 2>/dev/null
+            ;;
+        pacman)
+            sudo pacman -S --noconfirm --needed webkit2gtk-4.1 libayatana-appindicator \
+                librsvg openssl pkgconf base-devel git 2>/dev/null
+            ;;
+    esac
+    ok "Build dependencies installed"
+
+    # Install Rust if needed
+    if ! command -v rustc &>/dev/null; then
+        info "Installing Rust..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y 2>/dev/null
+        source "$HOME/.cargo/env"
+        ok "Rust $(rustc --version | cut -d' ' -f2) installed"
+    fi
+
+    # Install Node.js if needed
+    if ! command -v node &>/dev/null; then
+        info "Installing Node.js..."
+        case "$PKG_MANAGER" in
+            apt)
+                curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - 2>/dev/null
+                sudo apt-get install -y -qq nodejs
+                ;;
+            dnf) sudo dnf install -y nodejs ;;
+            pacman) sudo pacman -S --noconfirm nodejs npm ;;
+        esac
+        ok "Node.js $(node --version) installed"
+    fi
+
+    # Clone and build
+    info "Cloning repository..."
+    BUILD_DIR=$(mktemp -d)
+    git clone --depth 1 https://github.com/$REPO.git "$BUILD_DIR/trellis" 2>/dev/null
+    ok "Repository cloned"
+
+    info "Building Trellis (this may take a few minutes)..."
+    cd "$BUILD_DIR/trellis/app"
+    npm ci --silent 2>/dev/null
+    source "$HOME/.cargo/env" 2>/dev/null || true
+    npx tauri build 2>/dev/null
+
+    # Install the built package
+    if [ -f src-tauri/target/release/bundle/deb/*.deb ] 2>/dev/null; then
+        sudo dpkg -i src-tauri/target/release/bundle/deb/*.deb 2>/dev/null || sudo apt-get install -f -y -qq
+        ok "Trellis installed from source (.deb)"
+    elif ls src-tauri/target/release/bundle/appimage/*.AppImage 1>/dev/null 2>/dev/null; then
+        sudo mkdir -p "$APP_DIR"
+        sudo cp src-tauri/target/release/bundle/appimage/*.AppImage "$APP_DIR/Trellis.AppImage"
+        sudo chmod +x "$APP_DIR/Trellis.AppImage"
+        sudo ln -sf "$APP_DIR/Trellis.AppImage" "$INSTALL_DIR/trellis"
+        ok "Trellis installed from source (AppImage)"
+    else
+        fail "Build produced no installable packages"
+    fi
+
+    rm -rf "$BUILD_DIR"
+    # Skip the rest of the download/install section
+    BUILT_FROM_SOURCE=true
+}
+
 # ─── Download and install Trellis ────────────────────────────────────────────
 
 INSTALL_DIR="/usr/local/bin"
@@ -149,22 +224,19 @@ APP_DIR="/opt/trellis"
 DESKTOP_FILE="/usr/share/applications/trellis.desktop"
 TMP_DIR=$(mktemp -d)
 trap "rm -rf $TMP_DIR" EXIT
+BUILT_FROM_SOURCE=false
 
-if [ "$USE_APPIMAGE" = true ] || [ "$VERSION" = "dev" ]; then
+if [ "$BUILT_FROM_SOURCE" = true ]; then
+    : # Already installed during build
+elif [ "$USE_APPIMAGE" = true ] || [ "$VERSION" = "dev" ]; then
     # AppImage installation (universal fallback)
     info "Downloading Trellis AppImage..."
 
     APPIMAGE_URL="https://github.com/$REPO/releases/latest/download/Trellis_${DEB_ARCH}.AppImage"
 
-    if ! $DOWNLOADER "$APPIMAGE_URL" > "$TMP_DIR/Trellis.AppImage" 2>/dev/null; then
-        warn "No pre-built AppImage found for your platform."
-        echo ""
-        echo -e "  ${DIM}To build from source:${NC}"
-        echo -e "  ${DIM}  git clone https://github.com/$REPO.git${NC}"
-        echo -e "  ${DIM}  cd trellis/app && npm install${NC}"
-        echo -e "  ${DIM}  npx tauri build${NC}"
-        echo ""
-        fail "Installation failed. See build instructions above."
+    if ! $DOWNLOADER "$APPIMAGE_URL" > "$TMP_DIR/Trellis.AppImage" 2>/dev/null || [ ! -s "$TMP_DIR/Trellis.AppImage" ]; then
+        warn "No pre-built binary found. Building from source..."
+        build_from_source
     fi
 
     sudo mkdir -p "$APP_DIR"
