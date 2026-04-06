@@ -24,7 +24,11 @@ void setup() {
   if (!trellis.beginAutoConnect()) {
     Serial.println("Failed to connect. Restarting...");
     delay(3000);
+#if defined(ESP32)
     ESP.restart();
+#elif defined(ARDUINO_ARCH_RP2040)
+    rp2040.reboot();
+#endif
   }
 }
 

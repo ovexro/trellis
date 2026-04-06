@@ -55,6 +55,18 @@ export default function Settings() {
           localStorage.setItem("trellis-scenes", JSON.stringify(config.scenes));
         }
 
+        // Restore saved devices (nicknames, tags)
+        if (config.devices && Array.isArray(config.devices)) {
+          for (const dev of config.devices) {
+            if (dev.nickname) {
+              await invoke("set_device_nickname", { deviceId: dev.id, nickname: dev.nickname });
+            }
+            if (dev.tags) {
+              await invoke("set_device_tags", { deviceId: dev.id, tags: dev.tags });
+            }
+          }
+        }
+
         setImportStatus(
           `Imported: ${config.scenes?.length || 0} scenes, ${config.devices?.length || 0} saved devices`,
         );
@@ -155,7 +167,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.1.0</p>
+            <p>Trellis v0.1.2</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">

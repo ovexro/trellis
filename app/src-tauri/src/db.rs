@@ -144,6 +144,19 @@ impl Database {
         Ok(devices)
     }
 
+    pub fn delete_device(&self, device_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM devices WHERE id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM metrics WHERE device_id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM alerts WHERE device_id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM device_logs WHERE device_id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ─── Metrics ─────────────────────────────────────────────────────────
 
     pub fn store_metric(

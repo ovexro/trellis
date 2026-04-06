@@ -47,7 +47,9 @@ export default function OtaManager() {
         port: device.port,
         firmwarePath: firmwarePath,
       });
-      setStatus("success");
+      // Don't set success here — the OTA command was SENT but the device
+      // hasn't finished downloading yet. Status will update via ota_progress events.
+      setOtaProgress(0);
     } catch (err) {
       setStatus("error");
       setErrorMsg(String(err));

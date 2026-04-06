@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Wifi } from "lucide-react";
+import { ArrowLeft, Wifi, Trash2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useDeviceStore } from "@/stores/deviceStore";
 import Switch from "@/components/controls/Switch";
@@ -9,6 +9,7 @@ import ColorPicker from "@/components/controls/ColorPicker";
 import MetricChart from "@/components/charts/MetricChart";
 import DeviceNickname from "@/components/DeviceNickname";
 import DeviceLogs from "@/components/DeviceLogs";
+import DeviceAlerts from "@/components/DeviceAlerts";
 import type { Capability } from "@/lib/types";
 
 export default function DeviceDetail() {
@@ -188,9 +189,47 @@ export default function DeviceDetail() {
         </>
       )}
 
+      {/* System metrics for devices without sensors */}
+      {device.capabilities.filter((c) => c.type === "sensor").length === 0 && (
+        <div className="mt-8 space-y-3">
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+            System Metrics
+          </h2>
+          <MetricChart deviceId={device.id} metricId="_rssi" label="WiFi Signal" unit="dBm" color="#f59e0b" />
+          <MetricChart deviceId={device.id} metricId="_heap" label="Free Heap" unit="bytes" color="#3b82f6" />
+        </div>
+      )}
+
+      {/* Alerts */}
+      <div className="mt-8">
+        <DeviceAlerts
+          deviceId={device.id}
+          sensorIds={device.capabilities
+            .filter((c) => c.type === "sensor")
+            .map((c) => ({ id: c.id, label: c.label, unit: c.unit }))}
+        />
+      </div>
+
       {/* Device Logs */}
       <div className="mt-8">
         <DeviceLogs deviceId={device.id} />
+      </div>
+
+      {/* Remove Device */}
+      <div className="mt-8 pt-6 border-t border-zinc-800">
+        <button
+          onClick={async () => {
+            if (confirm(`Remove ${device.name}? This deletes all saved data, metrics, and alerts for this device.`)) {
+              const { useDeviceStore } = await import("@/stores/deviceStore");
+              await useDeviceStore.getState().removeDevice(device.id);
+              navigate("/");
+            }
+          }}
+          className="flex items-center gap-2 text-sm text-red-400 hover:text-red-300 transition-colors"
+        >
+          <Trash2 size={14} />
+          Remove device
+        </button>
       </div>
     </div>
   );

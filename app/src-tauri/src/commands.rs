@@ -201,6 +201,14 @@ pub fn get_device_logs(
 }
 
 #[tauri::command]
+pub fn remove_device(
+    db: State<'_, Database>,
+    device_id: String,
+) -> Result<(), String> {
+    db.delete_device(&device_id)
+}
+
+#[tauri::command]
 pub fn store_log_entry(
     db: State<'_, Database>,
     device_id: String,

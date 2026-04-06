@@ -11,6 +11,7 @@ use connection::ConnectionManager;
 use discovery::Discovery;
 use serial::SerialManager;
 use std::sync::Arc;
+use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
@@ -55,20 +56,51 @@ pub fn run() {
             toggle_alert,
             get_device_logs,
             store_log_entry,
+            remove_device,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
 
-            // Set app handle for connection manager (needed for emitting events)
+            // Set app handle for connection manager
             connection_manager.set_app_handle(app.handle().clone());
 
             // Start continuous background discovery
             discovery.start_background(app.handle().clone());
 
-            // System tray
+            // Schedule periodic metrics cleanup (delete data older than 30 days)
+            let cleanup_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                    if let Some(db) = cleanup_handle.try_state::<db::Database>() {
+                        let _ = db.cleanup_old_metrics(30);
+                    }
+                }
+            });
+
+            // System tray with right-click menu
+            let show_item = MenuItem::with_id(app, "show", "Show Trellis", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().cloned().unwrap())
+                .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
+                    tauri::image::Image::new(&[0u8; 4], 1, 1)
+                }))
                 .tooltip("Trellis — Device Control Center")
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
                 .on_tray_icon_event(|tray, event| {
                     if let tauri::tray::TrayIconEvent::Click { .. } = event {
                         if let Some(window) = tray.app_handle().get_webview_window("main") {

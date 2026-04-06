@@ -39,12 +39,17 @@ button:hover{background:#16a34a}
 </div>
 <script>
 fetch('/scan').then(r=>r.json()).then(nets=>{
-  let html='';
+  const c=document.getElementById('networks');
+  c.innerHTML='';
+  if(!nets.length){c.innerHTML='<div class="net" style="color:#71717a">No networks found</div>';return;}
   nets.forEach(n=>{
-    html+='<div class="net" onclick="document.getElementById(\'ssid\').value=\''+n.ssid+'\'">'+
-    '<span>'+n.ssid+'</span><span class="rssi">'+n.rssi+' dBm</span></div>';
+    const d=document.createElement('div');d.className='net';
+    const s=document.createElement('span');s.textContent=n.ssid;
+    const r=document.createElement('span');r.className='rssi';r.textContent=n.rssi+' dBm';
+    d.appendChild(s);d.appendChild(r);
+    d.onclick=()=>{document.getElementById('ssid').value=n.ssid;};
+    c.appendChild(d);
   });
-  document.getElementById('networks').innerHTML=html||'<div class="net" style="color:#71717a">No networks found</div>';
 });
 </script>
 </body></html>
@@ -270,12 +275,27 @@ void TrellisProvisioning::handleConfigure() {
   }
 }
 
+static String escapeJson(const String& input) {
+  String out;
+  out.reserve(input.length() + 10);
+  for (unsigned int i = 0; i < input.length(); i++) {
+    char c = input.charAt(i);
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '<') out += "\\u003c";
+    else if (c == '>') out += "\\u003e";
+    else if (c == '\'') out += "\\u0027";
+    else out += c;
+  }
+  return out;
+}
+
 void TrellisProvisioning::handleScan() {
   int n = WiFi.scanNetworks();
   String json = "[";
   for (int i = 0; i < n && i < 20; i++) {
     if (i > 0) json += ",";
-    json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
+    json += "{\"ssid\":\"" + escapeJson(WiFi.SSID(i)) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
   }
   json += "]";
   WiFi.scanDelete();

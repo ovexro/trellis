@@ -47,7 +47,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="p-4 border-t border-zinc-800">
-        <p className="text-xs text-zinc-600">v0.1.0</p>
+        <p className="text-xs text-zinc-600">v0.1.2</p>
       </div>
     </aside>
   );

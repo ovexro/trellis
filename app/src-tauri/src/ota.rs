@@ -17,8 +17,11 @@ pub fn serve_firmware(firmware_path: &str) -> Result<(String, Arc<Mutex<bool>>),
     let firmware_size = firmware_data.len();
 
     // Bind to random available port
-    let listener =
-        TcpListener::bind("0.0.0.0:0").map_err(|e| format!("Failed to bind: {}", e))?;
+    // Bind to local IP only (not 0.0.0.0) to limit exposure
+    let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+    let listener = TcpListener::bind(format!("{}:0", local_ip))
+        .or_else(|_| TcpListener::bind("0.0.0.0:0"))
+        .map_err(|e| format!("Failed to bind: {}", e))?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("Failed to get addr: {}", e))?

@@ -60,6 +60,7 @@ interface DeviceState {
   initialized: boolean;
   refreshDevices: () => Promise<void>;
   addDeviceByIp: (ip: string, port: number) => Promise<Device>;
+  removeDevice: (deviceId: string) => Promise<void>;
   updateCapability: (deviceId: string, capId: string, value: unknown) => void;
   initEventListeners: () => void;
 }
@@ -74,6 +75,17 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       set({ devices });
     } catch (err) {
       console.error("Failed to get devices:", err);
+    }
+  },
+
+  removeDevice: async (deviceId: string) => {
+    try {
+      await invoke("remove_device", { deviceId });
+      set((state) => ({
+        devices: state.devices.filter((d) => d.id !== deviceId),
+      }));
+    } catch (err) {
+      console.error("Failed to remove device:", err);
     }
   },
 
@@ -201,7 +213,35 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       },
     );
 
-    // Load initial device list
+    // Load saved devices from SQLite (show as offline until rediscovered)
+    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string }>>(
+      "get_saved_devices",
+    ).then((saved) => {
+      if (saved.length > 0) {
+        const offlineDevices: Device[] = saved.map((s) => ({
+          id: s.id,
+          name: s.name,
+          ip: s.ip,
+          port: s.port,
+          firmware: s.firmware || "",
+          platform: s.platform || "",
+          capabilities: [],
+          system: { rssi: 0, heap_free: 0, uptime_s: 0, chip: "" },
+          online: false,
+          last_seen: "",
+          nickname: s.nickname || undefined,
+          tags: s.tags || undefined,
+        }));
+        set((state) => {
+          // Only add devices not already in the list (mDNS may have found them first)
+          const existing = new Set(state.devices.map((d) => d.id));
+          const newDevices = offlineDevices.filter((d) => !existing.has(d.id));
+          return { devices: [...state.devices, ...newDevices] };
+        });
+      }
+    }).catch(() => {});
+
+    // Load live device list
     get().refreshDevices();
   },
 }));
