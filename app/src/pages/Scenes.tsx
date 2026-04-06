@@ -170,9 +170,13 @@ export default function Scenes() {
       )}
 
       {scenes.length === 0 && !editing ? (
-        <div className="text-center py-12 text-zinc-600">
-          <Zap size={32} className="mx-auto mb-3" />
-          <p className="text-sm">No scenes yet. Create one to control multiple devices at once.</p>
+        <div className="border border-dashed border-zinc-800 rounded-2xl p-12 text-center">
+          <Zap size={48} className="mx-auto mb-4 text-zinc-600" />
+          <h3 className="text-sm font-medium text-zinc-400 mb-1">No scenes yet</h3>
+          <p className="text-xs text-zinc-600 max-w-xs mx-auto">
+            Scenes let you set multiple devices at once — great for routines like
+            "Lights Off" or "Movie Mode."
+          </p>
         </div>
       ) : (
         <div className="space-y-2">

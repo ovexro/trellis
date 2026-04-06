@@ -37,6 +37,19 @@ const CAP_DEFAULTS: Record<string, Partial<CapabilityDef>> = {
   text: { gpio: "", unit: "", min: "", max: "" },
 };
 
+function highlightLine(line: string): string {
+  const trimmed = line.trim();
+  if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*"))
+    return "text-zinc-600";
+  if (trimmed.startsWith("#include") || trimmed.startsWith("#if") || trimmed.startsWith("#elif") || trimmed.startsWith("#endif"))
+    return "text-purple-400/80";
+  if (trimmed.startsWith("void ") || trimmed.startsWith("float ") || trimmed.startsWith("bool ") || trimmed.startsWith("const "))
+    return "text-blue-400/80";
+  if (trimmed.includes('"'))
+    return "text-trellis-400/80";
+  return "text-zinc-300";
+}
+
 export default function FirmwareGenerator() {
   const [deviceName, setDeviceName] = useState("My Device");
   const [board, setBoard] = useState<"esp32" | "picow">("esp32");
@@ -354,9 +367,13 @@ export default function FirmwareGenerator() {
             {copied ? "Copied!" : "Copy to clipboard"}
           </button>
         </div>
-        <pre className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg p-4 overflow-auto text-xs text-zinc-300 font-mono leading-5 select-text">
-          {sketch}
-        </pre>
+        <div className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl p-4 overflow-auto font-mono text-xs leading-5 select-text">
+          {sketch.split("\n").map((line, i) => (
+            <div key={i} className={highlightLine(line)}>
+              {line || "\u00A0"}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

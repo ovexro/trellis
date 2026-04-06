@@ -12,6 +12,17 @@ import DeviceLogs from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import type { Capability } from "@/lib/types";
 
+function SectionHeader({ title }: { title: string }) {
+  return (
+    <div className="flex items-center gap-2.5 mt-10 mb-4">
+      <div className="w-1 h-4 bg-trellis-500 rounded-full" />
+      <h2 className="text-sm font-semibold text-zinc-300 uppercase tracking-wide">
+        {title}
+      </h2>
+    </div>
+  );
+}
+
 export default function DeviceDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -94,7 +105,7 @@ export default function DeviceDetail() {
               {cap.label}
             </span>
             <p className="mt-1 text-sm text-zinc-200 font-mono">
-              {cap.value as string || "—"}
+              {(cap.value as string) || "\u2014"}
             </p>
           </div>
         );
@@ -103,8 +114,10 @@ export default function DeviceDetail() {
     }
   };
 
+  const hasSensors = device.capabilities.filter((c) => c.type === "sensor").length > 0;
+
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-4xl">
       <button
         onClick={() => navigate("/")}
         className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 mb-6 transition-colors"
@@ -113,15 +126,17 @@ export default function DeviceDetail() {
         Back to devices
       </button>
 
-      <div className="flex items-start justify-between mb-6">
+      {/* Header */}
+      <div className="flex items-start justify-between mb-8">
         <div>
           <DeviceNickname deviceId={device.id} originalName={device.name} />
           <p className="text-sm text-zinc-500 mt-1">
-            {device.ip}:{device.port} &middot; {device.system.chip} &middot; FW {device.firmware}
+            {device.ip}:{device.port} &middot; {device.system.chip} &middot; FW{" "}
+            {device.firmware}
           </p>
         </div>
         <div
-          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm ${
+          className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium ${
             device.online
               ? "bg-trellis-500/10 text-trellis-400"
               : "bg-red-500/10 text-red-400"
@@ -132,39 +147,68 @@ export default function DeviceDetail() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3 mb-6">
-        <div className="p-3 bg-zinc-900 rounded-lg border border-zinc-800">
-          <span className="text-xs text-zinc-500">RSSI</span>
-          <p className="text-lg font-mono text-zinc-100">{device.system.rssi} dBm</p>
-        </div>
-        <div className="p-3 bg-zinc-900 rounded-lg border border-zinc-800">
-          <span className="text-xs text-zinc-500">Free Heap</span>
-          <p className="text-lg font-mono text-zinc-100">
-            {(device.system.heap_free / 1024).toFixed(0)} KB
-          </p>
-        </div>
-        <div className="p-3 bg-zinc-900 rounded-lg border border-zinc-800">
-          <span className="text-xs text-zinc-500">Uptime</span>
-          <p className="text-lg font-mono text-zinc-100">
-            {Math.floor(device.system.uptime_s / 3600)}h{" "}
-            {Math.floor((device.system.uptime_s % 3600) / 60)}m
-          </p>
-        </div>
-      </div>
-
-      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
-        Controls
-      </h2>
-      <div className="space-y-2">
-        {device.capabilities.map(renderControl)}
-      </div>
-
-      {/* Sensor Charts */}
-      {device.capabilities.filter((c) => c.type === "sensor").length > 0 && (
-        <>
-          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3 mt-8">
-            Charts
+      {/* Two-column layout: Controls + System Stats */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Controls — takes 2 cols */}
+        <div className="lg:col-span-2">
+          <h2 className="flex items-center gap-2.5 mb-4">
+            <div className="w-1 h-4 bg-trellis-500 rounded-full" />
+            <span className="text-sm font-semibold text-zinc-300 uppercase tracking-wide">
+              Controls
+            </span>
           </h2>
+          <div className="space-y-2">
+            {device.capabilities.map(renderControl)}
+            {device.capabilities.length === 0 && (
+              <p className="text-sm text-zinc-600 py-4">
+                No capabilities reported by this device.
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* System stats — right column */}
+        <div className="space-y-3">
+          <h2 className="flex items-center gap-2.5 mb-1">
+            <div className="w-1 h-4 bg-zinc-600 rounded-full" />
+            <span className="text-sm font-semibold text-zinc-300 uppercase tracking-wide">
+              System
+            </span>
+          </h2>
+          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+              RSSI
+            </span>
+            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+              {device.system.rssi}{" "}
+              <span className="text-sm text-zinc-500">dBm</span>
+            </p>
+          </div>
+          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+              Free Heap
+            </span>
+            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+              {(device.system.heap_free / 1024).toFixed(0)}{" "}
+              <span className="text-sm text-zinc-500">KB</span>
+            </p>
+          </div>
+          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+              Uptime
+            </span>
+            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+              {Math.floor(device.system.uptime_s / 3600)}h{" "}
+              {Math.floor((device.system.uptime_s % 3600) / 60)}m
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Charts */}
+      {hasSensors && (
+        <>
+          <SectionHeader title="Sensor Charts" />
           <div className="space-y-3">
             {device.capabilities
               .filter((c) => c.type === "sensor")
@@ -178,54 +222,56 @@ export default function DeviceDetail() {
                 />
               ))}
           </div>
-
-          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3 mt-6">
-            System Metrics
-          </h2>
-          <div className="space-y-3">
-            <MetricChart deviceId={device.id} metricId="_rssi" label="WiFi Signal" unit="dBm" color="#f59e0b" />
-            <MetricChart deviceId={device.id} metricId="_heap" label="Free Heap" unit="bytes" color="#3b82f6" />
-          </div>
         </>
       )}
 
-      {/* System metrics for devices without sensors */}
-      {device.capabilities.filter((c) => c.type === "sensor").length === 0 && (
-        <div className="mt-8 space-y-3">
-          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
-            System Metrics
-          </h2>
-          <MetricChart deviceId={device.id} metricId="_rssi" label="WiFi Signal" unit="dBm" color="#f59e0b" />
-          <MetricChart deviceId={device.id} metricId="_heap" label="Free Heap" unit="bytes" color="#3b82f6" />
-        </div>
-      )}
-
-      {/* Alerts */}
-      <div className="mt-8">
-        <DeviceAlerts
+      {/* System Metrics Charts */}
+      <SectionHeader title="System Metrics" />
+      <div className="space-y-3">
+        <MetricChart
           deviceId={device.id}
-          sensorIds={device.capabilities
-            .filter((c) => c.type === "sensor")
-            .map((c) => ({ id: c.id, label: c.label, unit: c.unit }))}
+          metricId="_rssi"
+          label="WiFi Signal"
+          unit="dBm"
+          color="#f59e0b"
+        />
+        <MetricChart
+          deviceId={device.id}
+          metricId="_heap"
+          label="Free Heap"
+          unit="bytes"
+          color="#3b82f6"
         />
       </div>
 
+      {/* Alerts */}
+      <SectionHeader title="Alerts" />
+      <DeviceAlerts
+        deviceId={device.id}
+        sensorIds={device.capabilities
+          .filter((c) => c.type === "sensor")
+          .map((c) => ({ id: c.id, label: c.label, unit: c.unit }))}
+      />
+
       {/* Device Logs */}
-      <div className="mt-8">
-        <DeviceLogs deviceId={device.id} />
-      </div>
+      <SectionHeader title="Logs" />
+      <DeviceLogs deviceId={device.id} />
 
       {/* Remove Device */}
-      <div className="mt-8 pt-6 border-t border-zinc-800">
+      <div className="mt-12 pt-6 border-t border-zinc-800/50">
         <button
           onClick={async () => {
-            if (confirm(`Remove ${device.name}? This deletes all saved data, metrics, and alerts for this device.`)) {
+            if (
+              confirm(
+                `Remove ${device.name}? This deletes all saved data, metrics, and alerts.`,
+              )
+            ) {
               const { useDeviceStore } = await import("@/stores/deviceStore");
               await useDeviceStore.getState().removeDevice(device.id);
               navigate("/");
             }
           }}
-          className="flex items-center gap-2 text-sm text-red-400 hover:text-red-300 transition-colors"
+          className="flex items-center gap-2 text-sm text-red-400/70 hover:text-red-400 transition-colors"
         >
           <Trash2 size={14} />
           Remove device

@@ -66,9 +66,9 @@ export default function OtaManager() {
         The device will download the firmware from your PC and reboot.
       </p>
 
-      <div className="space-y-4">
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 space-y-5">
         <div>
-          <label className="block text-sm text-zinc-400 mb-1.5">
+          <label className="block text-sm font-medium text-zinc-300 mb-2">
             Target Device
           </label>
           <select
@@ -94,7 +94,7 @@ export default function OtaManager() {
         </div>
 
         <div>
-          <label className="block text-sm text-zinc-400 mb-1.5">
+          <label className="block text-sm font-medium text-zinc-300 mb-2">
             Firmware File (.bin)
           </label>
           <div className="flex gap-2">

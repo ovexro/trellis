@@ -92,76 +92,82 @@ export default function SerialMonitor() {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-3 flex-wrap">
-        <select
-          value={selectedPort}
-          onChange={(e) => setSelectedPort(e.target.value)}
-          disabled={connected}
-          className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300 min-w-[180px]"
-        >
-          {ports.length === 0 && <option>No ports found</option>}
-          {ports.map((p) => (
-            <option key={p.name} value={p.name}>
-              {p.name} ({p.port_type})
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={baudRate}
-          onChange={(e) => setBaudRate(Number(e.target.value))}
-          disabled={connected}
-          className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300"
-        >
-          {[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600].map(
-            (b) => (
-              <option key={b} value={b}>
-                {b}
+      <div className="flex items-center gap-2 mb-3">
+        {/* Connection group */}
+        <div className="flex items-center gap-1.5 bg-zinc-900 rounded-xl p-1 border border-zinc-800/50">
+          <select
+            value={selectedPort}
+            onChange={(e) => setSelectedPort(e.target.value)}
+            disabled={connected}
+            className="bg-zinc-800 border-none rounded-lg px-3 py-1.5 text-sm text-zinc-300 min-w-[160px]"
+          >
+            {ports.length === 0 && <option>No ports found</option>}
+            {ports.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name} ({p.port_type})
               </option>
-            ),
-          )}
-        </select>
+            ))}
+          </select>
 
-        <button
-          onClick={toggleConnection}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            connected
-              ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
-              : "bg-trellis-500 text-white hover:bg-trellis-600"
-          }`}
-        >
-          <PlugZap size={14} />
-          {connected ? "Disconnect" : "Connect"}
-        </button>
+          <select
+            value={baudRate}
+            onChange={(e) => setBaudRate(Number(e.target.value))}
+            disabled={connected}
+            className="bg-zinc-800 border-none rounded-lg px-3 py-1.5 text-sm text-zinc-300 w-24"
+          >
+            {[9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600].map(
+              (b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ),
+            )}
+          </select>
+
+          <button
+            onClick={toggleConnection}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              connected
+                ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
+                : "bg-trellis-500 text-white hover:bg-trellis-600"
+            }`}
+          >
+            <PlugZap size={14} />
+            {connected ? "Disconnect" : "Connect"}
+          </button>
+
+          <button
+            onClick={refreshPorts}
+            disabled={connected}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors disabled:opacity-30"
+            title="Refresh ports"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
 
         <div className="flex-1" />
 
-        <button
-          onClick={refreshPorts}
-          disabled={connected}
-          className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors disabled:opacity-30"
-          title="Refresh ports"
-        >
-          <RefreshCw size={14} />
-        </button>
+        {/* Actions group */}
+        <div className="flex items-center gap-0.5 bg-zinc-900 rounded-xl p-1 border border-zinc-800/50">
+          <button
+            onClick={copyOutput}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+            title="Copy output"
+          >
+            <Copy size={14} />
+          </button>
 
-        <button
-          onClick={copyOutput}
-          className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-          title="Copy output"
-        >
-          <Copy size={14} />
-        </button>
+          <button
+            onClick={clearOutput}
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+            title="Clear output"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
 
-        <button
-          onClick={clearOutput}
-          className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-          title="Clear output"
-        >
-          <Trash2 size={14} />
-        </button>
-
-        <label className="flex items-center gap-1.5 text-xs text-zinc-500">
+        <label className="flex items-center gap-1.5 text-xs text-zinc-500 ml-1">
           <input
             type="checkbox"
             checked={autoScroll}
