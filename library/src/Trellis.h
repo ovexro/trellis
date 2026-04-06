@@ -24,6 +24,7 @@
 #include "TrellisDiscovery.h"
 #include "TrellisTelemetry.h"
 #include "TrellisOTA.h"
+#include "TrellisProvisioning.h"
 
 #define TRELLIS_MAX_CAPABILITIES 16
 #define TRELLIS_DEFAULT_PORT 8080
@@ -33,8 +34,9 @@ class Trellis {
 public:
   Trellis(const char* name, uint16_t port = TRELLIS_DEFAULT_PORT);
 
-  // WiFi
+  // WiFi — choose one:
   bool begin(const char* ssid, const char* password, unsigned long timeout_ms = 15000);
+  bool beginAutoConnect(unsigned long timeout_ms = 15000); // Uses stored creds or starts provisioning AP
 
   // Main loop — call in loop()
   void loop();
@@ -92,6 +94,7 @@ private:
   TrellisWebServer* _webServer;
   TrellisDiscovery* _discovery;
   TrellisTelemetry _telemetry;
+  TrellisProvisioning* _provisioning;
 
   unsigned long _lastBroadcast;
   unsigned long _lastHeartbeat;

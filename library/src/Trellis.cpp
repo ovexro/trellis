@@ -8,6 +8,7 @@ Trellis::Trellis(const char* name, uint16_t port)
     _commandCallback(nullptr),
     _webServer(nullptr),
     _discovery(nullptr),
+    _provisioning(nullptr),
     _lastBroadcast(0),
     _lastHeartbeat(0) {
   memset(_capabilities, 0, sizeof(_capabilities));
@@ -30,6 +31,30 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
   }
 
   Serial.printf("\n[Trellis] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  // Start mDNS
+  _discovery = new TrellisDiscovery();
+  _discovery->begin(_name, _port);
+
+  // Start web server + WebSocket
+  _webServer = new TrellisWebServer(this);
+  _webServer->begin(_port);
+
+  Serial.printf("[Trellis] %s ready at http://%s:%d\n",
+    _name, WiFi.localIP().toString().c_str(), _port);
+
+  return true;
+}
+
+bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
+  Serial.begin(115200);
+
+  _provisioning = new TrellisProvisioning(_name);
+
+  if (!_provisioning->autoConnect(timeout_ms)) {
+    Serial.println("[Trellis] Auto-connect failed");
+    return false;
+  }
 
   // Start mDNS
   _discovery = new TrellisDiscovery();
