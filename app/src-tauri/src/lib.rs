@@ -3,6 +3,7 @@ mod connection;
 mod db;
 mod device;
 mod discovery;
+mod ota;
 mod serial;
 
 use commands::*;
@@ -38,6 +39,8 @@ pub fn run() {
             close_serial,
             send_serial,
             start_ota,
+            store_metric,
+            get_metrics,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

@@ -97,6 +97,16 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
             if (d.id !== device_id) return d;
 
             if (event_type === "update" && payload.id) {
+              // Store sensor metrics in DB for charts
+              const cap = d.capabilities.find((c) => c.id === payload.id);
+              if (cap?.type === "sensor" && typeof payload.value === "number") {
+                invoke("store_metric", {
+                  deviceId: device_id,
+                  metricId: payload.id,
+                  value: payload.value,
+                }).catch(() => {}); // Fire and forget
+              }
+
               return {
                 ...d,
                 capabilities: d.capabilities.map((c) =>

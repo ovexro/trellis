@@ -6,6 +6,7 @@ import Switch from "@/components/controls/Switch";
 import Slider from "@/components/controls/Slider";
 import Sensor from "@/components/controls/Sensor";
 import ColorPicker from "@/components/controls/ColorPicker";
+import MetricChart from "@/components/charts/MetricChart";
 import type { Capability } from "@/lib/types";
 
 export default function DeviceDetail() {
@@ -154,6 +155,28 @@ export default function DeviceDetail() {
       <div className="space-y-2">
         {device.capabilities.map(renderControl)}
       </div>
+
+      {/* Sensor Charts */}
+      {device.capabilities.filter((c) => c.type === "sensor").length > 0 && (
+        <>
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3 mt-8">
+            Charts
+          </h2>
+          <div className="space-y-3">
+            {device.capabilities
+              .filter((c) => c.type === "sensor")
+              .map((cap) => (
+                <MetricChart
+                  key={cap.id}
+                  deviceId={device.id}
+                  metricId={cap.id}
+                  label={cap.label}
+                  unit={cap.unit}
+                />
+              ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 use crate::connection::ConnectionManager;
+use crate::db::{Database, MetricPoint};
 use crate::device::Device;
 use crate::discovery::Discovery;
+use crate::ota;
 use crate::serial::{SerialManager, SerialPortInfo};
 use serde_json::Value;
 use std::sync::Arc;
@@ -74,10 +76,50 @@ pub fn send_serial(state: State<'_, AppState>, port: String, data: String) -> Re
 
 #[tauri::command]
 pub async fn start_ota(
-    _ip: String,
-    _port: u16,
-    _firmware_path: String,
+    state: State<'_, AppState>,
+    device_id: String,
+    ip: String,
+    port: u16,
+    firmware_path: String,
 ) -> Result<(), String> {
-    // TODO: Batch 3
-    Ok(())
+    let conn_mgr = state.connection_manager.clone();
+    let ws_port = port + 1;
+
+    tokio::task::spawn_blocking(move || {
+        // Start local HTTP server with the firmware file
+        let (url, _stop_flag) = ota::serve_firmware(&firmware_path)?;
+
+        // Send OTA command to device via WebSocket
+        let ota_cmd = serde_json::json!({
+            "command": "ota",
+            "url": url
+        });
+        let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
+        conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
+
+        log::info!("[OTA] Triggered update for device {} from {}", device_id, url);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub fn store_metric(
+    db: State<'_, Database>,
+    device_id: String,
+    metric_id: String,
+    value: f64,
+) -> Result<(), String> {
+    db.store_metric(&device_id, &metric_id, value)
+}
+
+#[tauri::command]
+pub fn get_metrics(
+    db: State<'_, Database>,
+    device_id: String,
+    metric_id: String,
+    hours: u32,
+) -> Result<Vec<MetricPoint>, String> {
+    db.get_metrics(&device_id, &metric_id, hours)
 }
