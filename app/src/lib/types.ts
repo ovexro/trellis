@@ -31,6 +31,8 @@ export interface Device {
 export interface SerialPortInfo {
   name: string;
   port_type: string;
+  vid?: number;
+  pid?: number;
 }
 
 export interface WsCommand {

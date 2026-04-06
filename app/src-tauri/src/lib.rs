@@ -8,6 +8,7 @@ mod serial;
 use commands::*;
 use connection::ConnectionManager;
 use discovery::Discovery;
+use serial::SerialManager;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -17,10 +18,12 @@ pub fn run() {
 
     let connection_manager = Arc::new(ConnectionManager::new());
     let discovery = Arc::new(Discovery::new(connection_manager.clone()));
+    let serial_manager = Arc::new(SerialManager::new());
 
     let app_state = AppState {
         discovery: discovery.clone(),
         connection_manager: connection_manager.clone(),
+        serial_manager,
     };
 
     tauri::Builder::default()

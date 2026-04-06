@@ -1,14 +1,15 @@
 use crate::connection::ConnectionManager;
 use crate::device::Device;
 use crate::discovery::Discovery;
-use crate::serial;
+use crate::serial::{SerialManager, SerialPortInfo};
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 pub struct AppState {
     pub discovery: Arc<Discovery>,
     pub connection_manager: Arc<ConnectionManager>,
+    pub serial_manager: Arc<SerialManager>,
 }
 
 #[tauri::command]
@@ -47,30 +48,28 @@ pub async fn send_command(
 }
 
 #[tauri::command]
-pub fn list_serial_ports() -> Result<Vec<serial::SerialPortInfo>, String> {
-    Ok(serial::list_ports())
+pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
+    Ok(SerialManager::list_ports())
 }
 
 #[tauri::command]
 pub fn open_serial(
-    _app_handle: AppHandle,
-    _port: String,
-    _baud: u32,
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    port: String,
+    baud: u32,
 ) -> Result<(), String> {
-    // TODO: Batch 2
-    Ok(())
+    state.serial_manager.open(&port, baud, app_handle)
 }
 
 #[tauri::command]
-pub fn close_serial(_port: String) -> Result<(), String> {
-    // TODO: Batch 2
-    Ok(())
+pub fn close_serial(state: State<'_, AppState>, port: String) -> Result<(), String> {
+    state.serial_manager.close(&port)
 }
 
 #[tauri::command]
-pub fn send_serial(_port: String, _data: String) -> Result<(), String> {
-    // TODO: Batch 2
-    Ok(())
+pub fn send_serial(state: State<'_, AppState>, port: String, data: String) -> Result<(), String> {
+    state.serial_manager.write(&port, &data)
 }
 
 #[tauri::command]
