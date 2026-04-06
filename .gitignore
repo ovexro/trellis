@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Rust
+target/
+
+# Build output
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / Environment
+.env
+.env.*
+*.pem
+*.key
+*.p12
+secrets/
+
+# Tauri
+app/src-tauri/target/
+app/src-tauri/WixTools/
+app/src-tauri/gen/
+
+# Arduino / PlatformIO
+library/.pio/
+library/build/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# SQLite databases (may contain user data)
+*.db
+*.sqlite
+*.sqlite3
+
+# Claude Code (local only)
+.claude/

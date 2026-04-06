@@ -1,0 +1,47 @@
+{
+  "name": "Trellis",
+  "version": "0.1.0",
+  "description": "Self-describing device control library for ESP32 and Pico W. Devices declare capabilities, desktop app auto-generates controls.",
+  "keywords": "iot,esp32,pico,dashboard,control,mdns,websocket,ota",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ovexro/trellis.git"
+  },
+  "authors": [
+    {
+      "name": "Joshua-Ovidiu Drobota",
+      "email": "nubiraorg@gmail.com",
+      "url": "https://github.com/ovexro"
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/ovexro/trellis",
+  "frameworks": "arduino",
+  "platforms": ["espressif32", "raspberrypi"],
+  "dependencies": {
+    "bblanchon/ArduinoJson": "^7.0.0",
+    "links2004/WebSockets": "^2.4.0"
+  },
+  "examples": [
+    {
+      "name": "BasicSwitch",
+      "base": "examples/BasicSwitch",
+      "files": ["BasicSwitch.ino"]
+    },
+    {
+      "name": "TemperatureSensor",
+      "base": "examples/TemperatureSensor",
+      "files": ["TemperatureSensor.ino"]
+    },
+    {
+      "name": "GreenhouseController",
+      "base": "examples/GreenhouseController",
+      "files": ["GreenhouseController.ino"]
+    },
+    {
+      "name": "RGBLed",
+      "base": "examples/RGBLed",
+      "files": ["RGBLed.ino"]
+    }
+  ]
+}
