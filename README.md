@@ -10,6 +10,8 @@ Trellis is a desktop app + microcontroller library that makes your boards feel l
 >
 > Read the full story: **[What is Trellis?](ABOUT.md)** | **[User Guide](docs/guide.md)**
 
+![Dashboard — device card with live status](screenshots/dashboard.png)
+
 ## How it works
 
 1. Drop the Trellis library into your Arduino sketch
@@ -81,6 +83,14 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 - **Device logging** — logInfo()/logWarn()/logError() sent to desktop app
 - **OTA ready** — firmware updates from the desktop app (ESP32)
 - **System metrics** — RSSI, free heap, uptime reported automatically
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Device Detail — controls, charts, system stats](screenshots/device-detail.png) | ![Firmware Generator + Quick Flash](screenshots/new-device.png) |
+| ![Automation — schedules, rules, webhooks](screenshots/automation.png) | ![OTA Firmware Updates — drag & drop](screenshots/ota.png) |
+| ![Settings — config, notifications, diagnostics](screenshots/settings.png) | ![Serial Monitor](screenshots/serial.png) |
 
 ## Architecture
 
