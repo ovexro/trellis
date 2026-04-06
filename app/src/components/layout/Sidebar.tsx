@@ -71,7 +71,7 @@ export default function Sidebar() {
           onClick={() => setShowAbout(true)}
           className="px-2 py-0.5 bg-zinc-800/80 hover:bg-zinc-700/80 rounded-full text-[11px] text-zinc-500 hover:text-zinc-400 transition-colors"
         >
-          v0.1.4
+          v0.1.5
         </button>
       </div>
 
@@ -85,7 +85,7 @@ export default function Sidebar() {
                 </div>
                 <div>
                   <h2 className="text-lg font-bold text-zinc-100">Trellis</h2>
-                  <p className="text-xs text-zinc-500">v0.1.4</p>
+                  <p className="text-xs text-zinc-500">v0.1.5</p>
                 </div>
               </div>
               <button onClick={() => setShowAbout(false)} className="text-zinc-500 hover:text-zinc-300 transition-colors">

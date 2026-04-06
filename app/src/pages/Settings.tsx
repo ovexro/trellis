@@ -100,7 +100,7 @@ export default function Settings() {
       const scenes = localStorage.getItem("trellis-scenes");
 
       const config = {
-        version: "0.1.4",
+        version: "0.1.5",
         exported_at: new Date().toISOString(),
         devices: savedDevices,
         scenes: scenes ? JSON.parse(scenes) : [],
@@ -441,7 +441,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.1.4</p>
+            <p>Trellis v0.1.5</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">
