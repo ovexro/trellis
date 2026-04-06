@@ -259,7 +259,7 @@ else
                 USE_APPIMAGE=true
             else
                 info "Downloading Trellis .deb package..."
-                $DOWNLOADER "$DEB_URL" > "$TMP_DIR/trellis.deb"
+                curl -fsSL -o "$TMP_DIR/trellis.deb" "$DEB_URL"
                 sudo dpkg -i "$TMP_DIR/trellis.deb" 2>/dev/null || sudo apt-get install -f -y -qq
                 ok "Trellis installed via .deb"
             fi
@@ -271,7 +271,7 @@ else
                 USE_APPIMAGE=true
             else
                 info "Downloading Trellis .rpm package..."
-                $DOWNLOADER "$RPM_URL" > "$TMP_DIR/trellis.rpm"
+                curl -fsSL -o "$TMP_DIR/trellis.rpm" "$RPM_URL"
                 sudo rpm -i "$TMP_DIR/trellis.rpm" 2>/dev/null || sudo dnf install -y "$TMP_DIR/trellis.rpm"
                 ok "Trellis installed via .rpm"
             fi
