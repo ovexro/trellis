@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { TerminalSquare } from "lucide-react";
+import { TerminalSquare, AlertTriangle } from "lucide-react";
 
 export default function TerminalPage() {
   const [history, setHistory] = useState<Array<{ cmd: string; output: string }>>([]);
@@ -71,6 +71,13 @@ export default function TerminalPage() {
         <h1 className="text-lg font-bold text-zinc-100">Terminal</h1>
         <p className="text-xs text-zinc-600 ml-2">
           Run shell commands — arduino-cli, esptool, or any Linux command
+        </p>
+      </div>
+
+      <div className="flex items-start gap-2 mb-3 px-3 py-2 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+        <AlertTriangle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+        <p className="text-xs text-amber-300/70">
+          Commands run with your user permissions. Do not paste commands from untrusted sources.
         </p>
       </div>
 

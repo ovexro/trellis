@@ -33,7 +33,9 @@ export default function DeviceAlerts({ deviceId, sensorIds }: DeviceAlertsProps)
     try {
       const result = await invoke<AlertRule[]>("get_alerts", { deviceId });
       setAlerts(result);
-    } catch {}
+    } catch (err) {
+      console.error("Failed to load alerts:", err);
+    }
   };
 
   const createAlert = async () => {
@@ -57,17 +59,22 @@ export default function DeviceAlerts({ deviceId, sensorIds }: DeviceAlertsProps)
   };
 
   const deleteAlert = async (alertId: number) => {
+    if (!confirm("Delete this alert rule?")) return;
     try {
       await invoke("delete_alert", { alertId });
-      loadAlerts();
-    } catch {}
+      await loadAlerts();
+    } catch (err) {
+      console.error("Failed to delete alert:", err);
+    }
   };
 
   const toggleAlert = async (alertId: number, enabled: boolean) => {
     try {
       await invoke("toggle_alert", { alertId, enabled });
-      loadAlerts();
-    } catch {}
+      await loadAlerts();
+    } catch (err) {
+      console.error("Failed to toggle alert:", err);
+    }
   };
 
   return (

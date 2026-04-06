@@ -92,6 +92,7 @@ pub fn run() {
                     std::thread::sleep(std::time::Duration::from_secs(3600));
                     if let Some(db) = cleanup_handle.try_state::<db::Database>() {
                         let _ = db.cleanup_old_metrics(30);
+                        let _ = db.cleanup_old_logs(30);
                     }
                 }
             });

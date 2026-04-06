@@ -104,7 +104,9 @@ export default function MetricChart({
                   a.download = `${metricId}_${hours}h.csv`;
                   a.click();
                   URL.revokeObjectURL(url);
-                } catch {}
+                } catch (err) {
+                  console.error("Failed to export CSV:", err);
+                }
               }}
               className="p-1 rounded text-zinc-600 hover:text-zinc-400 transition-colors ml-1"
               title="Export CSV"

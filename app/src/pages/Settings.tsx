@@ -11,7 +11,25 @@ export default function Settings() {
 
   const exportConfig = async () => {
     try {
-      const savedDevices = await invoke("get_saved_devices");
+      const [savedDevices, schedules, rules, webhooks, templates] = await Promise.all([
+        invoke("get_saved_devices"),
+        invoke("get_schedules"),
+        invoke("get_rules"),
+        invoke("get_webhooks"),
+        invoke("get_templates"),
+      ]);
+
+      // Collect alerts for all known devices
+      const allAlerts: unknown[] = [];
+      for (const d of devices) {
+        try {
+          const alerts = await invoke("get_alerts", { deviceId: d.id });
+          if (Array.isArray(alerts)) allAlerts.push(...alerts);
+        } catch {
+          // Device may not have alerts
+        }
+      }
+
       const scenes = localStorage.getItem("trellis-scenes");
 
       const config = {
@@ -19,6 +37,11 @@ export default function Settings() {
         exported_at: new Date().toISOString(),
         devices: savedDevices,
         scenes: scenes ? JSON.parse(scenes) : [],
+        schedules,
+        rules,
+        webhooks,
+        alerts: allAlerts,
+        templates,
         device_count: devices.length,
       };
 
@@ -28,7 +51,6 @@ export default function Settings() {
       });
 
       if (filePath) {
-        // Write via Tauri
         const { writeTextFile } = await import("@tauri-apps/plugin-fs");
         await writeTextFile(filePath, JSON.stringify(config, null, 2));
         setExportStatus("Configuration exported successfully");
@@ -51,8 +73,11 @@ export default function Settings() {
         const content = await readTextFile(filePath);
         const config = JSON.parse(content);
 
+        let imported = [];
+
         if (config.scenes) {
           localStorage.setItem("trellis-scenes", JSON.stringify(config.scenes));
+          imported.push(`${config.scenes.length} scenes`);
         }
 
         // Restore saved devices (nicknames, tags)
@@ -65,12 +90,87 @@ export default function Settings() {
               await invoke("set_device_tags", { deviceId: dev.id, tags: dev.tags });
             }
           }
+          imported.push(`${config.devices.length} devices`);
         }
 
-        setImportStatus(
-          `Imported: ${config.scenes?.length || 0} scenes, ${config.devices?.length || 0} saved devices`,
-        );
-        setTimeout(() => setImportStatus(""), 3000);
+        // Restore schedules
+        if (config.schedules && Array.isArray(config.schedules)) {
+          for (const s of config.schedules) {
+            try {
+              await invoke("create_schedule", {
+                deviceId: s.device_id, capabilityId: s.capability_id,
+                value: s.value, cron: s.cron, label: s.label,
+              });
+            } catch (err) {
+              console.error("Failed to import schedule:", err);
+            }
+          }
+          imported.push(`${config.schedules.length} schedules`);
+        }
+
+        // Restore rules
+        if (config.rules && Array.isArray(config.rules)) {
+          for (const r of config.rules) {
+            try {
+              await invoke("create_rule", {
+                sourceDeviceId: r.source_device_id, sourceMetricId: r.source_metric_id,
+                condition: r.condition, threshold: r.threshold,
+                targetDeviceId: r.target_device_id, targetCapabilityId: r.target_capability_id,
+                targetValue: r.target_value, label: r.label,
+              });
+            } catch (err) {
+              console.error("Failed to import rule:", err);
+            }
+          }
+          imported.push(`${config.rules.length} rules`);
+        }
+
+        // Restore webhooks
+        if (config.webhooks && Array.isArray(config.webhooks)) {
+          for (const w of config.webhooks) {
+            try {
+              await invoke("create_webhook", {
+                eventType: w.event_type, deviceId: w.device_id || null,
+                url: w.url, label: w.label,
+              });
+            } catch (err) {
+              console.error("Failed to import webhook:", err);
+            }
+          }
+          imported.push(`${config.webhooks.length} webhooks`);
+        }
+
+        // Restore alerts
+        if (config.alerts && Array.isArray(config.alerts)) {
+          for (const a of config.alerts) {
+            try {
+              await invoke("create_alert", {
+                deviceId: a.device_id, metricId: a.metric_id,
+                condition: a.condition, threshold: a.threshold, label: a.label,
+              });
+            } catch (err) {
+              console.error("Failed to import alert:", err);
+            }
+          }
+          imported.push(`${config.alerts.length} alerts`);
+        }
+
+        // Restore templates
+        if (config.templates && Array.isArray(config.templates)) {
+          for (const t of config.templates) {
+            try {
+              await invoke("create_template", {
+                name: t.name, description: t.description, capabilities: t.capabilities,
+              });
+            } catch (err) {
+              console.error("Failed to import template:", err);
+            }
+          }
+          imported.push(`${config.templates.length} templates`);
+        }
+
+        setImportStatus(`Imported: ${imported.join(", ")}`);
+        setTimeout(() => setImportStatus(""), 5000);
       }
     } catch (err) {
       setImportStatus(`Import failed: ${err}`);
@@ -104,17 +204,17 @@ export default function Settings() {
             </button>
           </div>
           {exportStatus && (
-            <p className="text-xs text-trellis-400 mt-2 flex items-center gap-1">
+            <p className={`text-xs mt-2 flex items-center gap-1 ${exportStatus.startsWith("Export failed") ? "text-red-400" : "text-trellis-400"}`}>
               <Check size={12} /> {exportStatus}
             </p>
           )}
           {importStatus && (
-            <p className="text-xs text-trellis-400 mt-2 flex items-center gap-1">
+            <p className={`text-xs mt-2 flex items-center gap-1 ${importStatus.startsWith("Import failed") ? "text-red-400" : "text-trellis-400"}`}>
               <Check size={12} /> {importStatus}
             </p>
           )}
           <p className="text-xs text-zinc-600 mt-2">
-            Export saves device nicknames, tags, scenes, and alert rules.
+            Export saves device nicknames, tags, scenes, schedules, rules, webhooks, alerts, and templates.
             Import on a new PC to restore your setup.
           </p>
         </div>
@@ -167,7 +267,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.1.2</p>
+            <p>Trellis v0.1.3</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">

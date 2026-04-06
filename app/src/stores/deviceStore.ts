@@ -52,7 +52,9 @@ async function checkAlerts(deviceId: string, metricId: string, value: number, de
         });
       }
     }
-  } catch {}
+  } catch (err) {
+    console.error("Failed to check alerts:", err);
+  }
 }
 
 // Check conditional rules and execute actions
@@ -103,9 +105,11 @@ async function checkRules(deviceId: string, metricId: string, value: number, dev
         ip: target.ip,
         port: target.port,
         command: { command: "set", id: rule.target_capability_id, value: val },
-      }).catch(() => {});
+      }).catch((err) => console.error("Rule action failed:", err));
     }
-  } catch {}
+  } catch (err) {
+    console.error("Failed to check rules:", err);
+  }
 }
 
 // Fire webhooks for events
@@ -117,13 +121,29 @@ async function fireWebhooks(eventType: string, deviceId: string, data: Record<st
       if (wh.event_type !== eventType) continue;
       if (wh.device_id && wh.device_id !== deviceId) continue;
 
+      try {
+        const u = new URL(wh.url);
+        if (u.protocol !== "http:" && u.protocol !== "https:") continue;
+      } catch {
+        console.warn("Webhook has invalid URL:", wh.url);
+        continue;
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+
       fetch(wh.url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event: eventType, device_id: deviceId, ...data, timestamp: new Date().toISOString() }),
-      }).catch(() => {});
+        signal: controller.signal,
+      })
+        .catch((err) => console.warn(`Webhook to ${wh.url.slice(0, 50)} failed:`, err.message))
+        .finally(() => clearTimeout(timeout));
     }
-  } catch {}
+  } catch (err) {
+    console.error("Failed to fire webhooks:", err);
+  }
 }
 
 interface DeviceState {
@@ -209,7 +229,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           device.nickname = saved.nickname || undefined;
           device.tags = saved.tags || undefined;
         }
-      } catch {}
+      } catch (err) {
+        console.error("Failed to load saved device:", err);
+      }
 
       // Fire webhooks for device state changes
       if (event === "lost") {
@@ -258,7 +280,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
                   deviceId: device_id,
                   metricId: payload.id,
                   value: payload.value,
-                }).catch(() => {});
+                }).catch((err: unknown) => console.error("Failed to store metric:", err));
                 checkAlerts(device_id, payload.id, payload.value, d.name);
                 checkRules(device_id, payload.id, payload.value, get().devices);
                 fireWebhooks("sensor_update", device_id, { metric: payload.id, value: payload.value });
@@ -275,9 +297,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
             if (event_type === "heartbeat" && payload.system) {
               // Store system metrics for historical charts
               const sys = payload.system as Device["system"];
-              invoke("store_metric", { deviceId: device_id, metricId: "_rssi", value: sys.rssi }).catch(() => {});
-              invoke("store_metric", { deviceId: device_id, metricId: "_heap", value: sys.heap_free }).catch(() => {});
-              invoke("store_metric", { deviceId: device_id, metricId: "_uptime", value: sys.uptime_s }).catch(() => {});
+              invoke("store_metric", { deviceId: device_id, metricId: "_rssi", value: sys.rssi }).catch((err: unknown) => console.error("Store _rssi failed:", err));
+              invoke("store_metric", { deviceId: device_id, metricId: "_heap", value: sys.heap_free }).catch((err: unknown) => console.error("Store _heap failed:", err));
+              invoke("store_metric", { deviceId: device_id, metricId: "_uptime", value: sys.uptime_s }).catch((err: unknown) => console.error("Store _uptime failed:", err));
 
               return {
                 ...d,
@@ -319,7 +341,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           return { devices: [...state.devices, ...newDevices] };
         });
       }
-    }).catch(() => {});
+    }).catch((err) => console.error("Failed to load saved devices:", err));
 
     // Load live device list
     get().refreshDevices();

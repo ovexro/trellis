@@ -38,7 +38,7 @@ export default function DeviceLogs({ deviceId }: DeviceLogsProps) {
           deviceId,
           severity: entry.severity,
           message: entry.message,
-        }).catch(() => {});
+        }).catch((err: unknown) => console.error("Failed to store log:", err));
 
         setLogs((prev) => [...prev.slice(-499), entry]);
       },
@@ -54,7 +54,9 @@ export default function DeviceLogs({ deviceId }: DeviceLogsProps) {
         limit: 200,
       });
       setLogs(entries);
-    } catch {}
+    } catch (err) {
+      console.error("Failed to load logs:", err);
+    }
   };
 
   const filteredLogs = filter === "all"

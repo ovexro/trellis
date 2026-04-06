@@ -53,6 +53,7 @@ export default function Scenes() {
   };
 
   const deleteScene = (index: number) => {
+    if (!confirm(`Delete scene "${scenes[index].name}"? This cannot be undone.`)) return;
     saveScenes(scenes.filter((_, i) => i !== index));
   };
 

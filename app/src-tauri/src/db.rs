@@ -217,6 +217,18 @@ impl Database {
         Ok(deleted)
     }
 
+    pub fn cleanup_old_logs(&self, days: u32) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+        let offset = format!("-{} days", days);
+        let deleted = conn
+            .execute(
+                "DELETE FROM device_logs WHERE timestamp < datetime('now', ?1)",
+                rusqlite::params![offset],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(deleted)
+    }
+
     // ─── Alert rules ─────────────────────────────────────────────────────
 
     pub fn create_alert(

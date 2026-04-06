@@ -31,7 +31,9 @@ export default function DeviceNickname({ deviceId, originalName }: DeviceNicknam
         setTags(saved.tags || "");
         if (saved.nickname) setNickname(saved.nickname);
       }
-    } catch {}
+    } catch (err) {
+      console.error("Failed to load saved device:", err);
+    }
   };
 
   const saveNickname = async () => {

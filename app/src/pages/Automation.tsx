@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook } from "lucide-react";
+import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface Schedule {
@@ -44,6 +44,8 @@ export default function Automation() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [rules, setRules] = useState<Rule[]>([]);
   const [webhooks, setWebhooks] = useState<WebhookDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   // Schedule form
   const [showScheduleForm, setShowScheduleForm] = useState(false);
@@ -70,6 +72,7 @@ export default function Automation() {
   const [wDevice, setWDevice] = useState("");
   const [wUrl, setWUrl] = useState("");
   const [wLabel, setWLabel] = useState("");
+  const [wError, setWError] = useState("");
 
   const onlineDevices = devices.filter((d) => d.online);
 
@@ -78,6 +81,7 @@ export default function Automation() {
   }, []);
 
   const loadAll = async () => {
+    setLoading(true);
     try {
       const [s, r, w] = await Promise.all([
         invoke<Schedule[]>("get_schedules"),
@@ -87,42 +91,106 @@ export default function Automation() {
       setSchedules(s);
       setRules(r);
       setWebhooks(w);
-    } catch {}
+    } catch (err) {
+      console.error("Failed to load automation data:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const createSchedule = async () => {
     if (!sDevice || !sCap || !sValue || !sLabel) return;
-    await invoke("create_schedule", {
-      deviceId: sDevice, capabilityId: sCap, value: sValue, cron: sCron, label: sLabel,
-    });
-    setShowScheduleForm(false);
-    setSLabel("");
-    setSValue("");
-    loadAll();
+    setActionLoading("create-schedule");
+    try {
+      await invoke("create_schedule", {
+        deviceId: sDevice, capabilityId: sCap, value: sValue, cron: sCron, label: sLabel,
+      });
+      setShowScheduleForm(false);
+      setSLabel("");
+      setSValue("");
+      await loadAll();
+    } catch (err) {
+      console.error("Failed to create schedule:", err);
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const createRule = async () => {
     if (!rSrcDevice || !rSrcMetric || !rThreshold || !rTgtDevice || !rTgtCap || !rLabel) return;
-    await invoke("create_rule", {
-      sourceDeviceId: rSrcDevice, sourceMetricId: rSrcMetric,
-      condition: rCondition, threshold: parseFloat(rThreshold),
-      targetDeviceId: rTgtDevice, targetCapabilityId: rTgtCap,
-      targetValue: rTgtValue, label: rLabel,
-    });
-    setShowRuleForm(false);
-    setRLabel("");
-    loadAll();
+    setActionLoading("create-rule");
+    try {
+      await invoke("create_rule", {
+        sourceDeviceId: rSrcDevice, sourceMetricId: rSrcMetric,
+        condition: rCondition, threshold: parseFloat(rThreshold),
+        targetDeviceId: rTgtDevice, targetCapabilityId: rTgtCap,
+        targetValue: rTgtValue, label: rLabel,
+      });
+      setShowRuleForm(false);
+      setRLabel("");
+      await loadAll();
+    } catch (err) {
+      console.error("Failed to create rule:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const isValidUrl = (url: string): boolean => {
+    try {
+      const u = new URL(url);
+      return u.protocol === "http:" || u.protocol === "https:";
+    } catch {
+      return false;
+    }
   };
 
   const createWebhook = async () => {
     if (!wUrl || !wLabel) return;
-    await invoke("create_webhook", {
-      eventType: wEvent, deviceId: wDevice || null, url: wUrl, label: wLabel,
-    });
-    setShowWebhookForm(false);
-    setWLabel("");
-    setWUrl("");
-    loadAll();
+    if (!isValidUrl(wUrl)) {
+      setWError("Enter a valid HTTP or HTTPS URL");
+      return;
+    }
+    setWError("");
+    setActionLoading("create-webhook");
+    try {
+      await invoke("create_webhook", {
+        eventType: wEvent, deviceId: wDevice || null, url: wUrl, label: wLabel,
+      });
+      setShowWebhookForm(false);
+      setWLabel("");
+      setWUrl("");
+      await loadAll();
+    } catch (err) {
+      console.error("Failed to create webhook:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleToggle = async (type: string, id: number, enabled: boolean) => {
+    setActionLoading(`toggle-${type}-${id}`);
+    try {
+      await invoke(`toggle_${type}`, { id, enabled: !enabled });
+      await loadAll();
+    } catch (err) {
+      console.error(`Failed to toggle ${type}:`, err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDelete = async (type: string, id: number, label: string) => {
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return;
+    setActionLoading(`delete-${type}-${id}`);
+    try {
+      await invoke(`delete_${type}`, { id });
+      await loadAll();
+    } catch (err) {
+      console.error(`Failed to delete ${type}:`, err);
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const tabs: { id: Tab; icon: typeof Clock; label: string; count: number }[] = [
@@ -132,6 +200,14 @@ export default function Automation() {
   ];
 
   const selectedDevice = (id: string) => devices.find((d) => d.id === id);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 size={24} className="animate-spin text-zinc-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-3xl">
@@ -197,7 +273,10 @@ export default function Automation() {
               </div>
               <p className="text-[11px] text-zinc-600">Cron format: minute hour day month weekday. Examples: "0 6 * * *" = 6am daily, "*/5 * * * *" = every 5 min</p>
               <div className="flex gap-2">
-                <button onClick={createSchedule} className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium">Create</button>
+                <button onClick={createSchedule} disabled={actionLoading === "create-schedule"}
+                  className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">
+                  {actionLoading === "create-schedule" ? "Creating..." : "Create"}
+                </button>
                 <button onClick={() => setShowScheduleForm(false)} className="px-4 py-1.5 text-zinc-400 border border-zinc-700 rounded-lg text-xs">Cancel</button>
               </div>
             </div>
@@ -219,12 +298,14 @@ export default function Automation() {
                     {s.last_run && <p className="text-[11px] text-zinc-600 mt-0.5">Last run: {s.last_run}</p>}
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button onClick={() => { invoke("toggle_schedule", { id: s.id, enabled: !s.enabled }); loadAll(); }}
-                      className="text-zinc-500 hover:text-zinc-300">
+                    <button onClick={() => handleToggle("schedule", s.id, s.enabled)}
+                      disabled={actionLoading === `toggle-schedule-${s.id}`}
+                      className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
                       {s.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
                     </button>
-                    <button onClick={() => { invoke("delete_schedule", { id: s.id }); loadAll(); }}
-                      className="text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                    <button onClick={() => handleDelete("schedule", s.id, s.label)}
+                      disabled={actionLoading === `delete-schedule-${s.id}`}
+                      className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
                   </div>
                 </div>
               ))}
@@ -287,7 +368,10 @@ export default function Automation() {
                   className="w-24 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" />
               </div>
               <div className="flex gap-2">
-                <button onClick={createRule} className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium">Create</button>
+                <button onClick={createRule} disabled={actionLoading === "create-rule"}
+                  className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">
+                  {actionLoading === "create-rule" ? "Creating..." : "Create"}
+                </button>
                 <button onClick={() => setShowRuleForm(false)} className="px-4 py-1.5 text-zinc-400 border border-zinc-700 rounded-lg text-xs">Cancel</button>
               </div>
             </div>
@@ -311,12 +395,14 @@ export default function Automation() {
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button onClick={() => { invoke("toggle_rule", { id: r.id, enabled: !r.enabled }); loadAll(); }}
-                      className="text-zinc-500 hover:text-zinc-300">
+                    <button onClick={() => handleToggle("rule", r.id, r.enabled)}
+                      disabled={actionLoading === `toggle-rule-${r.id}`}
+                      className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
                       {r.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
                     </button>
-                    <button onClick={() => { invoke("delete_rule", { id: r.id }); loadAll(); }}
-                      className="text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                    <button onClick={() => handleDelete("rule", r.id, r.label)}
+                      disabled={actionLoading === `delete-rule-${r.id}`}
+                      className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
                   </div>
                 </div>
               ))}
@@ -353,11 +439,15 @@ export default function Automation() {
                   {devices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
                 </select>
               </div>
-              <input value={wUrl} onChange={(e) => setWUrl(e.target.value)} placeholder="https://hooks.slack.com/... or Discord webhook URL"
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 font-mono" />
+              <input value={wUrl} onChange={(e) => { setWUrl(e.target.value); setWError(""); }} placeholder="https://hooks.slack.com/... or Discord webhook URL"
+                className={`w-full bg-zinc-800 border rounded-lg px-3 py-2 text-sm text-zinc-300 font-mono ${wError ? "border-red-500/50" : "border-zinc-700"}`} />
+              {wError && <p className="text-xs text-red-400">{wError}</p>}
               <div className="flex gap-2">
-                <button onClick={createWebhook} className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium">Create</button>
-                <button onClick={() => setShowWebhookForm(false)} className="px-4 py-1.5 text-zinc-400 border border-zinc-700 rounded-lg text-xs">Cancel</button>
+                <button onClick={createWebhook} disabled={actionLoading === "create-webhook"}
+                  className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">
+                  {actionLoading === "create-webhook" ? "Creating..." : "Create"}
+                </button>
+                <button onClick={() => { setShowWebhookForm(false); setWError(""); }} className="px-4 py-1.5 text-zinc-400 border border-zinc-700 rounded-lg text-xs">Cancel</button>
               </div>
             </div>
           )}
@@ -377,12 +467,14 @@ export default function Automation() {
                     <p className="text-xs text-zinc-500 mt-0.5">{w.event_type} → <span className="font-mono">{w.url.slice(0, 50)}{w.url.length > 50 ? "..." : ""}</span></p>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <button onClick={() => { invoke("toggle_webhook", { id: w.id, enabled: !w.enabled }); loadAll(); }}
-                      className="text-zinc-500 hover:text-zinc-300">
+                    <button onClick={() => handleToggle("webhook", w.id, w.enabled)}
+                      disabled={actionLoading === `toggle-webhook-${w.id}`}
+                      className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
                       {w.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
                     </button>
-                    <button onClick={() => { invoke("delete_webhook", { id: w.id }); loadAll(); }}
-                      className="text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                    <button onClick={() => handleDelete("webhook", w.id, w.label)}
+                      disabled={actionLoading === `delete-webhook-${w.id}`}
+                      className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
                   </div>
                 </div>
               ))}
