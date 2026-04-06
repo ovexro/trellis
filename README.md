@@ -4,6 +4,12 @@
 
 Trellis is a desktop app + microcontroller library that makes your boards feel like real products. Plug in a device, it appears in the app, and you get auto-generated controls — no config files, no cloud, no YAML.
 
+> **No cloud.** No account. No subscription. Your data never leaves your network.
+> **No config.** Devices describe themselves. Controls render automatically.
+> **No complexity.** One command to install. 15 lines to integrate.
+>
+> Read the full story: **[What is Trellis?](ABOUT.md)**
+
 ## How it works
 
 1. Drop the Trellis library into your Arduino sketch
