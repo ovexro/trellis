@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
+#include "TrellisTelemetry.h"
 
 // Forward declaration
 class Trellis;
@@ -17,6 +18,7 @@ public:
   void broadcastUpdate(const char* id, float value);
   void broadcastUpdate(const char* id, bool value);
   void broadcastUpdate(const char* id, const char* value);
+  void broadcastHeartbeat(const TelemetryData& telemetry);
 
 private:
   Trellis* _trellis;

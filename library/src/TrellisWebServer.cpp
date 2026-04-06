@@ -212,3 +212,16 @@ void TrellisWebServer::broadcastUpdate(const char* id, const char* value) {
   serializeJson(doc, json);
   _ws->broadcastTXT(json);
 }
+
+void TrellisWebServer::broadcastHeartbeat(const TelemetryData& telemetry) {
+  JsonDocument doc;
+  doc["event"] = "heartbeat";
+  JsonObject sys = doc["system"].to<JsonObject>();
+  sys["rssi"] = telemetry.rssi;
+  sys["heap_free"] = telemetry.heapFree;
+  sys["uptime_s"] = telemetry.uptimeSeconds;
+  sys["chip"] = telemetry.chip;
+  String json;
+  serializeJson(doc, json);
+  _ws->broadcastTXT(json);
+}

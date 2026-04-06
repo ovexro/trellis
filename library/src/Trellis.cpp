@@ -7,7 +7,9 @@ Trellis::Trellis(const char* name, uint16_t port)
     _capCount(0),
     _commandCallback(nullptr),
     _webServer(nullptr),
-    _discovery(nullptr) {
+    _discovery(nullptr),
+    _lastBroadcast(0),
+    _lastHeartbeat(0) {
   memset(_capabilities, 0, sizeof(_capabilities));
 }
 
@@ -48,6 +50,39 @@ void Trellis::loop() {
     _webServer->loop();
   }
   _telemetry.update();
+
+  unsigned long now = millis();
+
+  // Broadcast sensor values periodically
+  if (now - _lastBroadcast >= BROADCAST_INTERVAL_MS) {
+    _lastBroadcast = now;
+    for (uint8_t i = 0; i < _capCount; i++) {
+      Capability* cap = &_capabilities[i];
+      switch (cap->type) {
+        case CapabilityType::SENSOR:
+          _webServer->broadcastUpdate(cap->id, cap->floatValue);
+          break;
+        case CapabilityType::SWITCH:
+          _webServer->broadcastUpdate(cap->id, cap->boolValue);
+          break;
+        case CapabilityType::SLIDER:
+          _webServer->broadcastUpdate(cap->id, cap->floatValue);
+          break;
+        case CapabilityType::COLOR:
+        case CapabilityType::TEXT:
+          _webServer->broadcastUpdate(cap->id, cap->stringValue);
+          break;
+      }
+    }
+  }
+
+  // Broadcast heartbeat with system telemetry
+  if (now - _lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
+    _lastHeartbeat = now;
+    if (_webServer) {
+      _webServer->broadcastHeartbeat(_telemetry.getData());
+    }
+  }
 }
 
 uint8_t Trellis::addCapability(const char* id, const char* label, CapabilityType type) {

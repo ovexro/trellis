@@ -45,4 +45,5 @@ export interface WsEvent {
   id?: string;
   value?: unknown;
   percent?: number;
+  system?: SystemInfo;
 }

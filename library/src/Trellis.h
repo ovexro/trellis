@@ -87,6 +87,11 @@ private:
   TrellisDiscovery* _discovery;
   TrellisTelemetry _telemetry;
 
+  unsigned long _lastBroadcast;
+  unsigned long _lastHeartbeat;
+  static const unsigned long BROADCAST_INTERVAL_MS = 5000;
+  static const unsigned long HEARTBEAT_INTERVAL_MS = 10000;
+
   uint8_t addCapability(const char* id, const char* label, CapabilityType type);
 };
 

@@ -32,6 +32,7 @@ export default function DeviceDetail() {
     updateCapability(device.id, capId, value);
     try {
       await invoke("send_command", {
+        deviceId: device.id,
         ip: device.ip,
         port: device.port,
         command: { command: "set", id: capId, value },

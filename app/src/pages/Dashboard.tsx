@@ -1,103 +1,67 @@
 import { useEffect, useState } from "react";
-import { Radar, Plus } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { Radar, Plus, Wifi } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import DeviceCard from "@/components/DeviceCard";
-import type { Device } from "@/lib/types";
 
 export default function Dashboard() {
-  const { devices, scanning, scan } = useDeviceStore();
+  const { devices, initEventListeners, addDeviceByIp } = useDeviceStore();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [manualIp, setManualIp] = useState("");
   const [manualPort, setManualPort] = useState("8080");
   const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState("");
 
   useEffect(() => {
-    scan();
-  }, [scan]);
+    initEventListeners();
+  }, [initEventListeners]);
 
-  const addByIp = async () => {
+  const onlineCount = devices.filter((d) => d.online).length;
+
+  const handleAdd = async () => {
     if (!manualIp.trim()) return;
     setAdding(true);
+    setAddError("");
     try {
-      await invoke<Device>("add_device_by_ip", {
-        ip: manualIp.trim(),
-        port: parseInt(manualPort),
-      });
-      // Refresh the device list from store
-      const updatedDevices = await invoke<Device[]>("get_devices");
-      useDeviceStore.setState({ devices: updatedDevices });
+      await addDeviceByIp(manualIp.trim(), parseInt(manualPort));
       setShowAddDialog(false);
       setManualIp("");
     } catch (err) {
-      console.error("Failed to add device:", err);
-      alert(`Failed to connect: ${err}`);
+      setAddError(String(err));
     } finally {
       setAdding(false);
     }
   };
 
-  if (devices.length === 0 && !scanning) {
+  if (devices.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center">
-        <Radar size={48} className="text-zinc-700 mb-4" />
+        <Radar size={48} className="text-zinc-700 mb-4 animate-pulse" />
         <h2 className="text-lg font-semibold text-zinc-300 mb-2">
-          No devices found
+          Scanning for devices...
         </h2>
         <p className="text-sm text-zinc-500 max-w-sm mb-6">
-          Make sure your ESP32 or Pico W is running the Trellis library
-          and connected to the same network.
+          Trellis is automatically discovering devices on your network.
+          You can also add a device manually by IP.
         </p>
-        <div className="flex gap-3">
-          <button
-            onClick={scan}
-            className="px-4 py-2 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors"
-          >
-            Scan Network
-          </button>
-          <button
-            onClick={() => setShowAddDialog(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
-          >
-            <Plus size={14} />
-            Add by IP
-          </button>
-        </div>
+        <button
+          onClick={() => setShowAddDialog(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
+        >
+          <Plus size={14} />
+          Add by IP
+        </button>
 
         {showAddDialog && (
-          <div className="mt-6 p-4 bg-zinc-900 border border-zinc-800 rounded-xl text-left w-80">
-            <h3 className="text-sm font-semibold text-zinc-300 mb-3">Add Device by IP</h3>
-            <input
-              type="text"
-              value={manualIp}
-              onChange={(e) => setManualIp(e.target.value)}
-              placeholder="192.168.1.108"
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 mb-2"
-              autoFocus
-            />
-            <input
-              type="number"
-              value={manualPort}
-              onChange={(e) => setManualPort(e.target.value)}
-              placeholder="8080"
-              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 mb-3"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={addByIp}
-                disabled={adding}
-                className="flex-1 px-3 py-2 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
-              >
-                {adding ? "Connecting..." : "Connect"}
-              </button>
-              <button
-                onClick={() => setShowAddDialog(false)}
-                className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-sm transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
+          <AddDialog
+            ip={manualIp}
+            port={manualPort}
+            adding={adding}
+            error={addError}
+            onIpChange={setManualIp}
+            onPortChange={setManualPort}
+            onAdd={handleAdd}
+            onCancel={() => setShowAddDialog(false)}
+          />
         )}
       </div>
     );
@@ -105,7 +69,11 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div className="flex justify-end mb-4">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2 text-sm text-zinc-400">
+          <Wifi size={14} className={onlineCount > 0 ? "text-trellis-400" : "text-zinc-600"} />
+          {onlineCount} of {devices.length} online
+        </div>
         <button
           onClick={() => setShowAddDialog(!showAddDialog)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
@@ -116,37 +84,76 @@ export default function Dashboard() {
       </div>
 
       {showAddDialog && (
-        <div className="mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={manualIp}
-              onChange={(e) => setManualIp(e.target.value)}
-              placeholder="IP address"
-              className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600"
-              autoFocus
-            />
-            <input
-              type="number"
-              value={manualPort}
-              onChange={(e) => setManualPort(e.target.value)}
-              className="w-20 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300"
-            />
-            <button
-              onClick={addByIp}
-              disabled={adding}
-              className="px-3 py-2 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
-            >
-              {adding ? "..." : "Add"}
-            </button>
-          </div>
-        </div>
+        <AddDialog
+          ip={manualIp}
+          port={manualPort}
+          adding={adding}
+          error={addError}
+          onIpChange={setManualIp}
+          onPortChange={setManualPort}
+          onAdd={handleAdd}
+          onCancel={() => setShowAddDialog(false)}
+        />
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {devices.map((device) => (
           <DeviceCard key={device.id} device={device} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function AddDialog({
+  ip, port, adding, error, onIpChange, onPortChange, onAdd, onCancel,
+}: {
+  ip: string;
+  port: string;
+  adding: boolean;
+  error: string;
+  onIpChange: (v: string) => void;
+  onPortChange: (v: string) => void;
+  onAdd: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mt-4 mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl max-w-sm w-full">
+      <h3 className="text-sm font-semibold text-zinc-300 mb-3">Add Device by IP</h3>
+      <div className="flex gap-2 mb-2">
+        <input
+          type="text"
+          value={ip}
+          onChange={(e) => onIpChange(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onAdd()}
+          placeholder="192.168.1.108"
+          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600"
+          autoFocus
+        />
+        <input
+          type="number"
+          value={port}
+          onChange={(e) => onPortChange(e.target.value)}
+          className="w-20 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300"
+        />
+      </div>
+      {error && (
+        <p className="text-xs text-red-400 mb-2">{error}</p>
+      )}
+      <div className="flex gap-2">
+        <button
+          onClick={onAdd}
+          disabled={adding}
+          className="flex-1 px-3 py-2 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
+        >
+          {adding ? "Connecting..." : "Connect"}
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-sm transition-colors"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );
