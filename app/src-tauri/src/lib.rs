@@ -11,6 +11,7 @@ use connection::ConnectionManager;
 use discovery::Discovery;
 use serial::SerialManager;
 use std::sync::Arc;
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -29,11 +30,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_devices,
             add_device_by_ip,
             send_command,
+            set_device_nickname,
+            set_device_tags,
+            get_saved_devices,
+            get_saved_device,
             list_serial_ports,
             open_serial,
             close_serial,
@@ -41,6 +48,12 @@ pub fn run() {
             start_ota,
             store_metric,
             get_metrics,
+            create_alert,
+            get_alerts,
+            delete_alert,
+            toggle_alert,
+            get_device_logs,
+            store_log_entry,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
@@ -50,6 +63,20 @@ pub fn run() {
 
             // Start continuous background discovery
             discovery.start_background(app.handle().clone());
+
+            // System tray
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().unwrap())
+                .tooltip("Trellis — Device Control Center")
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click { .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
 
             log::info!("[Trellis] Background discovery started");
             Ok(())

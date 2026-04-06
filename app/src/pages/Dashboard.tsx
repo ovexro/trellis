@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Radar, Plus, Wifi } from "lucide-react";
+import { Radar, Plus, Wifi, Search } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import DeviceCard from "@/components/DeviceCard";
 
@@ -10,6 +10,7 @@ export default function Dashboard() {
   const [manualPort, setManualPort] = useState("8080");
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     initEventListeners();
@@ -69,11 +70,25 @@ export default function Dashboard() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3">
         <div className="flex items-center gap-2 text-sm text-zinc-400">
           <Wifi size={14} className={onlineCount > 0 ? "text-trellis-400" : "text-zinc-600"} />
           {onlineCount} of {devices.length} online
         </div>
+
+        <div className="flex items-center gap-2 flex-1 max-w-xs">
+          <div className="relative flex-1">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search devices..."
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-zinc-300 placeholder-zinc-600 focus:border-trellis-500 focus:outline-none"
+            />
+          </div>
+        </div>
+
         <button
           onClick={() => setShowAddDialog(!showAddDialog)}
           className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
@@ -97,9 +112,21 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {devices.map((device) => (
-          <DeviceCard key={device.id} device={device} />
-        ))}
+        {devices
+          .filter((d) => {
+            if (!searchQuery) return true;
+            const q = searchQuery.toLowerCase();
+            return (
+              d.name.toLowerCase().includes(q) ||
+              d.id.toLowerCase().includes(q) ||
+              d.ip.includes(q) ||
+              d.platform.toLowerCase().includes(q) ||
+              d.system.chip.toLowerCase().includes(q)
+            );
+          })
+          .map((device) => (
+            <DeviceCard key={device.id} device={device} />
+          ))}
       </div>
     </div>
   );

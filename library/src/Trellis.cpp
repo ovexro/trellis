@@ -186,6 +186,17 @@ void Trellis::setFirmwareVersion(const char* version) {
   _firmwareVersion = version;
 }
 
+void Trellis::log(const char* severity, const char* message) {
+  Serial.printf("[Trellis] [%s] %s\n", severity, message);
+  if (_webServer) {
+    _webServer->broadcastLog(severity, message);
+  }
+}
+
+void Trellis::logInfo(const char* message)  { log("info", message); }
+void Trellis::logWarn(const char* message)  { log("warn", message); }
+void Trellis::logError(const char* message) { log("error", message); }
+
 Capability* Trellis::findCapability(const char* id) {
   for (uint8_t i = 0; i < _capCount; i++) {
     if (strcmp(_capabilities[i].id, id) == 0) {

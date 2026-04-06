@@ -225,3 +225,13 @@ void TrellisWebServer::broadcastHeartbeat(const TelemetryData& telemetry) {
   serializeJson(doc, json);
   _ws->broadcastTXT(json);
 }
+
+void TrellisWebServer::broadcastLog(const char* severity, const char* message) {
+  JsonDocument doc;
+  doc["event"] = "log";
+  doc["severity"] = severity;
+  doc["message"] = message;
+  String json;
+  serializeJson(doc, json);
+  _ws->broadcastTXT(json);
+}

@@ -7,6 +7,8 @@ import Slider from "@/components/controls/Slider";
 import Sensor from "@/components/controls/Sensor";
 import ColorPicker from "@/components/controls/ColorPicker";
 import MetricChart from "@/components/charts/MetricChart";
+import DeviceNickname from "@/components/DeviceNickname";
+import DeviceLogs from "@/components/DeviceLogs";
 import type { Capability } from "@/lib/types";
 
 export default function DeviceDetail() {
@@ -112,7 +114,7 @@ export default function DeviceDetail() {
 
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-zinc-100">{device.name}</h1>
+          <DeviceNickname deviceId={device.id} originalName={device.name} />
           <p className="text-sm text-zinc-500 mt-1">
             {device.ip}:{device.port} &middot; {device.system.chip} &middot; FW {device.firmware}
           </p>
@@ -177,6 +179,11 @@ export default function DeviceDetail() {
           </div>
         </>
       )}
+
+      {/* Device Logs */}
+      <div className="mt-8">
+        <DeviceLogs deviceId={device.id} />
+      </div>
     </div>
   );
 }

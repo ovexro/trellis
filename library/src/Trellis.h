@@ -63,6 +63,12 @@ public:
   // Firmware version
   void setFirmwareVersion(const char* version);
 
+  // Logging — sent to desktop app via WebSocket
+  void log(const char* severity, const char* message);
+  void logInfo(const char* message);
+  void logWarn(const char* message);
+  void logError(const char* message);
+
   // Accessors for internal use
   const char* getName() const { return _name; }
   const char* getFirmwareVersion() const { return _firmwareVersion; }

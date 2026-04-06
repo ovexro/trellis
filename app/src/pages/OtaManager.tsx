@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Upload, CheckCircle, AlertCircle, FileUp } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
@@ -90,9 +91,15 @@ export default function OtaManager() {
             />
             <button
               className="flex items-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
-              onClick={() => {
-                // Tauri file dialog would go here
-                // For now, users type the path
+              onClick={async () => {
+                const file = await open({
+                  multiple: false,
+                  filters: [{ name: "Firmware", extensions: ["bin"] }],
+                });
+                if (file) {
+                  setFirmwarePath(file);
+                  setStatus("idle");
+                }
               }}
             >
               <FileUp size={14} />

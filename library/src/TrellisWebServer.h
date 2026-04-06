@@ -19,6 +19,7 @@ public:
   void broadcastUpdate(const char* id, bool value);
   void broadcastUpdate(const char* id, const char* value);
   void broadcastHeartbeat(const TelemetryData& telemetry);
+  void broadcastLog(const char* severity, const char* message);
 
 private:
   Trellis* _trellis;

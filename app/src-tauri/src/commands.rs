@@ -1,5 +1,5 @@
 use crate::connection::ConnectionManager;
-use crate::db::{Database, MetricPoint};
+use crate::db::{AlertRule, Database, LogEntry, MetricPoint, SavedDevice};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::ota;
@@ -13,6 +13,8 @@ pub struct AppState {
     pub connection_manager: Arc<ConnectionManager>,
     pub serial_manager: Arc<SerialManager>,
 }
+
+// ─── Device discovery ────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_devices(state: State<'_, AppState>) -> Result<Vec<Device>, String> {
@@ -43,11 +45,45 @@ pub async fn send_command(
     let conn_mgr = state.connection_manager.clone();
     let ws_port = port + 1;
     let msg = serde_json::to_string(&command).map_err(|e| e.to_string())?;
-
     tokio::task::spawn_blocking(move || conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg))
         .await
         .map_err(|e| format!("Task failed: {}", e))?
 }
+
+// ─── Device persistence ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn set_device_nickname(
+    db: State<'_, Database>,
+    device_id: String,
+    nickname: String,
+) -> Result<(), String> {
+    db.set_nickname(&device_id, &nickname)
+}
+
+#[tauri::command]
+pub fn set_device_tags(
+    db: State<'_, Database>,
+    device_id: String,
+    tags: String,
+) -> Result<(), String> {
+    db.set_tags(&device_id, &tags)
+}
+
+#[tauri::command]
+pub fn get_saved_devices(db: State<'_, Database>) -> Result<Vec<SavedDevice>, String> {
+    db.get_all_saved_devices()
+}
+
+#[tauri::command]
+pub fn get_saved_device(
+    db: State<'_, Database>,
+    device_id: String,
+) -> Result<Option<SavedDevice>, String> {
+    db.get_saved_device(&device_id)
+}
+
+// ─── Serial ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn list_serial_ports() -> Result<Vec<SerialPortInfo>, String> {
@@ -74,6 +110,8 @@ pub fn send_serial(state: State<'_, AppState>, port: String, data: String) -> Re
     state.serial_manager.write(&port, &data)
 }
 
+// ─── OTA ─────────────────────────────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn start_ota(
     state: State<'_, AppState>,
@@ -84,25 +122,19 @@ pub async fn start_ota(
 ) -> Result<(), String> {
     let conn_mgr = state.connection_manager.clone();
     let ws_port = port + 1;
-
     tokio::task::spawn_blocking(move || {
-        // Start local HTTP server with the firmware file
         let (url, _stop_flag) = ota::serve_firmware(&firmware_path)?;
-
-        // Send OTA command to device via WebSocket
-        let ota_cmd = serde_json::json!({
-            "command": "ota",
-            "url": url
-        });
+        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
-
         log::info!("[OTA] Triggered update for device {} from {}", device_id, url);
         Ok(())
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
 }
+
+// ─── Metrics ─────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn store_metric(
@@ -122,4 +154,58 @@ pub fn get_metrics(
     hours: u32,
 ) -> Result<Vec<MetricPoint>, String> {
     db.get_metrics(&device_id, &metric_id, hours)
+}
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_alert(
+    db: State<'_, Database>,
+    device_id: String,
+    metric_id: String,
+    condition: String,
+    threshold: f64,
+    label: String,
+) -> Result<i64, String> {
+    db.create_alert(&device_id, &metric_id, &condition, threshold, &label)
+}
+
+#[tauri::command]
+pub fn get_alerts(db: State<'_, Database>, device_id: String) -> Result<Vec<AlertRule>, String> {
+    db.get_alerts(&device_id)
+}
+
+#[tauri::command]
+pub fn delete_alert(db: State<'_, Database>, alert_id: i64) -> Result<(), String> {
+    db.delete_alert(alert_id)
+}
+
+#[tauri::command]
+pub fn toggle_alert(
+    db: State<'_, Database>,
+    alert_id: i64,
+    enabled: bool,
+) -> Result<(), String> {
+    db.toggle_alert(alert_id, enabled)
+}
+
+// ─── Device logs ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_device_logs(
+    db: State<'_, Database>,
+    device_id: String,
+    limit: u32,
+) -> Result<Vec<LogEntry>, String> {
+    db.get_logs(&device_id, limit)
+}
+
+#[tauri::command]
+pub fn store_log_entry(
+    db: State<'_, Database>,
+    device_id: String,
+    severity: String,
+    message: String,
+) -> Result<(), String> {
+    db.store_log(&device_id, &severity, &message)
 }
