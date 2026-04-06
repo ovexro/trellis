@@ -1,5 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useNavigate } from "react-router-dom";
+import { useDeviceStore } from "@/stores/deviceStore";
+import type { SerialPortInfo } from "@/lib/types";
 import {
   Cpu,
   Trash2,
@@ -12,6 +15,14 @@ import {
   Type,
   Copy,
   Check,
+  Hammer,
+  Usb,
+  Wifi,
+  RefreshCw,
+  ChevronDown,
+  ChevronRight,
+  Terminal as TerminalIcon,
+  Loader2,
 } from "lucide-react";
 
 interface CapabilityDef {
@@ -61,6 +72,11 @@ interface TemplateDef {
   created_at: string;
 }
 
+const BOARD_FQBN: Record<string, string> = {
+  esp32: "esp32:esp32:esp32",
+  picow: "rp2040:rp2040:rpipicow",
+};
+
 export default function FirmwareGenerator() {
   const [deviceName, setDeviceName] = useState("My Device");
   const [board, setBoard] = useState<"esp32" | "picow">("esp32");
@@ -69,7 +85,54 @@ export default function FirmwareGenerator() {
   const [templates, setTemplates] = useState<TemplateDef[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
 
+  // Quick Flash state
+  const [cliAvailable, setCliAvailable] = useState<string | null>(null);
+  const [cliChecked, setCliChecked] = useState(false);
+  const [serialPorts, setSerialPorts] = useState<SerialPortInfo[]>([]);
+  const [selectedPort, setSelectedPort] = useState("");
+  const [compiling, setCompiling] = useState(false);
+  const [flashing, setFlashing] = useState(false);
+  const [compiled, setCompiled] = useState(false);
+  const [buildOutput, setBuildOutput] = useState("");
+  const [buildError, setBuildError] = useState(false);
+  const [flashExpanded, setFlashExpanded] = useState(true);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  const { devices } = useDeviceStore();
+  const onlineDevices = devices.filter((d) => d.online);
+
   useEffect(() => { loadTemplates(); }, []);
+
+  // Check arduino-cli and load serial ports on mount
+  useEffect(() => {
+    invoke<string>("check_arduino_cli")
+      .then((version) => { setCliAvailable(version); setCliChecked(true); })
+      .catch(() => { setCliAvailable(null); setCliChecked(true); setFlashExpanded(false); });
+    refreshPorts();
+  }, []);
+
+  // Auto-scroll output panel
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [buildOutput]);
+
+  // Reset compiled state when capabilities or board change
+  useEffect(() => {
+    setCompiled(false);
+  }, [capabilities, board, deviceName]);
+
+  const refreshPorts = () => {
+    invoke<SerialPortInfo[]>("list_serial_ports")
+      .then((ports) => {
+        setSerialPorts(ports);
+        if (ports.length > 0 && !selectedPort) {
+          setSelectedPort(ports[0].name);
+        }
+      })
+      .catch(() => setSerialPorts([]));
+  };
 
   const loadTemplates = async () => {
     try {
@@ -259,6 +322,39 @@ export default function FirmwareGenerator() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCompile = async () => {
+    setCompiling(true);
+    setBuildOutput("");
+    setBuildError(false);
+    setCompiled(false);
+    try {
+      const output = await invoke<string>("compile_sketch", { sketch, board });
+      setBuildOutput(output);
+      setCompiled(true);
+    } catch (err) {
+      setBuildOutput(String(err));
+      setBuildError(true);
+    } finally {
+      setCompiling(false);
+    }
+  };
+
+  const handleFlash = async () => {
+    if (!selectedPort) return;
+    setFlashing(true);
+    setBuildOutput("");
+    setBuildError(false);
+    try {
+      const output = await invoke<string>("flash_sketch", { board, port: selectedPort });
+      setBuildOutput(output);
+    } catch (err) {
+      setBuildOutput(String(err));
+      setBuildError(true);
+    } finally {
+      setFlashing(false);
+    }
+  };
+
   return (
     <div className="flex gap-6 h-full">
       {/* Left: Configuration */}
@@ -439,7 +535,7 @@ export default function FirmwareGenerator() {
         </div>
       </div>
 
-      {/* Right: Generated code */}
+      {/* Right: Generated code + Quick Flash */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-sm font-semibold text-zinc-400 flex items-center gap-2">
@@ -454,12 +550,141 @@ export default function FirmwareGenerator() {
             {copied ? "Copied!" : "Copy to clipboard"}
           </button>
         </div>
-        <div className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl p-4 overflow-auto font-mono text-xs leading-5 select-text">
+        <div className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl p-4 overflow-auto font-mono text-xs leading-5 select-text min-h-0">
           {sketch.split("\n").map((line, i) => (
             <div key={i} className={highlightLine(line)}>
               {line || "\u00A0"}
             </div>
           ))}
+        </div>
+
+        {/* Quick Flash Panel */}
+        <div className="mt-3 bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex-shrink-0">
+          {/* Collapsible header */}
+          <button
+            onClick={() => setFlashExpanded(!flashExpanded)}
+            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-zinc-800/50 transition-colors"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+              <TerminalIcon size={14} />
+              Quick Flash
+            </span>
+            <div className="flex items-center gap-2">
+              {cliChecked && (
+                <span className={`text-[11px] ${cliAvailable ? "text-trellis-400" : "text-zinc-600"}`}>
+                  {cliAvailable ? `arduino-cli ${cliAvailable}` : "arduino-cli not found"}
+                </span>
+              )}
+              {flashExpanded ? <ChevronDown size={14} className="text-zinc-500" /> : <ChevronRight size={14} className="text-zinc-500" />}
+            </div>
+          </button>
+
+          {flashExpanded && (
+            <div className="px-4 pb-4 space-y-3">
+              {/* CLI not installed warning */}
+              {cliChecked && !cliAvailable && (
+                <div className="flex items-center gap-2 p-2.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-500">
+                  <span>
+                    arduino-cli is required to compile and flash.{" "}
+                    <a
+                      href="https://arduino.github.io/arduino-cli/installation/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-trellis-400 hover:underline"
+                    >
+                      Install instructions
+                    </a>
+                  </span>
+                </div>
+              )}
+
+              {/* Controls row */}
+              {cliAvailable && (
+                <div className="flex items-end gap-3">
+                  {/* Port selector */}
+                  <div className="flex-1 min-w-0">
+                    <label className="block text-[11px] text-zinc-500 mb-1">Serial Port</label>
+                    <div className="flex gap-1.5">
+                      <select
+                        value={selectedPort}
+                        onChange={(e) => setSelectedPort(e.target.value)}
+                        className="flex-1 min-w-0 bg-zinc-800 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-zinc-300 truncate"
+                      >
+                        {serialPorts.length === 0 && (
+                          <option value="">No ports found</option>
+                        )}
+                        {serialPorts.map((p) => (
+                          <option key={p.name} value={p.name}>
+                            {p.name} ({p.port_type})
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={refreshPorts}
+                        className="p-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-zinc-400 transition-colors"
+                        title="Refresh ports"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Board FQBN hint */}
+                  <div className="flex-shrink-0">
+                    <label className="block text-[11px] text-zinc-500 mb-1">Board</label>
+                    <div className="px-2.5 py-1.5 bg-zinc-800/50 border border-zinc-700/50 rounded-lg text-[11px] text-zinc-500 font-mono">
+                      {BOARD_FQBN[board]}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              {cliAvailable && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCompile}
+                    disabled={compiling || flashing}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {compiling ? <Loader2 size={12} className="animate-spin" /> : <Hammer size={12} />}
+                    {compiling ? "Compiling..." : "Compile"}
+                  </button>
+                  <button
+                    onClick={handleFlash}
+                    disabled={!compiled || !selectedPort || flashing || compiling}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={!compiled ? "Compile first" : !selectedPort ? "Select a port" : "Flash via USB"}
+                  >
+                    {flashing ? <Loader2 size={12} className="animate-spin" /> : <Usb size={12} />}
+                    {flashing ? "Flashing..." : "Flash USB"}
+                  </button>
+                  {onlineDevices.length > 0 && (
+                    <button
+                      onClick={() => navigate("/ota")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors"
+                      title="Flash via OTA to online devices"
+                    >
+                      <Wifi size={12} />
+                      Flash OTA ({onlineDevices.length})
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Output panel */}
+              {buildOutput && (
+                <div
+                  ref={outputRef}
+                  className="max-h-[200px] overflow-auto bg-zinc-950 border border-zinc-800 rounded-lg p-3 font-mono text-xs leading-relaxed select-text"
+                >
+                  <pre className={`whitespace-pre-wrap break-words ${buildError ? "text-red-400" : compiled ? "text-trellis-400" : "text-zinc-300"}`}>
+                    {buildOutput}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -58,6 +58,13 @@ Single source of truth for all features. Check items as they are implemented and
 - [ ] Window state persistence (size, position)
 - [x] Minimize to system tray (close hides, tray restores, right-click quit)
 
+### Quick Flash (arduino-cli integration)
+- [x] Detect arduino-cli installation (version check)
+- [x] Compile generated sketch (ESP32 + Pico W FQBN mapping)
+- [x] Flash via USB (serial port selector + upload)
+- [x] Build output panel (color-coded success/errors)
+- [x] Auto-reset on capability/board changes
+
 ### App Shell
 - [x] Sidebar navigation
 - [x] Header with connection status

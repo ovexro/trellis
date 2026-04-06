@@ -89,6 +89,9 @@ pub fn run() {
             send_ntfy,
             test_ntfy,
             run_terminal_command,
+            check_arduino_cli,
+            compile_sketch,
+            flash_sketch,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

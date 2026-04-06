@@ -495,3 +495,112 @@ pub async fn run_terminal_command(command: String) -> Result<String, String> {
     .await
     .map_err(|e| format!("Task failed: {}", e))?
 }
+
+// ─── Quick Flash (arduino-cli integration) ─────────────────────────────────
+
+#[tauri::command]
+pub fn check_arduino_cli() -> Result<String, String> {
+    let output = std::process::Command::new("arduino-cli")
+        .arg("version")
+        .output()
+        .map_err(|_| "arduino-cli not found. Install it from https://arduino.github.io/arduino-cli/".to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[tauri::command]
+pub async fn compile_sketch(
+    app_handle: AppHandle,
+    sketch: String,
+    board: String,
+) -> Result<String, String> {
+    let app = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        // Map board selection to FQBN
+        let fqbn = match board.as_str() {
+            "esp32" => "esp32:esp32:esp32",
+            "picow" => "rp2040:rp2040:rpipicow",
+            _ => return Err(format!("Unknown board: {}", board)),
+        };
+
+        // Create temp sketch directory (Arduino requires sketch_name/sketch_name.ino)
+        let sketch_dir = app.path().app_data_dir()
+            .map_err(|e| format!("No app dir: {}", e))?
+            .join("quick_flash");
+        let _ = std::fs::remove_dir_all(&sketch_dir); // Clean previous
+        std::fs::create_dir_all(&sketch_dir)
+            .map_err(|e| format!("Failed to create sketch dir: {}", e))?;
+
+        let sketch_file = sketch_dir.join("quick_flash.ino");
+        std::fs::write(&sketch_file, &sketch)
+            .map_err(|e| format!("Failed to write sketch: {}", e))?;
+
+        // Run arduino-cli compile
+        let output = std::process::Command::new("arduino-cli")
+            .args(["compile", "--fqbn", fqbn])
+            .arg(&sketch_dir)
+            .output()
+            .map_err(|e| format!("Failed to run arduino-cli: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if output.status.success() {
+            let mut result = String::new();
+            if !stdout.is_empty() { result.push_str(&stdout); }
+            if !stderr.is_empty() {
+                if !result.is_empty() { result.push('\n'); }
+                result.push_str(&stderr);
+            }
+            Ok(result)
+        } else {
+            Err(format!("{}\n{}", stdout, stderr).trim().to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn flash_sketch(
+    app_handle: AppHandle,
+    board: String,
+    port: String,
+) -> Result<String, String> {
+    let app = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let fqbn = match board.as_str() {
+            "esp32" => "esp32:esp32:esp32",
+            "picow" => "rp2040:rp2040:rpipicow",
+            _ => return Err(format!("Unknown board: {}", board)),
+        };
+
+        let sketch_dir = app.path().app_data_dir()
+            .map_err(|e| format!("No app dir: {}", e))?
+            .join("quick_flash");
+
+        if !sketch_dir.join("quick_flash.ino").exists() {
+            return Err("No compiled sketch found. Compile first.".to_string());
+        }
+
+        // Run arduino-cli upload
+        let output = std::process::Command::new("arduino-cli")
+            .args(["upload", "--fqbn", fqbn, "--port", &port])
+            .arg(&sketch_dir)
+            .output()
+            .map_err(|e| format!("Failed to run arduino-cli: {}", e))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if output.status.success() {
+            let mut result = String::from("Upload complete!");
+            if !stdout.is_empty() { result.push('\n'); result.push_str(&stdout); }
+            if !stderr.is_empty() { result.push('\n'); result.push_str(&stderr); }
+            Ok(result)
+        } else {
+            Err(format!("{}\n{}", stdout, stderr).trim().to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
