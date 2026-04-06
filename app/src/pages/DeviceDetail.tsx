@@ -177,6 +177,14 @@ export default function DeviceDetail() {
                 />
               ))}
           </div>
+
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3 mt-6">
+            System Metrics
+          </h2>
+          <div className="space-y-3">
+            <MetricChart deviceId={device.id} metricId="_rssi" label="WiFi Signal" unit="dBm" color="#f59e0b" />
+            <MetricChart deviceId={device.id} metricId="_heap" label="Free Heap" unit="bytes" color="#3b82f6" />
+          </div>
         </>
       )}
 

@@ -31,7 +31,7 @@ export default function DeviceCard({ device }: DeviceCardProps) {
       <div className="flex items-start justify-between mb-3">
         <div>
           <h3 className="font-semibold text-zinc-100 group-hover:text-trellis-400 transition-colors">
-            {device.name}
+            {device.nickname || device.name}
           </h3>
           <p className="text-xs text-zinc-500 mt-0.5">{device.ip}:{device.port}</p>
         </div>
@@ -58,6 +58,15 @@ export default function DeviceCard({ device }: DeviceCardProps) {
       </div>
 
       <div className="mt-3 pt-3 border-t border-zinc-800">
+        {device.tags && (
+          <div className="flex gap-1 flex-wrap mb-1.5">
+            {device.tags.split(",").map((t) => t.trim()).filter(Boolean).map((tag) => (
+              <span key={tag} className="px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 rounded text-[10px] text-zinc-500">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
         <p className="text-xs text-zinc-500">
           {device.capabilities.length} control{device.capabilities.length !== 1 ? "s" : ""}
           {" — "}

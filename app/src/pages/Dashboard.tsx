@@ -118,10 +118,12 @@ export default function Dashboard() {
             const q = searchQuery.toLowerCase();
             return (
               d.name.toLowerCase().includes(q) ||
+              (d.nickname || "").toLowerCase().includes(q) ||
               d.id.toLowerCase().includes(q) ||
               d.ip.includes(q) ||
               d.platform.toLowerCase().includes(q) ||
-              d.system.chip.toLowerCase().includes(q)
+              d.system.chip.toLowerCase().includes(q) ||
+              (d.tags || "").toLowerCase().includes(q)
             );
           })
           .map((device) => (

@@ -26,6 +26,8 @@ export interface Device {
   system: SystemInfo;
   online: boolean;
   last_seen: string;
+  nickname?: string;
+  tags?: string;
 }
 
 export interface SerialPortInfo {

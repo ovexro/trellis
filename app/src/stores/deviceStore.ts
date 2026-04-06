@@ -1,7 +1,59 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import type { Device, WsEvent } from "@/lib/types";
+
+interface AlertRule {
+  id: number;
+  device_id: string;
+  metric_id: string;
+  condition: string;
+  threshold: number;
+  label: string;
+  enabled: boolean;
+}
+
+// Track which alerts have fired recently to avoid spam
+const firedAlerts = new Map<string, number>();
+
+async function checkAlerts(deviceId: string, metricId: string, value: number, deviceName: string) {
+  try {
+    const alerts = await invoke<AlertRule[]>("get_alerts", { deviceId });
+    for (const alert of alerts) {
+      if (!alert.enabled || alert.metric_id !== metricId) continue;
+
+      const triggered =
+        (alert.condition === "above" && value > alert.threshold) ||
+        (alert.condition === "below" && value < alert.threshold);
+
+      if (!triggered) continue;
+
+      // Debounce: don't fire the same alert within 60 seconds
+      const key = `${alert.id}`;
+      const lastFired = firedAlerts.get(key) || 0;
+      if (Date.now() - lastFired < 60000) continue;
+      firedAlerts.set(key, Date.now());
+
+      // Send desktop notification
+      let permitted = await isPermissionGranted();
+      if (!permitted) {
+        const result = await requestPermission();
+        permitted = result === "granted";
+      }
+      if (permitted) {
+        sendNotification({
+          title: `Trellis Alert: ${deviceName}`,
+          body: `${alert.label}: ${metricId} is ${value.toFixed(1)} (${alert.condition} ${alert.threshold})`,
+        });
+      }
+    }
+  } catch {}
+}
 
 interface DeviceState {
   devices: Device[];
@@ -61,8 +113,20 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     set({ initialized: true });
 
     // Listen for device discovery events (found/lost/updated)
-    listen<{ device: Device; event: string }>("device-discovered", (e) => {
+    listen<{ device: Device; event: string }>("device-discovered", async (e) => {
       const { device, event } = e.payload;
+
+      // Load saved nickname/tags from SQLite
+      try {
+        const saved = await invoke<{ nickname: string | null; tags: string } | null>(
+          "get_saved_device",
+          { deviceId: device.id },
+        );
+        if (saved) {
+          device.nickname = saved.nickname || undefined;
+          device.tags = saved.tags || undefined;
+        }
+      } catch {}
 
       set((state) => {
         if (event === "lost") {
@@ -97,14 +161,15 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
             if (d.id !== device_id) return d;
 
             if (event_type === "update" && payload.id) {
-              // Store sensor metrics in DB for charts
+              // Store sensor metrics in DB for charts + check alerts
               const cap = d.capabilities.find((c) => c.id === payload.id);
               if (cap?.type === "sensor" && typeof payload.value === "number") {
                 invoke("store_metric", {
                   deviceId: device_id,
                   metricId: payload.id,
                   value: payload.value,
-                }).catch(() => {}); // Fire and forget
+                }).catch(() => {});
+                checkAlerts(device_id, payload.id, payload.value, d.name);
               }
 
               return {
@@ -116,9 +181,15 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
             }
 
             if (event_type === "heartbeat" && payload.system) {
+              // Store system metrics for historical charts
+              const sys = payload.system as Device["system"];
+              invoke("store_metric", { deviceId: device_id, metricId: "_rssi", value: sys.rssi }).catch(() => {});
+              invoke("store_metric", { deviceId: device_id, metricId: "_heap", value: sys.heap_free }).catch(() => {});
+              invoke("store_metric", { deviceId: device_id, metricId: "_uptime", value: sys.uptime_s }).catch(() => {});
+
               return {
                 ...d,
-                system: payload.system as Device["system"],
+                system: sys,
                 online: true,
                 last_seen: new Date().toISOString(),
               };

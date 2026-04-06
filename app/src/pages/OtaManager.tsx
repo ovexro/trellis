@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Upload, CheckCircle, AlertCircle, FileUp } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
@@ -8,11 +9,27 @@ export default function OtaManager() {
   const { devices } = useDeviceStore();
   const [selectedDevice, setSelectedDevice] = useState("");
   const [firmwarePath, setFirmwarePath] = useState("");
+  const [otaProgress, setOtaProgress] = useState(-1);
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
 
   const onlineDevices = devices.filter((d) => d.online);
   const selectedDeviceObj = devices.find((d) => d.id === selectedDevice);
+
+  useEffect(() => {
+    const unlisten = listen<{ device_id: string; event_type: string; payload: { percent?: number } }>(
+      "device-event",
+      (e) => {
+        if (e.payload.event_type === "ota_progress" && e.payload.device_id === selectedDevice) {
+          const pct = e.payload.payload.percent ?? -1;
+          setOtaProgress(pct);
+          if (pct === -1) setStatus("error");
+          if (pct === 100) setStatus("success");
+        }
+      },
+    );
+    return () => { unlisten.then((fn) => fn()); };
+  }, [selectedDevice]);
 
   const handleUpload = async () => {
     if (!selectedDevice || !firmwarePath) return;
@@ -131,6 +148,21 @@ export default function OtaManager() {
           <Upload size={16} />
           {status === "uploading" ? "Sending to device..." : "Upload Firmware"}
         </button>
+
+        {status === "uploading" && otaProgress >= 0 && (
+          <div>
+            <div className="flex justify-between text-xs text-zinc-400 mb-1">
+              <span>Downloading firmware to device...</span>
+              <span>{otaProgress}%</span>
+            </div>
+            <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-trellis-500 rounded-full transition-all duration-300"
+                style={{ width: `${otaProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {status === "success" && (
           <div className="flex items-center gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">

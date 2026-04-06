@@ -79,6 +79,17 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // Intercept window close → minimize to tray
+            if let Some(window) = app.get_webview_window("main") {
+                let w = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
+
             log::info!("[Trellis] Background discovery started");
             Ok(())
         })

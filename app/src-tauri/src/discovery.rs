@@ -5,9 +5,10 @@ use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::connection::ConnectionManager;
+use crate::db::Database;
 use crate::device::{Device, DeviceInfo};
 
 const SERVICE_TYPE: &str = "_trellis._tcp.local.";
@@ -73,9 +74,10 @@ impl Discovery {
             last_seen: chrono::Utc::now().to_rfc3339(),
         };
 
-        // Store device
+        // Store device in memory + SQLite
         let mut devs = self.devices.lock().unwrap();
         devs.insert(device_info.id.clone(), device.clone());
+        persist_device(app_handle, &device);
 
         // Connect WebSocket
         self.connection_manager
@@ -158,6 +160,9 @@ fn mdns_browse_loop(
                             devs.insert(device_info.id.clone(), device.clone());
                             !existed
                         };
+
+                        // Persist to SQLite
+                        persist_device(&app_handle, &device);
 
                         // Connect WebSocket for live updates
                         conn_mgr.connect_device(&device_info.id, &ip, port + 1);
@@ -276,6 +281,20 @@ fn health_check_loop(
                 }
             }
         }
+    }
+}
+
+/// Persist device to SQLite
+fn persist_device(app_handle: &AppHandle, device: &Device) {
+    if let Some(db) = app_handle.try_state::<Database>() {
+        let _ = db.upsert_device(
+            &device.id,
+            &device.name,
+            &device.ip,
+            device.port,
+            &device.firmware,
+            &device.platform,
+        );
     }
 }
 
