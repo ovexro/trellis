@@ -561,6 +561,80 @@ pub async fn compile_sketch(
 }
 
 #[tauri::command]
+pub fn check_arduino_deps(board: String) -> Result<serde_json::Value, String> {
+    // Check if the required board core is installed
+    let fqbn = match board.as_str() {
+        "esp32" => "esp32:esp32:esp32",
+        "picow" => "rp2040:rp2040:rpipicow",
+        _ => return Err(format!("Unknown board: {}", board)),
+    };
+
+    let core_name = match board.as_str() {
+        "esp32" => "esp32:esp32",
+        "picow" => "rp2040:rp2040",
+        _ => "",
+    };
+
+    // Check board core
+    let core_output = std::process::Command::new("arduino-cli")
+        .args(["core", "list"])
+        .output()
+        .map_err(|e| format!("Failed to check cores: {}", e))?;
+    let core_list = String::from_utf8_lossy(&core_output.stdout).to_string();
+    let core_installed = core_list.contains(core_name);
+
+    // Check Trellis library
+    let lib_output = std::process::Command::new("arduino-cli")
+        .args(["lib", "list"])
+        .output()
+        .map_err(|e| format!("Failed to check libraries: {}", e))?;
+    let lib_list = String::from_utf8_lossy(&lib_output.stdout).to_string();
+    let trellis_installed = lib_list.contains("Trellis");
+    let ardjson_installed = lib_list.contains("ArduinoJson");
+    let websockets_installed = lib_list.contains("WebSockets");
+
+    Ok(serde_json::json!({
+        "fqbn": fqbn,
+        "core_installed": core_installed,
+        "core_name": core_name,
+        "trellis_installed": trellis_installed,
+        "arduinojson_installed": ardjson_installed,
+        "websockets_installed": websockets_installed,
+    }))
+}
+
+#[tauri::command]
+pub async fn install_arduino_deps(deps: Vec<String>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        for dep in &deps {
+            let (cmd_type, name) = if dep.contains(':') {
+                ("core", dep.as_str())
+            } else {
+                ("lib", dep.as_str())
+            };
+
+            let output = std::process::Command::new("arduino-cli")
+                .args([cmd_type, "install", name])
+                .output()
+                .map_err(|e| format!("Failed to install {}: {}", name, e))?;
+
+            let out = String::from_utf8_lossy(&output.stdout).to_string();
+            let err = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if output.status.success() {
+                results.push(format!("Installed {}", name));
+            } else {
+                return Err(format!("Failed to install {}: {}{}", name, out, err));
+            }
+        }
+        Ok(results.join("\n"))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
 pub async fn flash_sketch(
     app_handle: AppHandle,
     board: String,

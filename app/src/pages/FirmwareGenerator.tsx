@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type { SerialPortInfo } from "@/lib/types";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   Cpu,
   Trash2,
@@ -23,6 +24,7 @@ import {
   ChevronRight,
   Terminal as TerminalIcon,
   Loader2,
+  Download,
 } from "lucide-react";
 
 interface CapabilityDef {
@@ -96,6 +98,11 @@ export default function FirmwareGenerator() {
   const [buildOutput, setBuildOutput] = useState("");
   const [buildError, setBuildError] = useState(false);
   const [flashExpanded, setFlashExpanded] = useState(true);
+  const [depsChecked, setDepsChecked] = useState(false);
+  const [missingDeps, setMissingDeps] = useState<string[]>([]);
+  const [installingDeps, setInstallingDeps] = useState(false);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const { devices } = useDeviceStore();
@@ -103,12 +110,35 @@ export default function FirmwareGenerator() {
 
   useEffect(() => { loadTemplates(); }, []);
 
-  // Check arduino-cli and load serial ports on mount
+  // Check arduino-cli, deps, and load serial ports on mount
   useEffect(() => {
     invoke<string>("check_arduino_cli")
-      .then((version) => { setCliAvailable(version); setCliChecked(true); })
-      .catch(() => { setCliAvailable(null); setCliChecked(true); setFlashExpanded(false); });
+      .then((version) => {
+        setCliAvailable(version);
+        setCliChecked(true);
+        checkDeps(board);
+      })
+      .catch(() => {
+        setCliAvailable(null);
+        setCliChecked(true);
+        setFlashExpanded(false);
+      });
     refreshPorts();
+  }, []);
+
+  // Re-check deps when board changes
+  useEffect(() => {
+    if (cliAvailable) {
+      setDepsChecked(false);
+      checkDeps(board);
+    }
+  }, [board]);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
   }, []);
 
   // Auto-scroll output panel
@@ -132,6 +162,57 @@ export default function FirmwareGenerator() {
         }
       })
       .catch(() => setSerialPorts([]));
+  };
+
+  const startTimer = () => {
+    setElapsedTime(0);
+    timerRef.current = setInterval(() => setElapsedTime((t) => t + 1), 1000);
+  };
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const checkDeps = async (boardType: string) => {
+    try {
+      const result = await invoke<{
+        core_installed: boolean;
+        core_name: string;
+        trellis_installed: boolean;
+        arduinojson_installed: boolean;
+        websockets_installed: boolean;
+      }>("check_arduino_deps", { board: boardType });
+
+      const missing: string[] = [];
+      if (!result.core_installed) missing.push(result.core_name);
+      if (!result.trellis_installed) missing.push("Trellis");
+      if (!result.arduinojson_installed) missing.push("ArduinoJson");
+      if (!result.websockets_installed) missing.push("WebSockets");
+      setMissingDeps(missing);
+      setDepsChecked(true);
+    } catch {
+      setDepsChecked(true);
+    }
+  };
+
+  const handleInstallDeps = async () => {
+    setInstallingDeps(true);
+    setBuildOutput("");
+    try {
+      const output = await invoke<string>("install_arduino_deps", {
+        deps: missingDeps,
+      });
+      setBuildOutput(output);
+      setMissingDeps([]);
+      checkDeps(board);
+    } catch (err) {
+      setBuildOutput(String(err));
+      setBuildError(true);
+    } finally {
+      setInstallingDeps(false);
+    }
   };
 
   const loadTemplates = async () => {
@@ -327,6 +408,7 @@ export default function FirmwareGenerator() {
     setBuildOutput("");
     setBuildError(false);
     setCompiled(false);
+    startTimer();
     try {
       const output = await invoke<string>("compile_sketch", { sketch, board });
       setBuildOutput(output);
@@ -336,6 +418,7 @@ export default function FirmwareGenerator() {
       setBuildError(true);
     } finally {
       setCompiling(false);
+      stopTimer();
     }
   };
 
@@ -344,14 +427,52 @@ export default function FirmwareGenerator() {
     setFlashing(true);
     setBuildOutput("");
     setBuildError(false);
+    startTimer();
     try {
-      const output = await invoke<string>("flash_sketch", { board, port: selectedPort });
+      const output = await invoke<string>("flash_sketch", {
+        board,
+        port: selectedPort,
+      });
       setBuildOutput(output);
     } catch (err) {
       setBuildOutput(String(err));
       setBuildError(true);
     } finally {
       setFlashing(false);
+      stopTimer();
+    }
+  };
+
+  const handleCompileAndFlash = async () => {
+    if (!selectedPort) return;
+    setCompiling(true);
+    setBuildOutput("");
+    setBuildError(false);
+    setCompiled(false);
+    startTimer();
+    try {
+      const compileOutput = await invoke<string>("compile_sketch", {
+        sketch,
+        board,
+      });
+      setBuildOutput(
+        compileOutput + "\n\nUploading to " + selectedPort + "...\n",
+      );
+      setCompiled(true);
+      setCompiling(false);
+      setFlashing(true);
+      const flashOutput = await invoke<string>("flash_sketch", {
+        board,
+        port: selectedPort,
+      });
+      setBuildOutput(compileOutput + "\n\n" + flashOutput);
+    } catch (err) {
+      setBuildOutput((prev) => prev + "\n" + String(err));
+      setBuildError(true);
+    } finally {
+      setCompiling(false);
+      setFlashing(false);
+      stopTimer();
     }
   };
 
@@ -542,13 +663,35 @@ export default function FirmwareGenerator() {
             <Cpu size={14} />
             Generated Sketch
           </h2>
-          <button
-            onClick={copySketch}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium transition-colors"
-          >
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-            {copied ? "Copied!" : "Copy to clipboard"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                const filePath = await save({
+                  defaultPath: `${deviceName.replace(/\s+/g, "_")}.ino`,
+                  filters: [
+                    { name: "Arduino Sketch", extensions: ["ino"] },
+                  ],
+                });
+                if (filePath) {
+                  const { writeTextFile } = await import(
+                    "@tauri-apps/plugin-fs"
+                  );
+                  await writeTextFile(filePath, sketch);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors"
+            >
+              <Save size={12} />
+              Save .ino
+            </button>
+            <button
+              onClick={copySketch}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium transition-colors"
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+              {copied ? "Copied!" : "Copy to clipboard"}
+            </button>
+          </div>
         </div>
         <div className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl p-4 overflow-auto font-mono text-xs leading-5 select-text min-h-0">
           {sketch.split("\n").map((line, i) => (
@@ -595,6 +738,27 @@ export default function FirmwareGenerator() {
                       Install instructions
                     </a>
                   </span>
+                </div>
+              )}
+
+              {/* Missing dependencies banner */}
+              {depsChecked && missingDeps.length > 0 && (
+                <div className="flex items-center justify-between p-2.5 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+                  <div className="text-xs text-amber-400">
+                    Missing: {missingDeps.join(", ")}
+                  </div>
+                  <button
+                    onClick={handleInstallDeps}
+                    disabled={installingDeps}
+                    className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded text-xs transition-colors"
+                  >
+                    {installingDeps ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <Download size={10} />
+                    )}
+                    {installingDeps ? "Installing..." : "Install"}
+                  </button>
                 </div>
               )}
 
@@ -651,6 +815,15 @@ export default function FirmwareGenerator() {
                     {compiling ? "Compiling..." : "Compile"}
                   </button>
                   <button
+                    onClick={handleCompileAndFlash}
+                    disabled={compiling || flashing || !selectedPort}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-trellis-500/20 hover:bg-trellis-500/30 border border-trellis-500/30 rounded-lg text-xs text-trellis-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title="Compile then flash in one step"
+                  >
+                    <Hammer size={12} />
+                    Compile & Flash
+                  </button>
+                  <button
                     onClick={handleFlash}
                     disabled={!compiled || !selectedPort || flashing || compiling}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -668,6 +841,11 @@ export default function FirmwareGenerator() {
                       <Wifi size={12} />
                       Flash OTA ({onlineDevices.length})
                     </button>
+                  )}
+                  {(compiling || flashing) && elapsedTime > 0 && (
+                    <span className="text-[11px] text-zinc-500 ml-2">
+                      {elapsedTime}s
+                    </span>
                   )}
                 </div>
               )}

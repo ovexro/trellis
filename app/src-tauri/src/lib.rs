@@ -90,6 +90,8 @@ pub fn run() {
             test_ntfy,
             run_terminal_command,
             check_arduino_cli,
+            check_arduino_deps,
+            install_arduino_deps,
             compile_sketch,
             flash_sketch,
         ])
