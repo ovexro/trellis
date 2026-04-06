@@ -111,6 +111,16 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Heartbeat: `{"event": "heartbeat"}` (periodic, every 10s)
 - [x] Log event: `{"event": "log", "severity": "...", "message": "..."}`
 
+## Automation
+
+- [x] Scheduled actions (cron-based: "turn on pump at 6am daily")
+- [x] Conditional rules ("if temp > 30, turn on fan")
+- [x] Rule evaluation engine (checks on sensor updates, 30s debounce)
+- [x] Webhooks (POST to URL on device_offline, device_online, alert_triggered, sensor_update)
+- [x] Device templates (save/load capability configs for firmware generator)
+- [x] CSV data export (download sensor history from charts)
+- [x] Integrated terminal (run shell commands, arrow-key history)
+
 ## Infrastructure
 
 - [x] GitHub Actions CI: build app (Linux)
