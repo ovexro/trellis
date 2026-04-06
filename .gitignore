@@ -48,3 +48,6 @@ library/build/
 
 # Claude Code (local only)
 .claude/
+
+# Local test sketches with real credentials
+test/

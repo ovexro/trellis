@@ -71,6 +71,7 @@ public:
   uint8_t getCapabilityCount() const { return _capCount; }
   Capability* findCapability(const char* id);
   CommandCallback getCommandCallback() const { return _commandCallback; }
+  TrellisTelemetry& getTelemetry() { return _telemetry; }
 
 private:
   const char* _name;

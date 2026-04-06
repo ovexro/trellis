@@ -23,7 +23,7 @@ mdns-sd = "0.11"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serialport = "4"
 tungstenite = "0.24"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
+ureq = { version = "2", features = ["json"] }
+chrono = "0.4"
 log = "0.4"
 env_logger = "0.11"

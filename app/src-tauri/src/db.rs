@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use std::sync::Mutex;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 pub struct Database {
     pub conn: Mutex<Connection>,

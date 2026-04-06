@@ -20,8 +20,7 @@ trellis/
 │   │   └── src/             #     discovery, comms, OTA, serial, db
 │   ├── src/                 #   React frontend
 │   │   ├── pages/           #     Dashboard, DeviceDetail, SerialMonitor, OTA, Settings
-│   │   ├── components/      #     DeviceCard, controls/, charts/, layout/
-│   │   ├── hooks/           #     useDevices, useWebSocket, useTauri
+│   │   ├── components/      #     DeviceCard, controls/, layout/
 │   │   ├── stores/          #     Zustand device state
 │   │   └── lib/             #     types, protocol definitions
 │   └── package.json

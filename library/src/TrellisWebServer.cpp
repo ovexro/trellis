@@ -74,7 +74,7 @@ String TrellisWebServer::buildInfoJson() {
     }
   }
 
-  TelemetryData telemetry = _trellis->_telemetry.getData();
+  TelemetryData telemetry = _trellis->getTelemetry().getData();
   JsonObject sys = doc["system"].to<JsonObject>();
   sys["rssi"] = telemetry.rssi;
   sys["heap_free"] = telemetry.heapFree;
@@ -161,8 +161,23 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
   else if (strcmp(command, "ota") == 0) {
     const char* url = doc["url"];
     if (url) {
-      Serial.printf("[Trellis] OTA from: %s\n", url);
-      // OTA handled by TrellisOTA
+      Serial.printf("[Trellis] OTA update from: %s\n", url);
+
+      // Report start
+      JsonDocument progress;
+      progress["event"] = "ota_progress";
+      progress["percent"] = 0;
+      String startJson;
+      serializeJson(progress, startJson);
+      _ws->broadcastTXT(startJson);
+
+      // Perform OTA
+      TrellisOTA::update(url);
+      // If update() returns, it failed (success reboots)
+      progress["percent"] = -1;
+      String failJson;
+      serializeJson(progress, failJson);
+      _ws->broadcastTXT(failJson);
     }
   }
 #endif

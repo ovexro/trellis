@@ -82,6 +82,17 @@ export default function DeviceDetail() {
             onChange={(v) => handleChange(cap.id, v)}
           />
         );
+      case "text":
+        return (
+          <div key={cap.id} className="p-3 bg-zinc-800/50 rounded-lg">
+            <span className="text-xs text-zinc-500 uppercase tracking-wide">
+              {cap.label}
+            </span>
+            <p className="mt-1 text-sm text-zinc-200 font-mono">
+              {cap.value as string || "—"}
+            </p>
+          </div>
+        );
       default:
         return null;
     }

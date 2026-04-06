@@ -19,7 +19,8 @@ impl Discovery {
         }
     }
 
-    pub async fn scan(&self) -> Vec<Device> {
+    /// Scan for devices via mDNS. Fully synchronous — call from spawn_blocking.
+    pub fn scan(&self) -> Vec<Device> {
         let mdns = match ServiceDaemon::new() {
             Ok(d) => d,
             Err(e) => {
@@ -36,7 +37,6 @@ impl Discovery {
             }
         };
 
-        let devices = self.devices.clone();
         let deadline = std::time::Instant::now() + SCAN_TIMEOUT;
 
         while std::time::Instant::now() < deadline {
@@ -48,7 +48,7 @@ impl Discovery {
                     };
                     let port = info.get_port();
 
-                    match fetch_device_info(&ip, port).await {
+                    match fetch_device_info(&ip, port) {
                         Ok(device_info) => {
                             let device = Device {
                                 id: device_info.id.clone(),
@@ -62,7 +62,7 @@ impl Discovery {
                                 online: true,
                                 last_seen: chrono::Utc::now().to_rfc3339(),
                             };
-                            let mut devs = devices.lock().unwrap();
+                            let mut devs = self.devices.lock().unwrap();
                             devs.insert(device_info.id, device);
                         }
                         Err(e) => {
@@ -71,7 +71,7 @@ impl Discovery {
                     }
                 }
                 Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {
-                    let mut devs = devices.lock().unwrap();
+                    let mut devs = self.devices.lock().unwrap();
                     devs.retain(|_, d| !fullname.contains(&d.name));
                 }
                 Err(_) => continue,
@@ -87,16 +87,37 @@ impl Discovery {
         let devs = self.devices.lock().unwrap();
         devs.values().cloned().collect()
     }
+
+    /// Manually add a device by IP address (bypass mDNS)
+    pub fn add_by_ip(&self, ip: &str, port: u16) -> Result<Device, String> {
+        let device_info = fetch_device_info(ip, port)?;
+        let device = Device {
+            id: device_info.id.clone(),
+            name: device_info.name,
+            ip: ip.to_string(),
+            port,
+            firmware: device_info.firmware,
+            platform: device_info.platform,
+            capabilities: device_info.capabilities,
+            system: device_info.system,
+            online: true,
+            last_seen: chrono::Utc::now().to_rfc3339(),
+        };
+        let mut devs = self.devices.lock().unwrap();
+        devs.insert(device_info.id, device.clone());
+        Ok(device)
+    }
 }
 
-async fn fetch_device_info(ip: &str, port: u16) -> Result<DeviceInfo, String> {
+/// Blocking HTTP fetch of device info
+fn fetch_device_info(ip: &str, port: u16) -> Result<DeviceInfo, String> {
     let url = format!("http://{}:{}/api/info", ip, port);
-    let resp = reqwest::get(&url)
-        .await
+    let resp = ureq::get(&url)
+        .timeout(Duration::from_secs(3))
+        .call()
         .map_err(|e| format!("HTTP error: {}", e))?;
     let info: DeviceInfo = resp
-        .json()
-        .await
+        .into_json()
         .map_err(|e| format!("JSON parse error: {}", e))?;
     Ok(info)
 }
