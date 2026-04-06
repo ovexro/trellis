@@ -344,7 +344,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     );
 
     // Load saved devices from SQLite (show as offline until rediscovered)
-    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string; group_id: number | null }>>(
+    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string; group_id: number | null; last_seen: string }>>(
       "get_saved_devices",
     ).then((saved) => {
       if (saved.length > 0) {
@@ -358,7 +358,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           capabilities: [],
           system: { rssi: 0, heap_free: 0, uptime_s: 0, chip: "" },
           online: false,
-          last_seen: "",
+          last_seen: s.last_seen || "",
           nickname: s.nickname || undefined,
           tags: s.tags || undefined,
           group_id: s.group_id ?? undefined,

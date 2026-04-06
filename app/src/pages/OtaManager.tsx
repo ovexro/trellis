@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2 } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface FirmwareRecord {
@@ -29,9 +29,32 @@ export default function OtaManager() {
   const [errorMsg, setErrorMsg] = useState("");
   const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const onlineDevices = devices.filter((d) => d.online);
   const selectedDeviceObj = devices.find((d) => d.id === selectedDevice);
+
+  // Listen for Tauri drag-drop events (provides file paths)
+  useEffect(() => {
+    const unlistenDrop = listen<{ paths: string[] }>("tauri://drag-drop", (e) => {
+      setDragging(false);
+      const paths = e.payload.paths;
+      if (paths && paths.length > 0) {
+        const path = paths[0];
+        if (path.endsWith(".bin")) {
+          setFirmwarePath(path);
+          setStatus("idle");
+        }
+      }
+    });
+    const unlistenEnter = listen("tauri://drag-enter", () => setDragging(true));
+    const unlistenLeave = listen("tauri://drag-leave", () => setDragging(false));
+    return () => {
+      unlistenDrop.then((fn) => fn());
+      unlistenEnter.then((fn) => fn());
+      unlistenLeave.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     const unlisten = listen<{ device_id: string; event_type: string; payload: { percent?: number } }>(
@@ -164,37 +187,65 @@ export default function OtaManager() {
           <label className="block text-sm font-medium text-zinc-300 mb-2">
             Firmware File (.bin)
           </label>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={firmwarePath}
-              onChange={(e) => {
-                setFirmwarePath(e.target.value);
-                setStatus("idle");
-              }}
-              placeholder="/path/to/firmware.bin"
-              className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 font-mono"
-            />
-            <button
-              className="flex items-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
-              onClick={async () => {
-                const file = await open({
-                  multiple: false,
-                  filters: [{ name: "Firmware", extensions: ["bin"] }],
-                });
-                if (file) {
-                  setFirmwarePath(file);
-                  setStatus("idle");
-                }
-              }}
-            >
-              <FileUp size={14} />
-              Browse
-            </button>
+          <div
+            className={`border-2 border-dashed rounded-xl p-4 transition-colors ${
+              dragging
+                ? "border-trellis-500 bg-trellis-500/5"
+                : firmwarePath
+                  ? "border-zinc-700 bg-zinc-800/30"
+                  : "border-zinc-700/50 bg-zinc-800/20"
+            }`}
+          >
+            {firmwarePath ? (
+              <div className="flex items-center gap-3">
+                <HardDriveDownload size={20} className="text-trellis-400 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-zinc-300 font-mono truncate">{firmwarePath}</p>
+                  <p className="text-xs text-zinc-600 mt-0.5">Ready to upload</p>
+                </div>
+                <button
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-xs transition-colors"
+                  onClick={async () => {
+                    const file = await open({
+                      multiple: false,
+                      filters: [{ name: "Firmware", extensions: ["bin"] }],
+                    });
+                    if (file) {
+                      setFirmwarePath(file);
+                      setStatus("idle");
+                    }
+                  }}
+                >
+                  <FileUp size={12} />
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div className="text-center py-3">
+                <FileUp size={24} className={`mx-auto mb-2 ${dragging ? "text-trellis-400" : "text-zinc-600"}`} />
+                <p className="text-sm text-zinc-400">
+                  {dragging ? "Drop .bin file here" : "Drag & drop a .bin file here"}
+                </p>
+                <p className="text-xs text-zinc-600 mt-1 mb-3">or</p>
+                <button
+                  className="flex items-center gap-1.5 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors mx-auto"
+                  onClick={async () => {
+                    const file = await open({
+                      multiple: false,
+                      filters: [{ name: "Firmware", extensions: ["bin"] }],
+                    });
+                    if (file) {
+                      setFirmwarePath(file);
+                      setStatus("idle");
+                    }
+                  }}
+                >
+                  <FileUp size={14} />
+                  Browse for file
+                </button>
+              </div>
+            )}
           </div>
-          <p className="text-xs text-zinc-600 mt-1">
-            Compile your sketch first, then enter the path to the .bin file.
-          </p>
         </div>
 
         {selectedDeviceObj && selectedDeviceObj.platform !== "esp32" && (
@@ -259,10 +310,13 @@ export default function OtaManager() {
             <h2 className="text-sm font-semibold text-zinc-200">Firmware History</h2>
           </div>
 
-          {selectedDeviceObj && (
-            <p className="text-xs text-zinc-500 mb-4">
-              Current firmware: <span className="text-zinc-300 font-mono">{selectedDeviceObj.firmware}</span>
-            </p>
+          {selectedDeviceObj && selectedDeviceObj.firmware && (
+            <div className="flex items-center gap-2 text-xs text-zinc-500 mb-4">
+              <span>Current firmware:</span>
+              <span className="text-zinc-300 font-mono px-2 py-0.5 bg-trellis-500/10 border border-trellis-500/20 rounded">
+                v{selectedDeviceObj.firmware}
+              </span>
+            </div>
           )}
 
           {historyLoading ? (
@@ -271,14 +325,25 @@ export default function OtaManager() {
             <p className="text-xs text-zinc-600">No firmware history yet. Upload a firmware to start tracking.</p>
           ) : (
             <div className="space-y-2">
-              {firmwareHistory.map((record) => (
+              {firmwareHistory.map((record) => {
+                const isCurrent = selectedDeviceObj?.firmware === record.version;
+                return (
                 <div
                   key={record.id}
-                  className="flex items-center justify-between bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3"
+                  className={`flex items-center justify-between rounded-lg px-4 py-3 ${
+                    isCurrent
+                      ? "bg-trellis-500/5 border border-trellis-500/20"
+                      : "bg-zinc-800/50 border border-zinc-700/50"
+                  }`}
                 >
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-zinc-300 font-mono truncate">
                       v{record.version}
+                      {isCurrent && (
+                        <span className="text-[10px] text-trellis-400 ml-2 font-sans uppercase tracking-wide">
+                          current
+                        </span>
+                      )}
                     </p>
                     <p className="text-xs text-zinc-500 mt-0.5">
                       {formatFileSize(record.file_size)} &middot; {new Date(record.uploaded_at + "Z").toLocaleString()}
@@ -303,7 +368,8 @@ export default function OtaManager() {
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

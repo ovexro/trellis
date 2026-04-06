@@ -9,6 +9,9 @@ export default function Settings() {
   const [exportStatus, setExportStatus] = useState("");
   const [importStatus, setImportStatus] = useState("");
 
+  // Scan interval state
+  const [scanInterval, setScanInterval] = useState("30");
+
   // ntfy.sh push notification state
   const [ntfyTopic, setNtfyTopic] = useState("");
   const [ntfySavedTopic, setNtfySavedTopic] = useState<string | null>(null);
@@ -20,6 +23,10 @@ export default function Settings() {
         setNtfyTopic(topic);
         setNtfySavedTopic(topic);
       }
+    }).catch(() => {});
+
+    invoke<string | null>("get_setting", { key: "scan_interval" }).then((val) => {
+      if (val) setScanInterval(val);
     }).catch(() => {});
   }, []);
 
@@ -296,6 +303,37 @@ export default function Settings() {
           <p className="text-xs text-zinc-600 mt-2">
             Export saves device nicknames, tags, scenes, schedules, rules, webhooks, alerts, and templates.
             Import on a new PC to restore your setup.
+          </p>
+        </div>
+
+        {/* Discovery */}
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+            Discovery
+          </h2>
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-zinc-300">Health check interval</label>
+            <select
+              value={scanInterval}
+              onChange={async (e) => {
+                const val = e.target.value;
+                setScanInterval(val);
+                try {
+                  await invoke("set_setting", { key: "scan_interval", value: val });
+                } catch (err) {
+                  console.error("Failed to save scan interval:", err);
+                }
+              }}
+              className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300"
+            >
+              <option value="10">10 seconds</option>
+              <option value="30">30 seconds (default)</option>
+              <option value="60">1 minute</option>
+              <option value="120">2 minutes</option>
+            </select>
+          </div>
+          <p className="text-xs text-zinc-600 mt-2">
+            How often Trellis checks if devices are still online. Lower values detect changes faster but use more network traffic.
           </p>
         </div>
 

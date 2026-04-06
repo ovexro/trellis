@@ -13,6 +13,19 @@ function formatUptime(seconds: number): string {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
+function formatLastSeen(iso: string): string {
+  if (!iso) return "Unknown";
+  const diff = Date.now() - new Date(iso).getTime();
+  if (diff < 0 || isNaN(diff)) return "Unknown";
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ago`;
+}
+
 export default function DeviceCard({ device }: DeviceCardProps) {
   const navigate = useNavigate();
 
@@ -46,24 +59,38 @@ export default function DeviceCard({ device }: DeviceCardProps) {
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-        <div className="flex items-center gap-1.5">
-          <Cpu size={12} className="text-zinc-600 flex-shrink-0" />
-          <span className="text-zinc-300">{device.system.chip}</span>
-        </div>
+        {device.system.chip ? (
+          <div className="flex items-center gap-1.5">
+            <Cpu size={12} className="text-zinc-600 flex-shrink-0" />
+            <span className="text-zinc-300">{device.system.chip}</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5">
+            <Cpu size={12} className="text-zinc-600 flex-shrink-0" />
+            <span className="text-zinc-600">{device.platform || "—"}</span>
+          </div>
+        )}
         <div>
           <span className="text-zinc-600">FW </span>
-          <span className="text-zinc-300">{device.firmware}</span>
+          <span className="text-zinc-300">{device.firmware || "—"}</span>
         </div>
-        <div>
-          <span className="text-zinc-600">RSSI </span>
-          <span className="text-zinc-300">
-            {device.system.rssi} dBm
-          </span>
-        </div>
-        <div>
-          <span className="text-zinc-600">Up </span>
-          <span className="text-zinc-300">{formatUptime(device.system.uptime_s)}</span>
-        </div>
+        {device.online ? (
+          <>
+            <div>
+              <span className="text-zinc-600">RSSI </span>
+              <span className="text-zinc-300">{device.system.rssi} dBm</span>
+            </div>
+            <div>
+              <span className="text-zinc-600">Up </span>
+              <span className="text-zinc-300">{formatUptime(device.system.uptime_s)}</span>
+            </div>
+          </>
+        ) : (
+          <div className="col-span-2">
+            <span className="text-zinc-600">Last seen </span>
+            <span className="text-zinc-400">{formatLastSeen(device.last_seen)}</span>
+          </div>
+        )}
       </div>
 
       <div className="mt-3 pt-3 border-t border-zinc-800/50">

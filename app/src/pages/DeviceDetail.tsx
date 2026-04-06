@@ -131,8 +131,13 @@ export default function DeviceDetail() {
         <div>
           <DeviceNickname deviceId={device.id} originalName={device.name} />
           <p className="text-sm text-zinc-500 mt-1">
-            {device.ip}:{device.port} &middot; {device.system.chip} &middot; FW{" "}
-            {device.firmware}
+            {device.ip}:{device.port}
+            {(device.system.chip || device.platform) && (
+              <> &middot; {device.system.chip || device.platform}</>
+            )}
+            {device.firmware && (
+              <> &middot; FW {device.firmware}</>
+            )}
           </p>
         </div>
         <div
@@ -175,33 +180,48 @@ export default function DeviceDetail() {
               System
             </span>
           </h2>
-          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
-            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
-              RSSI
-            </span>
-            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
-              {device.system.rssi}{" "}
-              <span className="text-sm text-zinc-500">dBm</span>
-            </p>
-          </div>
-          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
-            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
-              Free Heap
-            </span>
-            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
-              {(device.system.heap_free / 1024).toFixed(0)}{" "}
-              <span className="text-sm text-zinc-500">KB</span>
-            </p>
-          </div>
-          <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
-            <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
-              Uptime
-            </span>
-            <p className="text-xl font-mono text-zinc-100 -mt-0.5">
-              {Math.floor(device.system.uptime_s / 3600)}h{" "}
-              {Math.floor((device.system.uptime_s % 3600) / 60)}m
-            </p>
-          </div>
+          {device.online ? (
+            <>
+              <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+                <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                  RSSI
+                </span>
+                <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+                  {device.system.rssi}{" "}
+                  <span className="text-sm text-zinc-500">dBm</span>
+                </p>
+              </div>
+              <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+                <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                  Free Heap
+                </span>
+                <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+                  {(device.system.heap_free / 1024).toFixed(0)}{" "}
+                  <span className="text-sm text-zinc-500">KB</span>
+                </p>
+              </div>
+              <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+                <span className="text-[11px] text-zinc-500 uppercase tracking-wider">
+                  Uptime
+                </span>
+                <p className="text-xl font-mono text-zinc-100 -mt-0.5">
+                  {Math.floor(device.system.uptime_s / 3600)}h{" "}
+                  {Math.floor((device.system.uptime_s % 3600) / 60)}m
+                </p>
+              </div>
+            </>
+          ) : (
+            <div className="p-4 bg-zinc-900 rounded-xl border border-zinc-800">
+              <p className="text-sm text-zinc-500">
+                Device is offline. System stats will appear when the device reconnects.
+              </p>
+              {device.last_seen && (
+                <p className="text-xs text-zinc-600 mt-2">
+                  Last seen: {new Date(device.last_seen).toLocaleString()}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -266,7 +286,6 @@ export default function DeviceDetail() {
                 `Remove ${device.name}? This deletes all saved data, metrics, and alerts.`,
               )
             ) {
-              const { useDeviceStore } = await import("@/stores/deviceStore");
               await useDeviceStore.getState().removeDevice(device.id);
               navigate("/");
             }

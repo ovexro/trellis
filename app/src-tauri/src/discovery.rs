@@ -12,7 +12,7 @@ use crate::db::Database;
 use crate::device::{Device, DeviceInfo};
 
 const SERVICE_TYPE: &str = "_trellis._tcp.local.";
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_HEALTH_CHECK_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize)]
 struct DeviceDiscoveryEvent {
@@ -225,7 +225,13 @@ fn health_check_loop(
     app_handle: AppHandle,
 ) {
     loop {
-        thread::sleep(HEALTH_CHECK_INTERVAL);
+        // Read configurable scan interval from DB settings, default to 30s
+        let interval_secs = app_handle
+            .try_state::<crate::db::Database>()
+            .and_then(|db| db.get_setting("scan_interval").ok().flatten())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_HEALTH_CHECK_SECS);
+        thread::sleep(Duration::from_secs(interval_secs));
 
         if *stop_flag.lock().unwrap() {
             break;
@@ -245,9 +251,15 @@ fn health_check_loop(
                     if let Some(device) = devs.get_mut(&id) {
                         let was_offline = !device.online;
                         device.online = true;
+                        device.name = info.name;
+                        device.firmware = info.firmware;
+                        device.platform = info.platform;
                         device.system = info.system;
                         device.capabilities = info.capabilities;
                         device.last_seen = chrono::Utc::now().to_rfc3339();
+
+                        // Persist updated info to SQLite
+                        persist_device(&app_handle, device);
 
                         if was_offline {
                             conn_mgr.connect_device(&id, &ip, port + 1);

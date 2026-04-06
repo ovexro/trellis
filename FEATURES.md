@@ -43,19 +43,19 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Copy to clipboard
 
 ### OTA Updates
-- [ ] Drag & drop .bin firmware file
+- [x] Drag & drop .bin firmware file
 - [x] Upload firmware to selected device (ESP32, native file picker)
 - [x] Progress bar during OTA (WebSocket events from device)
 - [x] Success/failure notification
 - [x] Firmware version tracking (history per device, stored in SQLite)
 - [x] Firmware rollback (one-click re-flash previous firmware)
-- [ ] Firmware version comparison (current vs new)
+- [x] Firmware version comparison (current vs new)
 
 ### Settings & Preferences
 - [x] Dark theme (default)
-- [ ] Scan interval configuration (persisted)
+- [x] Scan interval configuration (persisted)
 - [x] Device nicknames (inline edit, persisted in SQLite)
-- [ ] Window state persistence (size, position)
+- [x] Window state persistence (size, position)
 - [x] Minimize to system tray (close hides, tray restores, right-click quit)
 
 ### Quick Flash (arduino-cli integration)
@@ -68,7 +68,7 @@ Single source of truth for all features. Check items as they are implemented and
 ### App Shell
 - [x] Sidebar navigation
 - [x] Header with connection status
-- [ ] About dialog with version
+- [x] About dialog with version
 
 ## Microcontroller Library
 
@@ -147,6 +147,13 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Auto-refresh (5s polling)
 - [x] Zero external dependencies (single embedded HTML file)
 
+## Scenes
+
+- [x] Multi-action scene creation (set multiple devices at once)
+- [x] One-click scene execution (sequential command dispatch)
+- [x] Scene persistence (localStorage)
+- [x] Device/capability/value selector per action
+
 ## Automation
 
 - [x] Scheduled actions (cron-based: "turn on pump at 6am daily")
@@ -156,6 +163,23 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device templates (save/load capability configs for firmware generator)
 - [x] CSV data export (download sensor history from charts)
 - [x] Integrated terminal (run shell commands, arrow-key history)
+
+## Data Management
+
+- [x] Config import/export (full backup of devices, scenes, schedules, rules, webhooks, alerts, templates, groups)
+- [x] Automatic data retention cleanup (metrics + logs older than 30 days)
+- [x] Device health diagnostics (RSSI warnings, heap warnings)
+
+## Microcontroller Library — Additional API
+
+- [x] `setSwitch(id, value)` — update switch state from firmware
+- [x] `setText(id, value)` — update text value from firmware
+- [x] `setColor(id, value)` — update color value from firmware
+- [x] `getSensor(id)` / `getSwitch(id)` — read current capability values
+- [x] `setFirmwareVersion(version)` — custom firmware version string
+- [x] `log(severity, message)` — send structured logs to desktop app
+- [x] `logInfo()` / `logWarn()` / `logError()` — convenience log methods
+- [x] `beginAutoConnect(timeout)` — WiFi provisioning via captive portal AP
 
 ## Infrastructure
 

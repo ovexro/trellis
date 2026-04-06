@@ -149,13 +149,61 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Intercept window close → minimize to tray
+            // Restore saved window state (size + position)
             if let Some(window) = app.get_webview_window("main") {
+                if let Some(db_state) = app.try_state::<db::Database>() {
+                    if let Ok(Some(state_json)) = db_state.get_setting("window_state") {
+                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&state_json) {
+                            if let (Some(w), Some(h)) = (
+                                state.get("width").and_then(|v| v.as_f64()),
+                                state.get("height").and_then(|v| v.as_f64()),
+                            ) {
+                                let _ = window.set_size(tauri::LogicalSize::new(w, h));
+                            }
+                            if let (Some(x), Some(y)) = (
+                                state.get("x").and_then(|v| v.as_f64()),
+                                state.get("y").and_then(|v| v.as_f64()),
+                            ) {
+                                let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+                            }
+                            if state.get("maximized").and_then(|v| v.as_bool()).unwrap_or(false) {
+                                let _ = window.maximize();
+                            }
+                        }
+                    }
+                }
+
+                // Save window state on resize/move/close, and intercept close → minimize to tray
                 let w = window.clone();
+                let save_handle = app.handle().clone();
                 window.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = w.hide();
+                    match event {
+                        tauri::WindowEvent::CloseRequested { api, .. } => {
+                            api.prevent_close();
+                            let _ = w.hide();
+                        }
+                        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+                            // Save current window state
+                            if let (Ok(size), Ok(pos), Ok(maximized)) = (
+                                w.outer_size(),
+                                w.outer_position(),
+                                w.is_maximized(),
+                            ) {
+                                if let Ok(scale) = w.scale_factor() {
+                                    let state = serde_json::json!({
+                                        "width": size.width as f64 / scale,
+                                        "height": size.height as f64 / scale,
+                                        "x": pos.x as f64 / scale,
+                                        "y": pos.y as f64 / scale,
+                                        "maximized": maximized,
+                                    });
+                                    if let Some(db) = save_handle.try_state::<db::Database>() {
+                                        let _ = db.set_setting("window_state", &state.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 });
             }

@@ -47,6 +47,18 @@ export default function Dashboard() {
     loadGroups();
   }, [loadGroups]);
 
+  // Close modals on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showGroupManager) setShowGroupManager(false);
+        else if (showAddDialog) setShowAddDialog(false);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [showGroupManager, showAddDialog]);
+
   const onlineCount = devices.filter((d) => d.online).length;
 
   const handleAdd = async () => {
