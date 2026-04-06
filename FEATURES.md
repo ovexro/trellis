@@ -6,7 +6,7 @@ Single source of truth for all features. Check items as they are implemented and
 
 ### Discovery & Connection
 - [x] mDNS device scanning on local network
-- [ ] Auto-refresh device list (periodic + on-demand)
+- [x] Auto-refresh device list (continuous mDNS + health check)
 - [x] Device online/offline detection
 - [x] Manual IP entry fallback
 - [x] USB serial device detection (listing)
@@ -24,25 +24,25 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Sensor (read-only gauge/value) — maps to `type: "sensor"`
 - [x] Color picker — maps to `type: "color"`
 - [x] Text display — maps to `type: "text"`
-- [ ] Controls update in real-time via WebSocket
+- [x] Controls update in real-time via WebSocket
 
 ### Charts & Metrics
-- [ ] Time-series chart for sensor data
+- [x] Time-series chart for sensor data
 - [ ] System metrics panel (RSSI, heap, uptime)
-- [ ] Metric history stored in SQLite
-- [ ] Configurable chart time range
+- [x] Metric history stored in SQLite
+- [x] Configurable chart time range
 
 ### Serial Monitor
 - [x] List USB serial ports
-- [ ] Connect to serial port (baud rate selection)
-- [ ] Send/receive text
-- [ ] Auto-scroll with pause
-- [ ] Clear buffer
-- [ ] Copy to clipboard
+- [x] Connect to serial port (baud rate selection)
+- [x] Send/receive text
+- [x] Auto-scroll with pause
+- [x] Clear buffer
+- [x] Copy to clipboard
 
 ### OTA Updates
 - [ ] Drag & drop .bin firmware file
-- [ ] Upload firmware to selected device
+- [x] Upload firmware to selected device (ESP32 only)
 - [ ] Progress bar during OTA
 - [ ] Success/failure notification
 - [ ] Firmware version comparison (current vs new)
