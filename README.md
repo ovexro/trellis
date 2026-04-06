@@ -10,7 +10,7 @@ Trellis is a desktop app + microcontroller library that makes your boards feel l
 >
 > Read the full story: **[What is Trellis?](ABOUT.md)** | **[User Guide](docs/guide.md)**
 
-![Dashboard — device card with live status](screenshots/dashboard.png)
+![Device Detail — live controls, sensor charts, system stats](screenshots/device-detail.png)
 
 ## How it works
 
@@ -88,7 +88,7 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 
 | | |
 |---|---|
-| ![Device Detail — controls, charts, system stats](screenshots/device-detail.png) | ![Firmware Generator + Quick Flash](screenshots/new-device.png) |
+| ![Dashboard — device cards with live status](screenshots/dashboard.png) | ![Firmware Generator + Quick Flash](screenshots/new-device.png) |
 | ![Automation — schedules, rules, webhooks](screenshots/automation.png) | ![OTA Firmware Updates — drag & drop](screenshots/ota.png) |
 | ![Settings — config, notifications, diagnostics](screenshots/settings.png) | ![Serial Monitor](screenshots/serial.png) |
 
