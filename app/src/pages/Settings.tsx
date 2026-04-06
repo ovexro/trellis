@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Download, Upload, Check } from "lucide-react";
+import { Download, Upload, Check, Bell } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 export default function Settings() {
@@ -9,14 +9,74 @@ export default function Settings() {
   const [exportStatus, setExportStatus] = useState("");
   const [importStatus, setImportStatus] = useState("");
 
+  // ntfy.sh push notification state
+  const [ntfyTopic, setNtfyTopic] = useState("");
+  const [ntfySavedTopic, setNtfySavedTopic] = useState<string | null>(null);
+  const [ntfyStatus, setNtfyStatus] = useState("");
+
+  useEffect(() => {
+    invoke<string | null>("get_setting", { key: "ntfy_topic" }).then((topic) => {
+      if (topic) {
+        setNtfyTopic(topic);
+        setNtfySavedTopic(topic);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const saveNtfyTopic = async () => {
+    const trimmed = ntfyTopic.trim();
+    if (!trimmed) {
+      setNtfyStatus("Topic name cannot be empty");
+      setTimeout(() => setNtfyStatus(""), 3000);
+      return;
+    }
+    try {
+      await invoke("set_setting", { key: "ntfy_topic", value: trimmed });
+      setNtfySavedTopic(trimmed);
+      setNtfyStatus("Topic saved — push notifications enabled");
+      setTimeout(() => setNtfyStatus(""), 3000);
+    } catch (err) {
+      setNtfyStatus(`Failed to save: ${err}`);
+    }
+  };
+
+  const testNtfy = async () => {
+    const topic = ntfySavedTopic || ntfyTopic.trim();
+    if (!topic) {
+      setNtfyStatus("Save a topic first");
+      setTimeout(() => setNtfyStatus(""), 3000);
+      return;
+    }
+    try {
+      await invoke("test_ntfy", { topic });
+      setNtfyStatus("Test notification sent — check your phone");
+      setTimeout(() => setNtfyStatus(""), 5000);
+    } catch (err) {
+      setNtfyStatus(`Test failed: ${err}`);
+    }
+  };
+
+  const clearNtfyTopic = async () => {
+    try {
+      await invoke("delete_setting", { key: "ntfy_topic" });
+      setNtfyTopic("");
+      setNtfySavedTopic(null);
+      setNtfyStatus("Push notifications disabled");
+      setTimeout(() => setNtfyStatus(""), 3000);
+    } catch (err) {
+      setNtfyStatus(`Failed to clear: ${err}`);
+    }
+  };
+
   const exportConfig = async () => {
     try {
-      const [savedDevices, schedules, rules, webhooks, templates] = await Promise.all([
+      const [savedDevices, schedules, rules, webhooks, templates, groups] = await Promise.all([
         invoke("get_saved_devices"),
         invoke("get_schedules"),
         invoke("get_rules"),
         invoke("get_webhooks"),
         invoke("get_templates"),
+        invoke("get_groups"),
       ]);
 
       // Collect alerts for all known devices
@@ -33,7 +93,7 @@ export default function Settings() {
       const scenes = localStorage.getItem("trellis-scenes");
 
       const config = {
-        version: "0.1.3",
+        version: "0.1.4",
         exported_at: new Date().toISOString(),
         devices: savedDevices,
         scenes: scenes ? JSON.parse(scenes) : [],
@@ -42,6 +102,7 @@ export default function Settings() {
         webhooks,
         alerts: allAlerts,
         templates,
+        groups,
         device_count: devices.length,
       };
 
@@ -80,7 +141,23 @@ export default function Settings() {
           imported.push(`${config.scenes.length} scenes`);
         }
 
-        // Restore saved devices (nicknames, tags)
+        // Restore groups (must be before devices so group_id references are valid)
+        const groupIdMap = new Map<number, number>(); // old id → new id
+        if (config.groups && Array.isArray(config.groups)) {
+          for (const g of config.groups) {
+            try {
+              const newId = await invoke<number>("create_group", {
+                name: g.name, color: g.color || "#6366f1",
+              });
+              groupIdMap.set(g.id, newId);
+            } catch (err) {
+              console.error("Failed to import group:", err);
+            }
+          }
+          imported.push(`${config.groups.length} groups`);
+        }
+
+        // Restore saved devices (nicknames, tags, group assignment)
         if (config.devices && Array.isArray(config.devices)) {
           for (const dev of config.devices) {
             if (dev.nickname) {
@@ -88,6 +165,9 @@ export default function Settings() {
             }
             if (dev.tags) {
               await invoke("set_device_tags", { deviceId: dev.id, tags: dev.tags });
+            }
+            if (dev.group_id != null && groupIdMap.has(dev.group_id)) {
+              await invoke("set_device_group", { deviceId: dev.id, groupId: groupIdMap.get(dev.group_id) });
             }
           }
           imported.push(`${config.devices.length} devices`);
@@ -219,6 +299,62 @@ export default function Settings() {
           </p>
         </div>
 
+        {/* Push Notifications */}
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+            Push Notifications
+          </h2>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-zinc-300">
+              <Bell size={16} className={ntfySavedTopic ? "text-trellis-400" : "text-zinc-500"} />
+              {ntfySavedTopic ? (
+                <span>Enabled — sending to <code className="px-1.5 py-0.5 bg-zinc-800 rounded text-trellis-400 text-xs">{ntfySavedTopic}</code></span>
+              ) : (
+                <span className="text-zinc-500">Disabled — no topic configured</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={ntfyTopic}
+                onChange={(e) => setNtfyTopic(e.target.value)}
+                placeholder="Enter ntfy topic name"
+                className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-trellis-500"
+              />
+              <button
+                onClick={saveNtfyTopic}
+                className="px-4 py-2 bg-trellis-600 hover:bg-trellis-500 text-white rounded-lg text-sm transition-colors"
+              >
+                Save
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={testNtfy}
+                disabled={!ntfySavedTopic}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Test
+              </button>
+              <button
+                onClick={clearNtfyTopic}
+                disabled={!ntfySavedTopic}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Clear
+              </button>
+            </div>
+            {ntfyStatus && (
+              <p className={`text-xs flex items-center gap-1 ${ntfyStatus.includes("failed") || ntfyStatus.includes("Failed") || ntfyStatus.includes("cannot") ? "text-red-400" : "text-trellis-400"}`}>
+                <Check size={12} /> {ntfyStatus}
+              </p>
+            )}
+            <p className="text-xs text-zinc-600">
+              Install the ntfy app on your phone, subscribe to your topic name, and Trellis will send push alerts when sensors trigger alerts or devices go offline.
+            </p>
+          </div>
+        </div>
+
         {/* Diagnostics */}
         <div>
           <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
@@ -267,7 +403,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.1.3</p>
+            <p>Trellis v0.1.4</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">

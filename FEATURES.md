@@ -17,6 +17,8 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Click card → device detail view
 - [x] Device grouping / tagging (nicknames, tags, pills on cards)
 - [x] Search / filter devices (by name, nickname, IP, platform, chip, tags)
+- [x] Device rooms/groups (create groups, assign devices, grouped dashboard view)
+- [x] Group management UI (create, edit, delete, color palette)
 
 ### Auto-Generated Controls
 - [x] Switch (toggle) — maps to `type: "switch"`
@@ -45,6 +47,8 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Upload firmware to selected device (ESP32, native file picker)
 - [x] Progress bar during OTA (WebSocket events from device)
 - [x] Success/failure notification
+- [x] Firmware version tracking (history per device, stored in SQLite)
+- [x] Firmware rollback (one-click re-flash previous firmware)
 - [ ] Firmware version comparison (current vs new)
 
 ### Settings & Preferences
@@ -110,6 +114,31 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] OTA progress event: `{"event": "ota_progress", "percent": N}`
 - [x] Heartbeat: `{"event": "heartbeat"}` (periodic, every 10s)
 - [x] Log event: `{"event": "log", "severity": "...", "message": "..."}`
+
+### Push Notifications
+- [x] ntfy.sh integration (send alerts to phone, no app account needed)
+- [x] Push on alert trigger (sensor threshold exceeded)
+- [x] Push on device offline
+- [x] Settings UI for ntfy topic configuration
+- [x] Test notification button
+
+### REST API
+- [x] HTTP API server on port 9090 (runs alongside desktop app)
+- [x] Full device CRUD (list, get, delete, send command, set nickname/group)
+- [x] Metrics, logs, alerts, firmware history endpoints
+- [x] Groups, schedules, rules, webhooks CRUD
+- [x] Settings read/write endpoints
+- [x] CORS support for cross-origin access
+- [x] CSV metrics export endpoint
+
+### Web UI Dashboard
+- [x] Responsive web dashboard (phone + desktop) at localhost:9090
+- [x] Device cards with live status, grouped view
+- [x] Interactive controls (switch, slider, sensor, color, text)
+- [x] Automation overview (schedules, rules, webhooks)
+- [x] Settings management (ntfy, groups)
+- [x] Auto-refresh (5s polling)
+- [x] Zero external dependencies (single embedded HTML file)
 
 ## Automation
 

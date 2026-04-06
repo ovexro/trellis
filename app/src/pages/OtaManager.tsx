@@ -2,8 +2,23 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, CheckCircle, AlertCircle, FileUp } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
+
+interface FirmwareRecord {
+  id: number;
+  device_id: string;
+  version: string;
+  file_path: string;
+  file_size: number;
+  uploaded_at: string;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function OtaManager() {
   const { devices } = useDeviceStore();
@@ -12,6 +27,8 @@ export default function OtaManager() {
   const [otaProgress, setOtaProgress] = useState(-1);
   const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const onlineDevices = devices.filter((d) => d.online);
   const selectedDeviceObj = devices.find((d) => d.id === selectedDevice);
@@ -30,6 +47,55 @@ export default function OtaManager() {
     );
     return () => { unlisten.then((fn) => fn()); };
   }, [selectedDevice]);
+
+  const loadFirmwareHistory = async (deviceId: string) => {
+    if (!deviceId) {
+      setFirmwareHistory([]);
+      return;
+    }
+    setHistoryLoading(true);
+    try {
+      const history = await invoke<FirmwareRecord[]>("get_firmware_history", { deviceId });
+      setFirmwareHistory(history);
+    } catch {
+      setFirmwareHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFirmwareHistory(selectedDevice);
+  }, [selectedDevice]);
+
+  const handleRollback = async (record: FirmwareRecord) => {
+    const device = devices.find((d) => d.id === selectedDevice);
+    if (!device) return;
+    setStatus("uploading");
+    setErrorMsg("");
+    setOtaProgress(0);
+    try {
+      await invoke("rollback_firmware", {
+        deviceId: device.id,
+        ip: device.ip,
+        port: device.port,
+        firmwareRecordPath: record.file_path,
+      });
+    } catch (err) {
+      setStatus("error");
+      setErrorMsg(String(err));
+    }
+  };
+
+  const handleDeleteRecord = async (record: FirmwareRecord) => {
+    if (!confirm(`Delete stored firmware v${record.version} (${formatFileSize(record.file_size)})?`)) return;
+    try {
+      await invoke("delete_firmware_record", { id: record.id });
+      setFirmwareHistory((prev) => prev.filter((r) => r.id !== record.id));
+    } catch (err) {
+      setErrorMsg(String(err));
+    }
+  };
 
   const handleUpload = async () => {
     if (!selectedDevice || !firmwarePath) return;
@@ -50,6 +116,7 @@ export default function OtaManager() {
       // Don't set success here — the OTA command was SENT but the device
       // hasn't finished downloading yet. Status will update via ota_progress events.
       setOtaProgress(0);
+      loadFirmwareHistory(selectedDevice);
     } catch (err) {
       setStatus("error");
       setErrorMsg(String(err));
@@ -183,6 +250,64 @@ export default function OtaManager() {
           </div>
         )}
       </div>
+
+      {/* Firmware History */}
+      {selectedDevice && (
+        <div className="mt-6 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <History size={16} className="text-zinc-400" />
+            <h2 className="text-sm font-semibold text-zinc-200">Firmware History</h2>
+          </div>
+
+          {selectedDeviceObj && (
+            <p className="text-xs text-zinc-500 mb-4">
+              Current firmware: <span className="text-zinc-300 font-mono">{selectedDeviceObj.firmware}</span>
+            </p>
+          )}
+
+          {historyLoading ? (
+            <p className="text-xs text-zinc-600">Loading history...</p>
+          ) : firmwareHistory.length === 0 ? (
+            <p className="text-xs text-zinc-600">No firmware history yet. Upload a firmware to start tracking.</p>
+          ) : (
+            <div className="space-y-2">
+              {firmwareHistory.map((record) => (
+                <div
+                  key={record.id}
+                  className="flex items-center justify-between bg-zinc-800/50 border border-zinc-700/50 rounded-lg px-4 py-3"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm text-zinc-300 font-mono truncate">
+                      v{record.version}
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      {formatFileSize(record.file_size)} &middot; {new Date(record.uploaded_at + "Z").toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                    <button
+                      onClick={() => handleRollback(record)}
+                      disabled={status === "uploading" || !selectedDeviceObj?.online}
+                      title="Rollback to this firmware"
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md transition-colors disabled:opacity-40"
+                    >
+                      <RotateCcw size={12} />
+                      Rollback
+                    </button>
+                    <button
+                      onClick={() => handleDeleteRecord(record)}
+                      title="Delete stored firmware"
+                      className="flex items-center gap-1.5 px-2 py-1.5 text-xs text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

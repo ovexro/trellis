@@ -28,6 +28,14 @@ export interface Device {
   last_seen: string;
   nickname?: string;
   tags?: string;
+  group_id?: number | null;
+}
+
+export interface DeviceGroup {
+  id: number;
+  name: string;
+  color: string;
+  sort_order: number;
 }
 
 export interface SerialPortInfo {

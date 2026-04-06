@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trellis</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #09090b;
+      --card: #18181b;
+      --border: #27272a;
+      --text: #e4e4e7;
+      --text-dim: #a1a1aa;
+      --text-faint: #71717a;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --accent-dim: rgba(99, 102, 241, 0.15);
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --orange: #f97316;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.4);
+      --shadow-lg: 0 4px 16px rgba(0,0,0,0.5);
+      --transition: 0.2s ease;
+    }
+
+    html { font-size: 15px; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ── */
+    .header {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(9, 9, 11, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.25rem;
+    }
+    .header-inner {
+      max-width: 1200px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 56px;
+    }
+    .logo {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-weight: 700; font-size: 1.15rem; color: var(--text);
+      text-decoration: none;
+    }
+    .logo-icon {
+      width: 28px; height: 28px;
+      background: var(--accent);
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.85rem; color: #fff; font-weight: 800;
+    }
+    .tab-nav { display: flex; gap: 0.25rem; }
+    .tab-btn {
+      background: none; border: none; color: var(--text-dim);
+      padding: 0.5rem 1rem; font-size: 0.875rem; cursor: pointer;
+      border-radius: var(--radius-sm); transition: var(--transition);
+      font-weight: 500; position: relative;
+    }
+    .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+    .tab-btn.active {
+      color: var(--text); background: rgba(99, 102, 241, 0.12);
+    }
+    .tab-btn.active::after {
+      content: ''; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
+      width: 24px; height: 2px; background: var(--accent); border-radius: 2px;
+    }
+
+    /* ── Mobile Bottom Nav ── */
+    .bottom-nav {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(9, 9, 11, 0.92); backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border);
+      padding: 0.35rem 0 calc(0.35rem + env(safe-area-inset-bottom));
+    }
+    .bottom-nav .tab-nav {
+      display: flex; justify-content: space-around; width: 100%;
+    }
+    .bottom-nav .tab-btn {
+      flex-direction: column; gap: 0.15rem; font-size: 0.7rem;
+      display: flex; align-items: center; padding: 0.4rem 0.75rem;
+    }
+    .bottom-nav .tab-btn::after { display: none; }
+    .bottom-nav .tab-btn .tab-icon { font-size: 1.25rem; line-height: 1; }
+
+    /* ── Main ── */
+    .main {
+      max-width: 1200px; margin: 0 auto;
+      padding: 1.25rem;
+    }
+
+    /* ── Tab Panels ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; animation: fadeIn 0.2s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* ── Cards Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 0.875rem;
+    }
+
+    /* ── Device Card ── */
+    .device-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color var(--transition), box-shadow var(--transition);
+      cursor: pointer;
+    }
+    .device-card:hover { border-color: #3f3f46; }
+    .device-card.expanded { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); cursor: default; }
+
+    .card-header {
+      padding: 1rem 1.125rem;
+      display: flex; align-items: center; gap: 0.75rem;
+    }
+    .status-dot {
+      width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+    }
+    .status-dot.online { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+    .status-dot.offline { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+
+    .card-title-block { flex: 1; min-width: 0; }
+    .card-name {
+      font-weight: 600; font-size: 0.95rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .card-subtitle {
+      font-size: 0.75rem; color: var(--text-faint);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .card-badge {
+      font-size: 0.65rem; padding: 0.15rem 0.5rem;
+      background: rgba(255,255,255,0.06); border-radius: 20px;
+      color: var(--text-dim); white-space: nowrap; flex-shrink: 0;
+    }
+
+    .card-meta {
+      display: flex; flex-wrap: wrap; gap: 0.5rem 1rem;
+      padding: 0 1.125rem 0.875rem;
+      font-size: 0.75rem; color: var(--text-dim);
+    }
+    .meta-item { display: flex; align-items: center; gap: 0.3rem; }
+    .meta-label { color: var(--text-faint); }
+
+    /* ── Expanded Controls ── */
+    .card-controls {
+      max-height: 0; overflow: hidden;
+      transition: max-height 0.35s ease;
+    }
+    .device-card.expanded .card-controls { max-height: 800px; }
+
+    .controls-inner {
+      padding: 0 1.125rem 1.125rem;
+      border-top: 1px solid var(--border);
+      padding-top: 1rem;
+    }
+
+    .control-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.6rem 0;
+      gap: 0.75rem;
+    }
+    .control-row + .control-row { border-top: 1px solid rgba(255,255,255,0.04); }
+    .control-label { font-size: 0.85rem; color: var(--text-dim); flex-shrink: 0; }
+    .control-value { display: flex; align-items: center; gap: 0.5rem; }
+
+    /* ── Toggle Switch ── */
+    .toggle {
+      width: 44px; height: 24px; border-radius: 12px;
+      background: #3f3f46; border: none; cursor: pointer;
+      position: relative; transition: background var(--transition);
+      flex-shrink: 0;
+    }
+    .toggle.on { background: var(--accent); }
+    .toggle::after {
+      content: ''; position: absolute;
+      top: 3px; left: 3px; width: 18px; height: 18px;
+      border-radius: 50%; background: #fff;
+      transition: transform var(--transition);
+    }
+    .toggle.on::after { transform: translateX(20px); }
+
+    /* ── Slider ── */
+    .slider-wrap { display: flex; align-items: center; gap: 0.6rem; flex: 1; max-width: 220px; }
+    .slider-val { font-size: 0.8rem; color: var(--text); min-width: 2rem; text-align: right; font-variant-numeric: tabular-nums; }
+    input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      flex: 1; height: 6px; border-radius: 3px;
+      background: #3f3f46; outline: none; cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 18px; height: 18px;
+      border-radius: 50%; background: var(--accent);
+      border: 2px solid #fff; cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: var(--accent); border: 2px solid #fff; cursor: pointer;
+    }
+
+    /* ── Color Picker ── */
+    input[type="color"] {
+      -webkit-appearance: none; appearance: none;
+      width: 36px; height: 28px; border: 2px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer;
+      background: none; padding: 0;
+    }
+    input[type="color"]::-webkit-color-swatch-wrapper { padding: 2px; }
+    input[type="color"]::-webkit-color-swatch { border-radius: 3px; border: none; }
+
+    /* ── Text Input ── */
+    .text-input-wrap { display: flex; gap: 0.4rem; flex: 1; max-width: 260px; }
+    .text-input-wrap input {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text);
+      padding: 0.35rem 0.6rem; font-size: 0.8rem; outline: none;
+      transition: border-color var(--transition);
+    }
+    .text-input-wrap input:focus { border-color: var(--accent); }
+
+    /* ── Sensor ── */
+    .sensor-value {
+      font-size: 1.1rem; font-weight: 600; color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .sensor-unit { font-size: 0.8rem; color: var(--text-dim); font-weight: 400; }
+
+    /* ── System Info ── */
+    .sys-info {
+      margin-top: 0.75rem; padding-top: 0.75rem;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      display: flex; flex-wrap: wrap; gap: 0.4rem 1rem;
+      font-size: 0.7rem; color: var(--text-faint);
+    }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+      padding: 0.45rem 1rem; border: none; border-radius: var(--radius-sm);
+      font-size: 0.8rem; font-weight: 500; cursor: pointer;
+      transition: var(--transition); text-decoration: none;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.75rem; }
+    .btn-ghost { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+    .btn-ghost:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+    .btn-danger { background: rgba(239,68,68,0.15); color: var(--red); }
+    .btn-danger:hover { background: rgba(239,68,68,0.25); }
+
+    /* ── Group Sections ── */
+    .group-section { margin-bottom: 1.5rem; }
+    .group-header {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.6rem 0; cursor: pointer; user-select: none;
+      margin-bottom: 0.5rem;
+    }
+    .group-color {
+      width: 4px; height: 20px; border-radius: 2px; flex-shrink: 0;
+    }
+    .group-name { font-weight: 600; font-size: 0.95rem; }
+    .group-count { font-size: 0.75rem; color: var(--text-faint); }
+    .group-chevron {
+      margin-left: auto; color: var(--text-faint); transition: transform var(--transition);
+      font-size: 0.8rem;
+    }
+    .group-header.collapsed .group-chevron { transform: rotate(-90deg); }
+    .group-body { }
+    .group-header.collapsed + .group-body { display: none; }
+
+    /* ── Section Header ── */
+    .section-title {
+      font-size: 0.8rem; font-weight: 600; color: var(--text-faint);
+      text-transform: uppercase; letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Automation Cards ── */
+    .auto-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1rem 1.125rem;
+      margin-bottom: 0.5rem;
+    }
+    .auto-card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.25rem; }
+    .auto-card-detail { font-size: 0.8rem; color: var(--text-dim); }
+    .auto-card-badge {
+      display: inline-block; font-size: 0.65rem; padding: 0.1rem 0.45rem;
+      border-radius: 10px; font-weight: 600;
+    }
+    .badge-enabled { background: rgba(34,197,94,0.15); color: var(--green); }
+    .badge-disabled { background: rgba(239,68,68,0.12); color: var(--red); }
+    .auto-section { margin-bottom: 2rem; }
+
+    /* ── Settings ── */
+    .settings-section {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .settings-title { font-weight: 600; font-size: 1rem; margin-bottom: 1rem; }
+
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.75rem 0; gap: 1rem;
+    }
+    .setting-row + .setting-row { border-top: 1px solid rgba(255,255,255,0.04); }
+    .setting-label-block { flex: 1; }
+    .setting-label { font-size: 0.85rem; font-weight: 500; }
+    .setting-desc { font-size: 0.75rem; color: var(--text-faint); }
+
+    .input-text {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text);
+      padding: 0.45rem 0.75rem; font-size: 0.85rem; outline: none;
+      width: 100%; transition: border-color var(--transition);
+    }
+    .input-text:focus { border-color: var(--accent); }
+
+    .input-row { display: flex; gap: 0.4rem; }
+    .input-row .input-text { flex: 1; }
+
+    /* ── Groups Manager ── */
+    .group-list-item {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.6rem 0;
+    }
+    .group-list-item + .group-list-item { border-top: 1px solid rgba(255,255,255,0.04); }
+    .group-swatch {
+      width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0;
+    }
+    .group-list-name { flex: 1; font-size: 0.85rem; }
+    .group-list-actions { display: flex; gap: 0.3rem; }
+
+    .new-group-row { display: flex; gap: 0.4rem; margin-top: 0.75rem; align-items: center; }
+    .new-group-row input[type="text"] {
+      flex: 1; background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text);
+      padding: 0.4rem 0.6rem; font-size: 0.8rem; outline: none;
+    }
+    .new-group-row input[type="color"] { width: 32px; height: 32px; }
+
+    /* ── Toast ── */
+    .toast-container {
+      position: fixed; top: 70px; right: 1rem; z-index: 1000;
+      display: flex; flex-direction: column; gap: 0.5rem;
+      pointer-events: none;
+    }
+    .toast {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 0.7rem 1rem;
+      font-size: 0.8rem; box-shadow: var(--shadow-lg);
+      animation: toastIn 0.25s ease, toastOut 0.3s ease 2.7s forwards;
+      pointer-events: auto; max-width: 320px;
+    }
+    .toast.error { border-color: var(--red); }
+    .toast.success { border-color: var(--green); }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes toastOut { to { opacity: 0; transform: translateX(20px); } }
+
+    /* ── Empty State ── */
+    .empty {
+      text-align: center; padding: 3rem 1rem; color: var(--text-faint);
+    }
+    .empty-icon { font-size: 2.5rem; margin-bottom: 0.75rem; opacity: 0.5; }
+    .empty-title { font-size: 1rem; font-weight: 600; color: var(--text-dim); margin-bottom: 0.3rem; }
+    .empty-desc { font-size: 0.8rem; }
+
+    /* ── Skeleton ── */
+    .skeleton {
+      background: linear-gradient(90deg, var(--card) 25%, #27272a 50%, var(--card) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: var(--radius);
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .skel-card { height: 100px; margin-bottom: 0.875rem; }
+
+    /* ── Spinner ── */
+    .spinner {
+      width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.2);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin 0.6s linear infinite; display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+      display: flex; align-items: center; justify-content: center;
+      animation: fadeIn 0.15s ease;
+    }
+    .modal-overlay.hidden { display: none; }
+    .modal {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 1.5rem;
+      width: 90%; max-width: 420px; box-shadow: var(--shadow-lg);
+    }
+    .modal-title { font-weight: 600; font-size: 1rem; margin-bottom: 1rem; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .header .tab-nav { display: none; }
+      .bottom-nav { display: block; }
+      .main { padding: 1rem 0.75rem 5rem; }
+      .grid { grid-template-columns: 1fr; }
+      .toast-container { top: auto; bottom: 5rem; right: 0.75rem; left: 0.75rem; }
+      .toast { max-width: 100%; }
+    }
+
+    @media (min-width: 641px) and (max-width: 900px) {
+      .grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <a class="logo" href="#">
+        <div class="logo-icon">T</div>
+        <span>Trellis</span>
+      </a>
+      <nav class="tab-nav" id="desktopNav">
+        <button class="tab-btn active" data-tab="devices">Devices</button>
+        <button class="tab-btn" data-tab="automation">Automation</button>
+        <button class="tab-btn" data-tab="settings">Settings</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Bottom Nav (mobile) -->
+  <nav class="bottom-nav" id="bottomNav">
+    <div class="tab-nav">
+      <button class="tab-btn active" data-tab="devices">
+        <span class="tab-icon">&#9632;</span>Devices
+      </button>
+      <button class="tab-btn" data-tab="automation">
+        <span class="tab-icon">&#9881;</span>Automation
+      </button>
+      <button class="tab-btn" data-tab="settings">
+        <span class="tab-icon">&#9776;</span>Settings
+      </button>
+    </div>
+  </nav>
+
+  <!-- Toast container -->
+  <div class="toast-container" id="toasts"></div>
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- Devices Tab -->
+    <div class="tab-panel active" id="panel-devices">
+      <div id="devicesContent">
+        <div class="skeleton skel-card"></div>
+        <div class="skeleton skel-card"></div>
+        <div class="skeleton skel-card"></div>
+      </div>
+    </div>
+
+    <!-- Automation Tab -->
+    <div class="tab-panel" id="panel-automation">
+      <div id="automationContent">
+        <div class="skeleton skel-card"></div>
+        <div class="skeleton skel-card"></div>
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-panel" id="panel-settings">
+      <div id="settingsContent"></div>
+    </div>
+
+  </main>
+
+  <!-- Edit Group Modal -->
+  <div class="modal-overlay hidden" id="editGroupModal">
+    <div class="modal">
+      <div class="modal-title" id="editGroupTitle">Edit Group</div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem;">
+        <input type="text" class="input-text" id="editGroupName" placeholder="Group name">
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <label style="font-size:0.85rem;color:var(--text-dim);">Color</label>
+          <input type="color" id="editGroupColor" value="#6366f1">
+        </div>
+      </div>
+      <input type="hidden" id="editGroupId">
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeEditGroup()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEditGroup()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ────────────────────────── State ────────────────────────── */
+    let devices = [];
+    let groups = [];
+    let savedDevices = [];
+    let expandedDevice = null;
+    let currentTab = 'devices';
+    let pollTimer = null;
+    let initialLoad = true;
+
+    /* ────────────────────────── API Helpers ────────────────────────── */
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...opts,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    }
+
+    function toast(msg, type = 'success') {
+      const el = document.createElement('div');
+      el.className = `toast ${type}`;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 3100);
+    }
+
+    /* ────────────────────────── Tab Navigation ────────────────────────── */
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+        currentTab = tab;
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll(`.tab-btn[data-tab="${tab}"]`).forEach(b => b.classList.add('active'));
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        document.getElementById(`panel-${tab}`).classList.add('active');
+
+        if (tab === 'automation') loadAutomation();
+        if (tab === 'settings') loadSettings();
+      });
+    });
+
+    /* ────────────────────────── Devices ────────────────────────── */
+    async function loadDevices() {
+      try {
+        const [devs, grps, saved] = await Promise.all([
+          api('/api/devices'),
+          api('/api/groups'),
+          api('/api/saved-devices'),
+        ]);
+        devices = devs || [];
+        groups = grps || [];
+        savedDevices = saved || [];
+        renderDevices();
+        initialLoad = false;
+      } catch (e) {
+        if (initialLoad) {
+          document.getElementById('devicesContent').innerHTML = renderEmpty('Could not reach Trellis server', 'Make sure the app is running on this machine.');
+        }
+      }
+    }
+
+    function getNickname(dev) {
+      const s = savedDevices.find(d => d.id === dev.id);
+      return (s && s.nickname) || dev.name || dev.id;
+    }
+
+    function getDeviceGroup(dev) {
+      const s = savedDevices.find(d => d.id === dev.id);
+      return s ? s.group_id : null;
+    }
+
+    function renderDevices() {
+      const container = document.getElementById('devicesContent');
+      if (!devices.length) {
+        container.innerHTML = renderEmpty('No devices found', 'Connect an ESP32 or Pico W to your network and it will appear here.');
+        return;
+      }
+
+      // Sort by group
+      const grouped = {};
+      const ungrouped = [];
+      devices.forEach(dev => {
+        const gid = getDeviceGroup(dev);
+        if (gid !== null && gid !== undefined) {
+          if (!grouped[gid]) grouped[gid] = [];
+          grouped[gid].push(dev);
+        } else {
+          ungrouped.push(dev);
+        }
+      });
+
+      let html = '';
+
+      // Render grouped
+      groups.forEach(g => {
+        const devs = grouped[g.id];
+        if (!devs || !devs.length) return;
+        html += `<div class="group-section">
+          <div class="group-header" onclick="this.classList.toggle('collapsed')">
+            <div class="group-color" style="background:${esc(g.color || '#6366f1')}"></div>
+            <span class="group-name">${esc(g.name)}</span>
+            <span class="group-count">${devs.length}</span>
+            <span class="group-chevron">&#9660;</span>
+          </div>
+          <div class="group-body"><div class="grid">${devs.map(d => renderDeviceCard(d)).join('')}</div></div>
+        </div>`;
+      });
+
+      // Ungrouped
+      if (ungrouped.length) {
+        if (Object.keys(grouped).length) {
+          html += `<div class="group-section">
+            <div class="section-title" style="margin-top:0.5rem;">Ungrouped</div>
+            <div class="grid">${ungrouped.map(d => renderDeviceCard(d)).join('')}</div>
+          </div>`;
+        } else {
+          html += `<div class="grid">${ungrouped.map(d => renderDeviceCard(d)).join('')}</div>`;
+        }
+      }
+
+      container.innerHTML = html;
+    }
+
+    function renderDeviceCard(dev) {
+      const name = getNickname(dev);
+      const online = dev.online !== false;
+      const expanded = expandedDevice === dev.id;
+      const sys = dev.system || {};
+      const rssi = sys.rssi != null ? `${sys.rssi} dBm` : '';
+      const uptime = sys.uptime_s != null ? formatUptime(sys.uptime_s) : '';
+      const chip = sys.chip || dev.platform || '';
+      const heap = sys.heap_free != null ? formatBytes(sys.heap_free) : '';
+
+      let metaHtml = '';
+      if (dev.ip) metaHtml += `<span class="meta-item"><span class="meta-label">IP</span> ${esc(dev.ip)}${dev.port ? ':' + dev.port : ''}</span>`;
+      if (dev.firmware) metaHtml += `<span class="meta-item"><span class="meta-label">FW</span> ${esc(dev.firmware)}</span>`;
+      if (rssi) metaHtml += `<span class="meta-item"><span class="meta-label">RSSI</span> ${rssi}</span>`;
+      if (uptime) metaHtml += `<span class="meta-item"><span class="meta-label">Up</span> ${uptime}</span>`;
+      if (chip) metaHtml += `<span class="meta-item"><span class="meta-label">Chip</span> ${esc(chip)}</span>`;
+
+      let controlsHtml = '';
+      if (expanded && dev.capabilities && dev.capabilities.length) {
+        controlsHtml = `<div class="controls-inner">
+          ${dev.capabilities.map(cap => renderControl(dev.id, cap)).join('')}
+          ${(rssi || heap || uptime || chip) ? `<div class="sys-info">
+            ${rssi ? `<span>RSSI: ${rssi}</span>` : ''}
+            ${heap ? `<span>Heap: ${heap}</span>` : ''}
+            ${uptime ? `<span>Uptime: ${uptime}</span>` : ''}
+            ${chip ? `<span>Chip: ${esc(chip)}</span>` : ''}
+          </div>` : ''}
+        </div>`;
+      } else if (expanded) {
+        controlsHtml = `<div class="controls-inner"><div style="font-size:0.8rem;color:var(--text-faint);padding:0.5rem 0;">No capabilities reported</div></div>`;
+      }
+
+      return `<div class="device-card${expanded ? ' expanded' : ''}" onclick="toggleDevice(event, '${esc(dev.id)}')" data-device-id="${esc(dev.id)}">
+        <div class="card-header">
+          <span class="status-dot ${online ? 'online' : 'offline'}"></span>
+          <div class="card-title-block">
+            <div class="card-name">${esc(name)}</div>
+            <div class="card-subtitle">${online ? 'Online' : 'Offline'}${dev.last_seen ? ' \u00b7 ' + timeAgo(dev.last_seen) : ''}</div>
+          </div>
+          ${dev.platform ? `<span class="card-badge">${esc(dev.platform)}</span>` : ''}
+        </div>
+        ${metaHtml ? `<div class="card-meta">${metaHtml}</div>` : ''}
+        <div class="card-controls">${controlsHtml}</div>
+      </div>`;
+    }
+
+    function renderControl(deviceId, cap) {
+      const label = esc(cap.label || cap.id);
+      switch (cap.type) {
+        case 'switch':
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value">
+              <button class="toggle ${cap.value ? 'on' : ''}" onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}', ${!cap.value})"></button>
+            </div>
+          </div>`;
+
+        case 'slider': {
+          const min = cap.min != null ? cap.min : 0;
+          const max = cap.max != null ? cap.max : 255;
+          const val = cap.value != null ? cap.value : min;
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value">
+              <div class="slider-wrap">
+                <input type="range" min="${min}" max="${max}" value="${val}"
+                  oninput="this.nextElementSibling.textContent=this.value"
+                  onchange="sendSlider(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)">
+                <span class="slider-val">${val}</span>
+              </div>
+            </div>
+          </div>`;
+        }
+
+        case 'sensor': {
+          const unit = cap.unit || '';
+          const val = cap.value != null ? cap.value : '--';
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value">
+              <span class="sensor-value">${esc(String(val))}<span class="sensor-unit"> ${esc(unit)}</span></span>
+            </div>
+          </div>`;
+        }
+
+        case 'color':
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value">
+              <input type="color" value="${esc(cap.value || '#000000')}"
+                onchange="sendColor(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)">
+            </div>
+          </div>`;
+
+        case 'text':
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value">
+              <div class="text-input-wrap">
+                <input type="text" value="${esc(cap.value || '')}" id="txt-${esc(deviceId)}-${esc(cap.id)}">
+                <button class="btn btn-primary btn-sm" onclick="sendText(event, '${esc(deviceId)}', '${esc(cap.id)}')">Set</button>
+              </div>
+            </div>
+          </div>`;
+
+        default:
+          return `<div class="control-row">
+            <span class="control-label">${label}</span>
+            <div class="control-value" style="font-size:0.8rem;color:var(--text-faint);">${esc(String(cap.value != null ? cap.value : ''))}</div>
+          </div>`;
+      }
+    }
+
+    function toggleDevice(e, id) {
+      // Don't toggle if clicking a control
+      if (e.target.closest('.toggle, input, button.btn')) return;
+      expandedDevice = expandedDevice === id ? null : id;
+      renderDevices();
+    }
+
+    /* ────────────────────────── Commands ────────────────────────── */
+    async function sendCommand(deviceId, capId, value) {
+      try {
+        await api(`/api/devices/${deviceId}/command`, {
+          method: 'POST',
+          body: { command: 'set', id: capId, value: value },
+        });
+        toast('Command sent');
+        // Update local state for instant feedback
+        const dev = devices.find(d => d.id === deviceId);
+        if (dev && dev.capabilities) {
+          const cap = dev.capabilities.find(c => c.id === capId);
+          if (cap) cap.value = value;
+        }
+        renderDevices();
+      } catch (e) {
+        toast('Failed to send command', 'error');
+      }
+    }
+
+    function sendToggle(e, deviceId, capId, value) {
+      e.stopPropagation();
+      sendCommand(deviceId, capId, value);
+    }
+
+    function sendSlider(e, deviceId, capId, value) {
+      e.stopPropagation();
+      sendCommand(deviceId, capId, Number(value));
+    }
+
+    function sendColor(e, deviceId, capId, value) {
+      e.stopPropagation();
+      sendCommand(deviceId, capId, value);
+    }
+
+    function sendText(e, deviceId, capId) {
+      e.stopPropagation();
+      const input = document.getElementById(`txt-${deviceId}-${capId}`);
+      if (input) sendCommand(deviceId, capId, input.value);
+    }
+
+    /* ────────────────────────── Automation ────────────────────────── */
+    async function loadAutomation() {
+      const container = document.getElementById('automationContent');
+      try {
+        const [schedules, rules, webhooks] = await Promise.all([
+          api('/api/schedules').catch(() => []),
+          api('/api/rules').catch(() => []),
+          api('/api/webhooks').catch(() => []),
+        ]);
+
+        let html = '';
+
+        // Schedules
+        html += `<div class="auto-section">
+          <div class="section-title">Schedules</div>`;
+        if (schedules && schedules.length) {
+          html += schedules.map(s => {
+            const devName = getDeviceNameById(s.device_id);
+            return `<div class="auto-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                  <div class="auto-card-title">${esc(s.label || devName)}</div>
+                  <div class="auto-card-detail">
+                    ${esc(devName)} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>
+                    ${s.capability_id ? ` &middot; ${esc(s.capability_id)} = ${esc(String(s.value != null ? s.value : ''))}` : ''}
+                  </div>
+                </div>
+                <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+              </div>
+            </div>`;
+          }).join('');
+        } else {
+          html += `<div class="auto-card"><div style="color:var(--text-faint);font-size:0.85rem;">No schedules configured</div></div>`;
+        }
+        html += `</div>`;
+
+        // Rules
+        html += `<div class="auto-section">
+          <div class="section-title">Rules</div>`;
+        if (rules && rules.length) {
+          html += rules.map(r => {
+            return `<div class="auto-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                  <div class="auto-card-title">${esc(r.label || 'Rule')}</div>
+                  <div class="auto-card-detail">${esc(r.condition || formatRuleCondition(r))}</div>
+                </div>
+                <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+              </div>
+            </div>`;
+          }).join('');
+        } else {
+          html += `<div class="auto-card"><div style="color:var(--text-faint);font-size:0.85rem;">No rules configured</div></div>`;
+        }
+        html += `</div>`;
+
+        // Webhooks
+        html += `<div class="auto-section">
+          <div class="section-title">Webhooks</div>`;
+        if (webhooks && webhooks.length) {
+          html += webhooks.map(w => {
+            return `<div class="auto-card">
+              <div>
+                <div class="auto-card-title">${esc(w.label || w.event_type || 'Webhook')}</div>
+                <div class="auto-card-detail">
+                  ${w.url ? `URL: <code style="font-size:0.75rem;color:var(--accent);">${esc(w.url)}</code>` : ''}
+                  ${w.event_type ? ` &middot; Event: ${esc(w.event_type)}` : ''}
+                </div>
+              </div>
+            </div>`;
+          }).join('');
+        } else {
+          html += `<div class="auto-card"><div style="color:var(--text-faint);font-size:0.85rem;">No webhooks configured</div></div>`;
+        }
+        html += `</div>`;
+
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = renderEmpty('Could not load automation data', e.message);
+      }
+    }
+
+    function getDeviceNameById(id) {
+      if (!id) return 'Unknown';
+      const dev = devices.find(d => d.id === id);
+      return dev ? getNickname(dev) : id;
+    }
+
+    function formatRuleCondition(r) {
+      const parts = [];
+      if (r.source_device_id) parts.push(`Source: ${getDeviceNameById(r.source_device_id)}`);
+      if (r.source_metric_id) parts.push(r.source_metric_id);
+      if (r.condition) parts.push(r.condition);
+      if (r.threshold != null) parts.push(String(r.threshold));
+      if (r.target_device_id) parts.push(`-> ${getDeviceNameById(r.target_device_id)}`);
+      if (r.target_capability_id) parts.push(r.target_capability_id);
+      if (r.target_value != null) parts.push(`= ${r.target_value}`);
+      return parts.join(' ') || 'No condition';
+    }
+
+    /* ────────────────────────── Settings ────────────────────────── */
+    async function loadSettings() {
+      const container = document.getElementById('settingsContent');
+      try {
+        const [ntfyRes, grps] = await Promise.all([
+          api('/api/settings/ntfy_topic').catch(() => ({ value: '' })),
+          api('/api/groups').catch(() => []),
+        ]);
+
+        groups = grps || [];
+        const ntfyTopic = ntfyRes && ntfyRes.value ? ntfyRes.value : '';
+
+        let html = '';
+
+        // Push Notifications
+        html += `<div class="settings-section">
+          <div class="settings-title">Push Notifications</div>
+          <div class="setting-row">
+            <div class="setting-label-block">
+              <div class="setting-label">ntfy Topic</div>
+              <div class="setting-desc">Receive push notifications via ntfy.sh</div>
+            </div>
+          </div>
+          <div class="input-row">
+            <input type="text" class="input-text" id="ntfyInput" value="${esc(ntfyTopic)}" placeholder="e.g. trellis-alerts">
+            <button class="btn btn-primary btn-sm" onclick="saveNtfy()">Save</button>
+          </div>
+        </div>`;
+
+        // Groups
+        html += `<div class="settings-section">
+          <div class="settings-title">Groups</div>
+          <div id="groupsList">${renderGroupsList(groups)}</div>
+          <div class="new-group-row">
+            <input type="text" id="newGroupName" placeholder="New group name">
+            <input type="color" id="newGroupColor" value="#6366f1">
+            <button class="btn btn-primary btn-sm" onclick="createGroup()">Add</button>
+          </div>
+        </div>`;
+
+        // About
+        html += `<div class="settings-section">
+          <div class="settings-title">About</div>
+          <div class="setting-row">
+            <div class="setting-label-block">
+              <div class="setting-label">Trellis</div>
+              <div class="setting-desc">Open-source IoT dashboard for ESP32 and Pico W</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.25rem;">
+            <a href="https://github.com/ovidiu/trellis" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none;">GitHub</a>
+            <a href="https://trellis.dev" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none;">Website</a>
+          </div>
+        </div>`;
+
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = renderEmpty('Could not load settings', e.message);
+      }
+    }
+
+    function renderGroupsList(grps) {
+      if (!grps || !grps.length) return '<div style="font-size:0.8rem;color:var(--text-faint);padding:0.5rem 0;">No groups yet</div>';
+      return grps.map(g => `<div class="group-list-item">
+        <div class="group-swatch" style="background:${esc(g.color || '#6366f1')}"></div>
+        <span class="group-list-name">${esc(g.name)}</span>
+        <div class="group-list-actions">
+          <button class="btn btn-ghost btn-sm" onclick="openEditGroup(${g.id}, '${esc(g.name)}', '${esc(g.color || '#6366f1')}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteGroup(${g.id})">Del</button>
+        </div>
+      </div>`).join('');
+    }
+
+    async function saveNtfy() {
+      const val = document.getElementById('ntfyInput').value.trim();
+      try {
+        await api('/api/settings/ntfy_topic', { method: 'PUT', body: { value: val } });
+        toast('ntfy topic saved');
+      } catch (e) {
+        toast('Failed to save', 'error');
+      }
+    }
+
+    async function createGroup() {
+      const name = document.getElementById('newGroupName').value.trim();
+      const color = document.getElementById('newGroupColor').value;
+      if (!name) return toast('Enter a group name', 'error');
+      try {
+        await api('/api/groups', { method: 'POST', body: { name, color } });
+        document.getElementById('newGroupName').value = '';
+        toast('Group created');
+        loadSettings();
+        loadDevices();
+      } catch (e) {
+        toast('Failed to create group', 'error');
+      }
+    }
+
+    function openEditGroup(id, name, color) {
+      document.getElementById('editGroupId').value = id;
+      document.getElementById('editGroupName').value = name;
+      document.getElementById('editGroupColor').value = color;
+      document.getElementById('editGroupModal').classList.remove('hidden');
+    }
+
+    function closeEditGroup() {
+      document.getElementById('editGroupModal').classList.add('hidden');
+    }
+
+    async function saveEditGroup() {
+      const id = document.getElementById('editGroupId').value;
+      const name = document.getElementById('editGroupName').value.trim();
+      const color = document.getElementById('editGroupColor').value;
+      if (!name) return toast('Enter a name', 'error');
+      try {
+        await api(`/api/groups/${id}`, { method: 'PUT', body: { name, color } });
+        closeEditGroup();
+        toast('Group updated');
+        loadSettings();
+        loadDevices();
+      } catch (e) {
+        toast('Failed to update group', 'error');
+      }
+    }
+
+    async function deleteGroup(id) {
+      if (!confirm('Delete this group? Devices will become ungrouped.')) return;
+      try {
+        await api(`/api/groups/${id}`, { method: 'DELETE' });
+        toast('Group deleted');
+        loadSettings();
+        loadDevices();
+      } catch (e) {
+        toast('Failed to delete group', 'error');
+      }
+    }
+
+    /* ────────────────────────── Utilities ────────────────────────── */
+    function esc(s) {
+      if (s == null) return '';
+      const d = document.createElement('div');
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function renderEmpty(title, desc) {
+      return `<div class="empty">
+        <div class="empty-icon">&#9723;</div>
+        <div class="empty-title">${esc(title)}</div>
+        <div class="empty-desc">${esc(desc || '')}</div>
+      </div>`;
+    }
+
+    function formatUptime(seconds) {
+      if (seconds == null) return '';
+      const s = Number(seconds);
+      if (s < 60) return `${s}s`;
+      if (s < 3600) return `${Math.floor(s / 60)}m`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+      return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+    }
+
+    function formatBytes(b) {
+      if (b == null) return '';
+      const n = Number(b);
+      if (n < 1024) return `${n} B`;
+      if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1048576).toFixed(1)} MB`;
+    }
+
+    function timeAgo(ts) {
+      if (!ts) return '';
+      const now = Date.now();
+      const t = typeof ts === 'string' ? new Date(ts).getTime() : ts * 1000;
+      const diff = Math.floor((now - t) / 1000);
+      if (diff < 0 || isNaN(diff)) return '';
+      if (diff < 10) return 'just now';
+      if (diff < 60) return `${diff}s ago`;
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+      return `${Math.floor(diff / 86400)}d ago`;
+    }
+
+    /* ────────────────────────── Polling ────────────────────────── */
+    function startPolling() {
+      loadDevices();
+      pollTimer = setInterval(() => {
+        if (currentTab === 'devices') loadDevices();
+      }, 5000);
+    }
+
+    /* ────────────────────────── Init ────────────────────────── */
+    startPolling();
+  </script>
+</body>
+</html>

@@ -26,6 +26,15 @@ pub struct SavedDevice {
     pub tags: String,
     pub first_seen: String,
     pub last_seen: String,
+    pub group_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceGroup {
+    pub id: i64,
+    pub name: String,
+    pub color: String,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,7 +101,7 @@ impl Database {
     pub fn get_saved_device(&self, device_id: &str) -> Result<Option<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen FROM devices WHERE id = ?1")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id FROM devices WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query_map(rusqlite::params![device_id], |row| {
@@ -107,6 +116,7 @@ impl Database {
                     tags: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                     first_seen: row.get(8)?,
                     last_seen: row.get(9)?,
+                    group_id: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -119,7 +129,7 @@ impl Database {
     pub fn get_all_saved_devices(&self) -> Result<Vec<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen FROM devices ORDER BY last_seen DESC")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id FROM devices ORDER BY last_seen DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -134,6 +144,7 @@ impl Database {
                     tags: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
                     first_seen: row.get(8)?,
                     last_seen: row.get(9)?,
+                    group_id: row.get(10)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -516,6 +527,93 @@ impl Database {
         Ok(())
     }
 
+    // ─── Device groups ──────────────────────────────────────────────────
+
+    pub fn create_group(&self, name: &str, color: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        let max_order: i64 = conn
+            .query_row("SELECT COALESCE(MAX(sort_order), -1) FROM device_groups", [], |row| row.get(0))
+            .unwrap_or(-1);
+        conn.execute(
+            "INSERT INTO device_groups (name, color, sort_order) VALUES (?1, ?2, ?3)",
+            rusqlite::params![name, color, max_order + 1],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_groups(&self) -> Result<Vec<DeviceGroup>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, sort_order FROM device_groups ORDER BY sort_order ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DeviceGroup {
+                id: row.get(0)?, name: row.get(1)?,
+                color: row.get(2)?, sort_order: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn update_group(&self, id: i64, name: &str, color: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE device_groups SET name = ?1, color = ?2 WHERE id = ?3",
+            rusqlite::params![name, color, id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_group(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        // Unassign all devices from this group first
+        conn.execute("UPDATE devices SET group_id = NULL WHERE group_id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM device_groups WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn set_device_group(&self, device_id: &str, group_id: Option<i64>) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE devices SET group_id = ?1 WHERE id = ?2",
+            rusqlite::params![group_id, device_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── Settings ────────────────────────────────────────────────────────
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query_map(rusqlite::params![key], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(v)) => Ok(Some(v)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            rusqlite::params![key, value],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM settings WHERE key = ?1", rusqlite::params![key])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ─── CSV export ──────────────────────────────────────────────────────
 
     pub fn export_metrics_csv(
@@ -527,6 +625,47 @@ impl Database {
             csv.push_str(&format!("{},{}\n", p.timestamp, p.value));
         }
         Ok(csv)
+    }
+
+    // ─── Firmware history ────────────────────────────────────────────────
+
+    pub fn store_firmware_record(
+        &self, device_id: &str, version: &str, file_path: &str, file_size: i64,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO firmware_history (device_id, version, file_path, file_size)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![device_id, version, file_path, file_size],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_firmware_history(&self, device_id: &str) -> Result<Vec<FirmwareRecord>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, device_id, version, file_path, file_size, uploaded_at
+             FROM firmware_history WHERE device_id = ?1 ORDER BY uploaded_at DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![device_id], |row| {
+            Ok(FirmwareRecord {
+                id: row.get(0)?, device_id: row.get(1)?, version: row.get(2)?,
+                file_path: row.get(3)?, file_size: row.get(4)?, uploaded_at: row.get(5)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn delete_firmware_record(&self, id: i64) -> Result<String, String> {
+        let conn = self.conn.lock().unwrap();
+        let path: String = conn.query_row(
+            "SELECT file_path FROM firmware_history WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM firmware_history WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(path)
     }
 }
 
@@ -573,6 +712,16 @@ pub struct DeviceTemplate {
     pub description: String,
     pub capabilities: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirmwareRecord {
+    pub id: i64,
+    pub device_id: String,
+    pub version: String,
+    pub file_path: String,
+    pub file_size: i64,
+    pub uploaded_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -680,12 +829,39 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS device_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#6366f1',
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS firmware_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            version TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_metrics_device_time
             ON metrics(device_id, metric_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_device_time
             ON device_logs(device_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_firmware_device
+            ON firmware_history(device_id, uploaded_at);
         ",
     )?;
+
+    // Add group_id column to devices if it doesn't exist
+    let _ = conn.execute("ALTER TABLE devices ADD COLUMN group_id INTEGER REFERENCES device_groups(id)", []);
 
     app.manage(Database {
         conn: Mutex::new(conn),

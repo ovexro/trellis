@@ -51,6 +51,21 @@ async function checkAlerts(deviceId: string, metricId: string, value: number, de
           body: `${alert.label}: ${metricId} is ${value.toFixed(1)} (${alert.condition} ${alert.threshold})`,
         });
       }
+
+      // Send push notification via ntfy.sh if configured
+      try {
+        const ntfyTopic = await invoke<string | null>("get_setting", { key: "ntfy_topic" });
+        if (ntfyTopic) {
+          invoke("send_ntfy", {
+            topic: ntfyTopic,
+            title: `Trellis: ${deviceName}`,
+            message: `${alert.label}: ${metricId} is ${value.toFixed(1)} (${alert.condition} ${alert.threshold})`,
+            priority: 4,
+          }).catch((err: unknown) => console.error("ntfy send failed:", err));
+        }
+      } catch (err) {
+        console.error("Failed to check ntfy setting:", err);
+      }
     }
   } catch (err) {
     console.error("Failed to check alerts:", err);
@@ -221,13 +236,14 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
 
       // Load saved nickname/tags from SQLite
       try {
-        const saved = await invoke<{ nickname: string | null; tags: string } | null>(
+        const saved = await invoke<{ nickname: string | null; tags: string; group_id: number | null } | null>(
           "get_saved_device",
           { deviceId: device.id },
         );
         if (saved) {
           device.nickname = saved.nickname || undefined;
           device.tags = saved.tags || undefined;
+          device.group_id = saved.group_id ?? undefined;
         }
       } catch (err) {
         console.error("Failed to load saved device:", err);
@@ -236,6 +252,18 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       // Fire webhooks for device state changes
       if (event === "lost") {
         fireWebhooks("device_offline", device.id, { name: device.name });
+
+        // Send push notification for device offline
+        invoke<string | null>("get_setting", { key: "ntfy_topic" }).then((topic) => {
+          if (topic) {
+            invoke("send_ntfy", {
+              topic,
+              title: "Trellis: Device Offline",
+              message: `${device.name} went offline`,
+              priority: 3,
+            }).catch((err: unknown) => console.error("ntfy offline failed:", err));
+          }
+        }).catch(() => {});
       } else if (event === "found") {
         fireWebhooks("device_online", device.id, { name: device.name });
       }
@@ -316,7 +344,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     );
 
     // Load saved devices from SQLite (show as offline until rediscovered)
-    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string }>>(
+    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string; group_id: number | null }>>(
       "get_saved_devices",
     ).then((saved) => {
       if (saved.length > 0) {
@@ -333,6 +361,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           last_seen: "",
           nickname: s.nickname || undefined,
           tags: s.tags || undefined,
+          group_id: s.group_id ?? undefined,
         }));
         set((state) => {
           // Only add devices not already in the list (mDNS may have found them first)

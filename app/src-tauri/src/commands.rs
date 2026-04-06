@@ -1,12 +1,12 @@
 use crate::connection::ConnectionManager;
-use crate::db::{AlertRule, Database, DeviceTemplate, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::ota;
 use crate::serial::{SerialManager, SerialPortInfo};
 use serde_json::Value;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 pub struct AppState {
     pub discovery: Arc<Discovery>,
@@ -115,6 +115,8 @@ pub fn send_serial(state: State<'_, AppState>, port: String, data: String) -> Re
 #[tauri::command]
 pub async fn start_ota(
     state: State<'_, AppState>,
+    db: State<'_, Database>,
+    app_handle: AppHandle,
     device_id: String,
     ip: String,
     port: u16,
@@ -122,12 +124,81 @@ pub async fn start_ota(
 ) -> Result<(), String> {
     let conn_mgr = state.connection_manager.clone();
     let ws_port = port + 1;
+
+    // Store firmware copy for rollback
+    let fw_dir = app_handle.path().app_data_dir()
+        .map_err(|e| format!("No app dir: {}", e))?
+        .join("firmware");
+    std::fs::create_dir_all(&fw_dir).map_err(|e| format!("Failed to create firmware dir: {}", e))?;
+
+    let src_path = std::path::PathBuf::from(&firmware_path);
+    let file_size = std::fs::metadata(&src_path)
+        .map_err(|e| format!("Cannot read firmware: {}", e))?.len() as i64;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let dest_name = format!("{}_{}.bin", device_id, timestamp);
+    let dest_path = fw_dir.join(&dest_name);
+    std::fs::copy(&src_path, &dest_path)
+        .map_err(|e| format!("Failed to copy firmware: {}", e))?;
+
+    // Get current firmware version from device
+    let version = {
+        let devices = state.discovery.get_devices();
+        devices.iter()
+            .find(|d| d.id == device_id)
+            .map(|d| d.firmware.clone())
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+
+    let dest_str = dest_path.to_string_lossy().to_string();
+    db.store_firmware_record(&device_id, &version, &dest_str, file_size)?;
+
     tokio::task::spawn_blocking(move || {
         let (url, _stop_flag) = ota::serve_firmware(&firmware_path)?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
         log::info!("[OTA] Triggered update for device {} from {}", device_id, url);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+// ─── Firmware history ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_firmware_history(
+    db: State<'_, Database>, device_id: String,
+) -> Result<Vec<FirmwareRecord>, String> {
+    db.get_firmware_history(&device_id)
+}
+
+#[tauri::command]
+pub fn delete_firmware_record(
+    db: State<'_, Database>, id: i64,
+) -> Result<(), String> {
+    let path = db.delete_firmware_record(id)?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rollback_firmware(
+    state: State<'_, AppState>,
+    device_id: String,
+    ip: String,
+    port: u16,
+    firmware_record_path: String,
+) -> Result<(), String> {
+    let conn_mgr = state.connection_manager.clone();
+    let ws_port = port + 1;
+    tokio::task::spawn_blocking(move || {
+        let (url, _stop_flag) = ota::serve_firmware(&firmware_record_path)?;
+        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+        let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
+        conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
+        log::info!("[OTA] Rollback triggered for device {}", device_id);
         Ok(())
     })
     .await
@@ -314,6 +385,33 @@ pub fn delete_template(db: State<'_, Database>, id: i64) -> Result<(), String> {
     db.delete_template(id)
 }
 
+// ─── Device groups ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_group(db: State<'_, Database>, name: String, color: String) -> Result<i64, String> {
+    db.create_group(&name, &color)
+}
+
+#[tauri::command]
+pub fn get_groups(db: State<'_, Database>) -> Result<Vec<DeviceGroup>, String> {
+    db.get_groups()
+}
+
+#[tauri::command]
+pub fn update_group(db: State<'_, Database>, id: i64, name: String, color: String) -> Result<(), String> {
+    db.update_group(id, &name, &color)
+}
+
+#[tauri::command]
+pub fn delete_group(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_group(id)
+}
+
+#[tauri::command]
+pub fn set_device_group(db: State<'_, Database>, device_id: String, group_id: Option<i64>) -> Result<(), String> {
+    db.set_device_group(&device_id, group_id)
+}
+
 // ─── CSV export ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -321,6 +419,57 @@ pub fn export_metrics_csv(
     db: State<'_, Database>, device_id: String, metric_id: String, hours: u32,
 ) -> Result<String, String> {
     db.export_metrics_csv(&device_id, &metric_id, hours)
+}
+
+// ─── Settings ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_setting(db: State<'_, Database>, key: String) -> Result<Option<String>, String> {
+    db.get_setting(&key)
+}
+
+#[tauri::command]
+pub fn set_setting(db: State<'_, Database>, key: String, value: String) -> Result<(), String> {
+    db.set_setting(&key, &value)
+}
+
+#[tauri::command]
+pub fn delete_setting(db: State<'_, Database>, key: String) -> Result<(), String> {
+    db.delete_setting(&key)
+}
+
+// ─── ntfy.sh push notifications ────────────────────────────────────────────
+
+#[tauri::command]
+pub fn send_ntfy(topic: String, title: String, message: String, priority: u8) -> Result<(), String> {
+    let url = format!("https://ntfy.sh/{}", topic);
+    let body = serde_json::json!({
+        "topic": topic,
+        "title": title,
+        "message": message,
+        "priority": priority.min(5).max(1)
+    });
+    ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("ntfy send failed: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn test_ntfy(topic: String) -> Result<(), String> {
+    let url = format!("https://ntfy.sh/{}", topic);
+    let body = serde_json::json!({
+        "topic": topic,
+        "title": "Trellis Test",
+        "message": "Push notifications are working!",
+        "priority": 3
+    });
+    ureq::post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("ntfy test failed: {}", e))?;
+    Ok(())
 }
 
 // ─── Terminal ───────────────────────────────────────────────────────────────

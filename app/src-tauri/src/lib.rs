@@ -1,3 +1,4 @@
+mod api;
 mod commands;
 mod connection;
 mod db;
@@ -73,7 +74,20 @@ pub fn run() {
             create_template,
             get_templates,
             delete_template,
+            create_group,
+            get_groups,
+            update_group,
+            delete_group,
+            set_device_group,
             export_metrics_csv,
+            get_setting,
+            set_setting,
+            delete_setting,
+            get_firmware_history,
+            delete_firmware_record,
+            rollback_firmware,
+            send_ntfy,
+            test_ntfy,
             run_terminal_command,
         ])
         .setup(move |app| {
@@ -144,7 +158,13 @@ pub fn run() {
             // Start schedule execution engine
             scheduler::start_scheduler(app.handle().clone(), connection_manager.clone());
 
-            log::info!("[Trellis] Background discovery + scheduler started");
+            // Start REST API server on port 9090
+            let db_path = app.path().app_data_dir()
+                .expect("failed to get app data dir")
+                .join("trellis.db");
+            api::start_api_server(db_path, discovery.clone(), connection_manager.clone());
+
+            log::info!("[Trellis] Background discovery + scheduler + API server started");
             Ok(())
         })
         .run(tauri::generate_context!())

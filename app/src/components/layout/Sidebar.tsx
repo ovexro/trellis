@@ -63,7 +63,7 @@ export default function Sidebar() {
 
       <div className="p-4 border-t border-zinc-800/50">
         <span className="px-2 py-0.5 bg-zinc-800/80 rounded-full text-[11px] text-zinc-500">
-          v0.1.2
+          v0.1.4
         </span>
       </div>
     </aside>
