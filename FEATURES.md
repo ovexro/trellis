@@ -108,12 +108,13 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Event: `{"event": "update", "id": "...", "value": ...}`
 - [x] OTA command: `{"command": "ota", "url": "..."}`
 - [x] OTA progress event: `{"event": "ota_progress", "percent": N}`
-- [ ] Heartbeat: `{"event": "heartbeat"}` (periodic)
+- [x] Heartbeat: `{"event": "heartbeat"}` (periodic, every 10s)
+- [x] Log event: `{"event": "log", "severity": "...", "message": "..."}`
 
 ## Infrastructure
 
-- [ ] GitHub Actions CI: build app (Linux)
-- [ ] GitHub Actions CI: compile library examples
-- [ ] GitHub releases with app binaries
+- [x] GitHub Actions CI: build app (Linux)
+- [x] GitHub Actions CI: compile library examples
+- [x] GitHub releases with app binaries
 - [ ] Arduino Library Manager submission
 - [ ] PlatformIO registry submission

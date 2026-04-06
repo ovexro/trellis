@@ -31,16 +31,39 @@ void loop() {
 
 The desktop app discovers your device via mDNS, reads its capability declaration, and renders the right controls — toggle for the pump, gauge for temperature, slider for fan speed.
 
+## Install
+
+### Linux (one command)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ovexro/trellis/main/install.sh | bash
+```
+
+Works on Ubuntu, Linux Mint, Debian, Fedora, Arch, and derivatives. Installs dependencies, downloads the app, creates a desktop entry, and optionally installs Arduino CLI.
+
+### Manual download
+
+Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
+- **Ubuntu/Mint/Debian** → `.deb`
+- **Fedora/RHEL** → `.rpm`
+- **Any Linux** → `.AppImage`
+
 ## Features
 
 ### Desktop App
-- **Auto-discovery** — finds devices on your network via mDNS
-- **Device cards** — name, status, RSSI, uptime, firmware version
-- **Auto-generated controls** — switches, sliders, sensors, color pickers
-- **Live charts** — time-series for any sensor data
-- **Serial monitor** — USB serial terminal
-- **OTA updates** — drag & drop firmware upload
-- **Dark theme** — clean, modern UI
+- **Auto-discovery** — continuous mDNS scanning, devices appear automatically
+- **Live updates** — persistent WebSocket connections, real-time sensor data
+- **Device cards** — name, status, RSSI, uptime, firmware version, chip
+- **Auto-generated controls** — switches, sliders, sensors, color pickers, text
+- **Time-series charts** — sensor data over time with SQLite storage
+- **Serial monitor** — full USB serial terminal with live streaming
+- **OTA updates** — native file picker, local HTTP firmware server
+- **Device persistence** — nicknames, tags, known devices survive restarts
+- **Search & filter** — find devices by name, IP, platform, chip
+- **Device logs** — severity-filtered log viewer with live streaming
+- **Alert rules** — configurable thresholds with desktop notifications
+- **System tray** — app runs in background, click to restore
+- **Dark theme** — clean, modern UI with green accent
 
 ### Microcontroller Library
 - **ESP32** — all variants (S2, S3, C3, C6)
@@ -48,7 +71,9 @@ The desktop app discovers your device via mDNS, reads its capability declaration
 - **15 lines to integrate** — drop-in library, minimal boilerplate
 - **Self-description protocol** — device declares its own capabilities
 - **WebSocket** — real-time bidirectional communication
-- **OTA ready** — firmware updates from the desktop app
+- **Live broadcasts** — periodic sensor values + system telemetry
+- **Device logging** — logInfo()/logWarn()/logError() sent to desktop app
+- **OTA ready** — firmware updates from the desktop app (ESP32)
 - **System metrics** — RSSI, free heap, uptime reported automatically
 
 ## Architecture

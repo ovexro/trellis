@@ -1,0 +1,103 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─── Compile Arduino library examples ──────────────────────────────────
+  firmware:
+    name: Compile firmware examples
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        board:
+          - fqbn: esp32:esp32:esp32
+            platform: esp32:esp32
+          - fqbn: rp2040:rp2040:rpipicow
+            platform: rp2040:rp2040
+            index_url: https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install board core
+        run: |
+          if [ -n "${{ matrix.board.index_url }}" ]; then
+            arduino-cli config set board_manager.additional_urls "${{ matrix.board.index_url }}"
+          fi
+          arduino-cli core update-index
+          arduino-cli core install ${{ matrix.board.platform }}
+
+      - name: Install library dependencies
+        run: |
+          arduino-cli lib install ArduinoJson WebSockets
+          ln -s ${{ github.workspace }}/library ~/Arduino/libraries/Trellis
+
+      - name: Compile examples
+        run: |
+          for sketch in library/examples/*/; do
+            echo "::group::Compiling $(basename $sketch)"
+            arduino-cli compile --fqbn ${{ matrix.board.fqbn }} "$sketch"
+            echo "::endgroup::"
+          done
+
+  # ─── Build desktop app ─────────────────────────────────────────────────
+  desktop:
+    name: Build desktop app (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            libudev-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: app
+        run: npx tsc --noEmit
+
+      - name: Build Tauri app
+        working-directory: app
+        run: npx tauri build
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-linux-amd64
+          path: |
+            app/src-tauri/target/release/bundle/deb/*.deb
+            app/src-tauri/target/release/bundle/rpm/*.rpm
+            app/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 7
