@@ -232,7 +232,8 @@ elif [ "$USE_APPIMAGE" = true ] || [ "$VERSION" = "dev" ]; then
     # AppImage installation (universal fallback)
     info "Downloading Trellis AppImage..."
 
-    APPIMAGE_URL="https://github.com/$REPO/releases/latest/download/Trellis_${DEB_ARCH}.AppImage"
+    APPIMAGE_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "\.AppImage" | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')
+    [ -z "$APPIMAGE_URL" ] && APPIMAGE_URL="https://github.com/$REPO/releases/latest/download/Trellis_${DEB_ARCH}.AppImage"
 
     if ! $DOWNLOADER "$APPIMAGE_URL" > "$TMP_DIR/Trellis.AppImage" 2>/dev/null || [ ! -s "$TMP_DIR/Trellis.AppImage" ]; then
         warn "No pre-built binary found. Building from source..."
@@ -249,21 +250,31 @@ elif [ "$USE_APPIMAGE" = true ] || [ "$VERSION" = "dev" ]; then
     ok "Trellis AppImage installed to $APP_DIR"
 
 else
-    # Package-based installation
+    # Package-based installation — find actual asset URL from API
     case "$PKG_MANAGER" in
         apt)
-            DEB_URL="https://github.com/$REPO/releases/download/$VERSION/Trellis_${VERSION#v}_${DEB_ARCH}.deb"
-            info "Downloading Trellis .deb package..."
-            $DOWNLOADER "$DEB_URL" > "$TMP_DIR/trellis.deb"
-            sudo dpkg -i "$TMP_DIR/trellis.deb" 2>/dev/null || sudo apt-get install -f -y -qq
-            ok "Trellis installed via .deb"
+            DEB_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "\.deb" | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')
+            if [ -z "$DEB_URL" ]; then
+                warn "No .deb found in release. Falling back to AppImage."
+                USE_APPIMAGE=true
+            else
+                info "Downloading Trellis .deb package..."
+                $DOWNLOADER "$DEB_URL" > "$TMP_DIR/trellis.deb"
+                sudo dpkg -i "$TMP_DIR/trellis.deb" 2>/dev/null || sudo apt-get install -f -y -qq
+                ok "Trellis installed via .deb"
+            fi
             ;;
         dnf)
-            RPM_URL="https://github.com/$REPO/releases/download/$VERSION/Trellis-${VERSION#v}-1.${ARCH_LABEL}.rpm"
-            info "Downloading Trellis .rpm package..."
-            $DOWNLOADER "$RPM_URL" > "$TMP_DIR/trellis.rpm"
-            sudo rpm -i "$TMP_DIR/trellis.rpm" 2>/dev/null || sudo dnf install -y "$TMP_DIR/trellis.rpm"
-            ok "Trellis installed via .rpm"
+            RPM_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "\.rpm" | head -1 | sed 's/.*"\(https[^"]*\)".*/\1/')
+            if [ -z "$RPM_URL" ]; then
+                warn "No .rpm found in release. Falling back to AppImage."
+                USE_APPIMAGE=true
+            else
+                info "Downloading Trellis .rpm package..."
+                $DOWNLOADER "$RPM_URL" > "$TMP_DIR/trellis.rpm"
+                sudo rpm -i "$TMP_DIR/trellis.rpm" 2>/dev/null || sudo dnf install -y "$TMP_DIR/trellis.rpm"
+                ok "Trellis installed via .rpm"
+            fi
             ;;
         *)
             # Fall back to AppImage
