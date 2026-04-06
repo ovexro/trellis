@@ -82,7 +82,7 @@ export default function MetricChart({
             <button
               key={range.hours}
               onClick={() => setHours(range.hours)}
-              className={`px-2 py-0.5 rounded text-xs transition-colors ${
+              className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
                 hours === range.hours
                   ? "bg-trellis-500/20 text-trellis-400"
                   : "text-zinc-500 hover:text-zinc-300"
@@ -95,8 +95,13 @@ export default function MetricChart({
       </div>
 
       {data.length === 0 ? (
-        <div className="h-40 flex items-center justify-center text-xs text-zinc-600">
-          {loading ? "Loading..." : "No data yet — metrics will appear as the device reports"}
+        <div className="h-40 flex flex-col items-center justify-center text-sm text-zinc-500 gap-2">
+          <div className="space-y-2 w-full px-8 opacity-30">
+            <div className="h-px bg-zinc-700" />
+            <div className="h-px bg-zinc-700" />
+            <div className="h-px bg-zinc-700" />
+          </div>
+          <span className="text-xs">{loading ? "Loading..." : "Waiting for data from device..."}</span>
         </div>
       ) : (
         <ResponsiveContainer width="100%" height={160}>

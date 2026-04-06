@@ -9,13 +9,16 @@ export default function Switch({ label, value, onChange }: SwitchProps) {
     <div className="flex items-center justify-between p-3 bg-zinc-800/50 rounded-lg">
       <span className="text-sm text-zinc-300">{label}</span>
       <button
+        role="switch"
+        aria-checked={value}
+        aria-label={label}
         onClick={() => onChange(!value)}
-        className={`relative w-11 h-6 rounded-full transition-colors ${
+        className={`relative w-11 h-6 rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-trellis-500/50 focus-visible:ring-offset-1 focus-visible:ring-offset-zinc-950 ${
           value ? "bg-trellis-500" : "bg-zinc-600"
         }`}
       >
         <span
-          className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow-sm ${
+          className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-all duration-200 shadow-sm ${
             value ? "translate-x-5" : "translate-x-0"
           }`}
         />

@@ -36,33 +36,41 @@ export default function Dashboard() {
   if (devices.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-center">
-        <Radar size={48} className="text-zinc-700 mb-4 animate-pulse" />
-        <h2 className="text-lg font-semibold text-zinc-300 mb-2">
-          Scanning for devices...
-        </h2>
-        <p className="text-sm text-zinc-500 max-w-sm mb-6">
-          Trellis is automatically discovering devices on your network.
-          You can also add a device manually by IP.
-        </p>
-        <button
-          onClick={() => setShowAddDialog(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
-        >
-          <Plus size={14} />
-          Add by IP
-        </button>
+        <div className="border border-dashed border-zinc-800 rounded-2xl p-12 max-w-md">
+          <Radar size={56} className="text-zinc-600 mb-5 mx-auto animate-pulse" />
+          <h2 className="text-lg font-semibold text-zinc-200 mb-2">
+            Scanning for devices...
+          </h2>
+          <p className="text-sm text-zinc-500 mb-1">
+            Devices running the Trellis library will appear automatically.
+          </p>
+          <p className="text-xs text-zinc-600 mb-6">
+            Make sure your devices are on the same network as this computer.
+          </p>
+          <button
+            onClick={() => setShowAddDialog(true)}
+            className="flex items-center gap-2 px-5 py-2.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm font-medium transition-colors mx-auto"
+          >
+            <Plus size={14} />
+            Add device by IP
+          </button>
+        </div>
 
         {showAddDialog && (
-          <AddDialog
-            ip={manualIp}
-            port={manualPort}
-            adding={adding}
-            error={addError}
-            onIpChange={setManualIp}
-            onPortChange={setManualPort}
-            onAdd={handleAdd}
-            onCancel={() => setShowAddDialog(false)}
-          />
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowAddDialog(false)}>
+            <div onClick={(e) => e.stopPropagation()}>
+              <AddDialog
+                ip={manualIp}
+                port={manualPort}
+                adding={adding}
+                error={addError}
+                onIpChange={setManualIp}
+                onPortChange={setManualPort}
+                onAdd={handleAdd}
+                onCancel={() => setShowAddDialog(false)}
+              />
+            </div>
+          </div>
         )}
       </div>
     );
@@ -99,16 +107,20 @@ export default function Dashboard() {
       </div>
 
       {showAddDialog && (
-        <AddDialog
-          ip={manualIp}
-          port={manualPort}
-          adding={adding}
-          error={addError}
-          onIpChange={setManualIp}
-          onPortChange={setManualPort}
-          onAdd={handleAdd}
-          onCancel={() => setShowAddDialog(false)}
-        />
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowAddDialog(false)}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <AddDialog
+              ip={manualIp}
+              port={manualPort}
+              adding={adding}
+              error={addError}
+              onIpChange={setManualIp}
+              onPortChange={setManualPort}
+              onAdd={handleAdd}
+              onCancel={() => setShowAddDialog(false)}
+            />
+          </div>
+        </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

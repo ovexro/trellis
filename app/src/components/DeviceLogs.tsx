@@ -94,7 +94,7 @@ export default function DeviceLogs({ deviceId }: DeviceLogsProps) {
         </div>
       </div>
 
-      <div className="max-h-48 overflow-auto font-mono text-xs space-y-0.5">
+      <div className="max-h-72 overflow-auto font-mono text-xs space-y-0.5">
         {filteredLogs.length === 0 ? (
           <p className="text-zinc-600 text-center py-4">
             No logs yet. Use trellis.logInfo("message") in your firmware.

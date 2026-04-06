@@ -8,19 +8,74 @@
     font-family: "Inter", system-ui, -apple-system, sans-serif;
   }
 
+  /* Global focus-visible ring — consistent green accent (#25) */
+  button:focus-visible,
+  a:focus-visible,
+  select:focus-visible,
+  input:focus-visible,
+  [role="switch"]:focus-visible {
+    @apply outline-none ring-2 ring-trellis-500/40 ring-offset-1 ring-offset-zinc-950;
+  }
+
+  /* Custom scrollbar */
   ::-webkit-scrollbar {
     width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-zinc-900;
+    @apply bg-transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-zinc-700 rounded-full;
+    @apply bg-zinc-700/50 rounded-full;
   }
 
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-zinc-600;
   }
+
+  /* Custom range slider (#8) */
+  input[type="range"] {
+    @apply appearance-none bg-transparent cursor-pointer;
+  }
+
+  input[type="range"]::-webkit-slider-runnable-track {
+    @apply h-1.5 rounded-full bg-zinc-700;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    @apply appearance-none w-4 h-4 rounded-full bg-trellis-500 border-2 border-trellis-400 cursor-pointer;
+    margin-top: -5px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+
+  input[type="range"]::-webkit-slider-thumb:hover {
+    @apply bg-trellis-400 scale-110;
+  }
+
+  input[type="range"]::-moz-range-track {
+    @apply h-1.5 rounded-full bg-zinc-700;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    @apply w-4 h-4 rounded-full bg-trellis-500 border-2 border-trellis-400 cursor-pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+}
+
+/* Page enter animation (#24) */
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-enter {
+  animation: pageEnter 150ms ease-out;
 }
