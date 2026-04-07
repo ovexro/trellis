@@ -1,6 +1,6 @@
 {
   "name": "Trellis",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Self-describing device control library for ESP32 and Pico W. Devices declare capabilities, desktop app auto-generates controls.",
   "keywords": "iot,esp32,pico,dashboard,control,mdns,websocket,ota",
   "repository": {
@@ -16,7 +16,7 @@
   ],
   "license": "MIT",
   "homepage": "https://github.com/ovexro/trellis",
-  "frameworks": "arduino",
+  "frameworks": ["arduino"],
   "platforms": ["espressif32", "raspberrypi"],
   "dependencies": {
     "bblanchon/ArduinoJson": "^7.0.0",
@@ -42,6 +42,11 @@
       "name": "RGBLed",
       "base": "examples/RGBLed",
       "files": ["RGBLed.ino"]
+    },
+    {
+      "name": "AutoConnect",
+      "base": "examples/AutoConnect",
+      "files": ["AutoConnect.ino"]
     }
   ]
 }

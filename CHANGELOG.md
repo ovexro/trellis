@@ -2,6 +2,18 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.1.7] — 2026-04-07
+
+### Added
+- `library/LICENSE` — MIT license bundled inside the Arduino library directory so it ships with installs from Library Manager.
+- `library.properties`: `includes=Trellis.h` — lets Arduino IDE auto-add the include statement on install.
+- `library.json`: `AutoConnect` example registered for PlatformIO (was missing).
+
+### Changed
+- `library.json`: `frameworks` is now an array (`["arduino"]`) per PlatformIO schema preference.
+
+These cleanups make the library pass `arduino-lint --library-manager submit` with zero errors and zero warnings, in preparation for Arduino Library Manager and PlatformIO Registry submissions.
+
 ## [0.1.6] — 2026-04-07
 
 ### Fixed
