@@ -1,14 +1,18 @@
 #include "TrellisWebServer.h"
 #include "Trellis.h"
+#include "TrellisWebUI_html.h"
 
 TrellisWebServer::TrellisWebServer(Trellis* trellis)
-  : _trellis(trellis), _http(nullptr), _ws(nullptr) {}
+  : _trellis(trellis), _http(nullptr), _ws(nullptr), _webUIEnabled(true) {}
 
 void TrellisWebServer::begin(uint16_t port) {
   _http = new WebServer(port);
   _ws = new WebSocketsServer(port + 1);
 
   _http->on("/api/info", HTTP_GET, [this]() { handleInfo(); });
+  // Always register the route — handler checks _webUIEnabled at request time so
+  // enableWebUI(false) works after begin() too.
+  _http->on("/", HTTP_GET, [this]() { handleWebUI(); });
 
   _http->begin();
 
@@ -27,7 +31,19 @@ void TrellisWebServer::loop() {
 
 void TrellisWebServer::handleInfo() {
   String json = buildInfoJson();
+  _http->sendHeader("Cache-Control", "no-store");
   _http->send(200, "application/json", json);
+}
+
+void TrellisWebServer::handleWebUI() {
+  if (!_webUIEnabled) {
+    _http->send(404, PSTR("text/plain"), PSTR("Web UI disabled"));
+    return;
+  }
+  // Serve the embedded dashboard from PROGMEM. send_P streams directly from
+  // flash so we don't pull the whole HTML into RAM.
+  _http->sendHeader("Cache-Control", "public, max-age=300");
+  _http->send_P(200, PSTR("text/html; charset=utf-8"), TRELLIS_WEB_UI_HTML);
 }
 
 String TrellisWebServer::buildInfoJson() {

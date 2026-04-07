@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Trellis</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235eead4'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='20' font-weight='800' text-anchor='middle' fill='%23062c2e'%3ET%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0b0d10;--panel:#15181d;--panel2:#1c2026;--bd:#252a32;
+  --fg:#e7ecf3;--mut:#8a93a3;--acc:#5eead4;--accd:#2dd4bf;
+  --ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--shadow:0 1px 0 #ffffff08 inset,0 8px 24px #00000040;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--acc)}
+.wrap{max-width:720px;margin:0 auto;padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:12px;margin:8px 0 18px}
+header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--acc),#0ea5b1);display:grid;place-items:center;font-weight:800;color:#06292a;box-shadow:var(--shadow)}
+header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
+header .sub{font-size:12px;color:var(--mut);margin-top:1px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);box-shadow:0 0 0 3px #ffffff08}
+.dot.on{background:var(--ok);box-shadow:0 0 0 3px #22c55e22}
+.dot.off{background:var(--err);box-shadow:0 0 0 3px #ef444422}
+.badge{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);border:1px solid var(--bd);padding:2px 6px;border-radius:999px}
+.sys{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:18px}
+.sys div{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow)}
+.sys b{display:block;font-size:11px;color:var(--mut);font-weight:500;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.sys span{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:560px){.grid{grid-template-columns:1fr 1fr}.full{grid-column:1/-1}}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);transition:border-color .15s}
+.card:hover{border-color:#2f3540}
+.card h3{margin:0 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);font-weight:600}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}
+.val{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.unit{font-size:14px;color:var(--mut);margin-left:4px;font-weight:500}
+/* switch */
+.sw{position:relative;width:54px;height:30px;flex:none}
+.sw input{opacity:0;width:0;height:0}
+.sw .slot{position:absolute;inset:0;background:#2a2f38;border-radius:999px;transition:.2s;cursor:pointer;border:1px solid var(--bd)}
+.sw .slot:before{content:"";position:absolute;left:3px;top:3px;width:22px;height:22px;background:#cbd5e1;border-radius:50%;transition:.2s;box-shadow:0 1px 4px #0006}
+.sw input:checked+.slot{background:var(--accd);border-color:var(--accd)}
+.sw input:checked+.slot:before{transform:translateX(24px);background:#fff}
+/* slider */
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:6px;background:#2a2f38;border-radius:999px;outline:none;margin:10px 0 4px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--acc);cursor:pointer;box-shadow:0 0 0 4px #5eead422,0 2px 6px #0008;border:none}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--acc);cursor:pointer;border:none;box-shadow:0 0 0 4px #5eead422}
+/* color */
+input[type=color]{-webkit-appearance:none;appearance:none;width:48px;height:48px;border:1px solid var(--bd);border-radius:12px;background:transparent;padding:0;cursor:pointer}
+input[type=color]::-webkit-color-swatch-wrapper{padding:3px}
+input[type=color]::-webkit-color-swatch{border:none;border-radius:9px}
+input[type=color]::-moz-color-swatch{border:none;border-radius:9px}
+.hex{font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--mut);letter-spacing:.5px}
+/* text */
+.tx{display:flex;gap:8px;margin-top:8px}
+.tx input{flex:1;background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:10px;padding:9px 12px;font:inherit;outline:none;transition:border-color .15s}
+.tx input:focus{border-color:var(--acc)}
+.tx button{background:var(--accd);color:#06292a;border:none;border-radius:10px;padding:0 14px;font-weight:700;cursor:pointer;font:inherit;transition:filter .15s}
+.tx button:hover{filter:brightness(1.1)}
+.tx button:active{transform:translateY(1px)}
+.tdisp{font-size:18px;font-weight:600;margin-top:6px;word-break:break-word}
+.empty{color:var(--mut);text-align:center;padding:36px 16px;border:1px dashed var(--bd);border-radius:14px}
+footer{margin-top:24px;text-align:center;color:var(--mut);font-size:11px}
+footer a{text-decoration:none}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(60px);background:var(--panel2);border:1px solid var(--bd);color:var(--fg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 8px 24px #000a;opacity:0;transition:.25s;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">T</div>
+    <div style="flex:1;min-width:0">
+      <h1 id="name">Trellis Device</h1>
+      <div class="sub">
+        <span class="dot" id="dot"></span>
+        <span id="status">connecting…</span>
+        <span class="badge" id="plat"></span>
+        <span class="badge" id="fw"></span>
+      </div>
+    </div>
+  </header>
+  <div class="sys">
+    <div><b>Signal</b><span id="rssi">—</span></div>
+    <div><b>Free heap</b><span id="heap">—</span></div>
+    <div><b>Uptime</b><span id="up">—</span></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <footer>Powered by <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener">Trellis</a> · <span id="id">—</span></footer>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+(function(){
+var host=location.hostname,wsPort=(parseInt(location.port||"80",10))+1,ws,reconnectT,caps={};
+var $=function(s){return document.getElementById(s)};
+function esc(s){return(""+s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function toast(t){var e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast._t);toast._t=setTimeout(function(){e.classList.remove("show")},1800)}
+function setStatus(state,txt){var d=$("dot"),s=$("status");d.className="dot "+state;s.textContent=txt}
+function fmtUp(s){if(s<60)return s+"s";var m=Math.floor(s/60);if(m<60)return m+"m";var h=Math.floor(m/60);if(h<48)return h+"h "+(m%60)+"m";return Math.floor(h/24)+"d "+(h%24)+"h"}
+function fmtHeap(b){if(b>=1048576)return(b/1048576).toFixed(1)+" MB";if(b>=1024)return(b/1024).toFixed(0)+" KB";return b+" B"}
+function fmtRssi(r){return r+" dBm"}
+function send(id,value){if(!ws||ws.readyState!==1){toast("Not connected");return}ws.send(JSON.stringify({command:"set",id:id,value:value}))}
+function renderSystem(s){if(!s)return;if(s.rssi!=null)$("rssi").textContent=fmtRssi(s.rssi);if(s.heap_free!=null)$("heap").textContent=fmtHeap(s.heap_free);if(s.uptime_s!=null)$("up").textContent=fmtUp(s.uptime_s)}
+function buildCard(c){
+  var card=document.createElement("div");card.className="card";
+  if(c.type==="text")card.classList.add("full");
+  var h=document.createElement("h3");h.textContent=c.label||c.id;card.appendChild(h);
+  if(c.type==="switch"){
+    var row=document.createElement("div");row.className="row";
+    var v=document.createElement("div");v.className="val";v.id="v_"+c.id;v.textContent=c.value?"On":"Off";
+    var sw=document.createElement("label");sw.className="sw";
+    sw.innerHTML='<input type="checkbox" '+(c.value?"checked":"")+'><span class="slot"></span>';
+    sw.querySelector("input").addEventListener("change",function(e){send(c.id,e.target.checked)});
+    row.appendChild(v);row.appendChild(sw);card.appendChild(row);
+  }else if(c.type==="slider"){
+    var row2=document.createElement("div");row2.className="row";
+    var unitSpan='<span class="unit">'+esc(c.min)+"–"+esc(c.max)+"</span>";
+    var vv=document.createElement("div");vv.className="val";vv.id="v_"+c.id;vv.innerHTML=Math.round(c.value)+unitSpan;
+    row2.appendChild(vv);card.appendChild(row2);
+    var r=document.createElement("input");r.type="range";r.min=c.min;r.max=c.max;r.value=c.value;r.step=(c.max-c.min)>10?1:0.1;
+    var commit;
+    r.addEventListener("input",function(e){vv.innerHTML=Math.round(e.target.value)+unitSpan;clearTimeout(commit);commit=setTimeout(function(){send(c.id,parseFloat(e.target.value))},80)});
+    card.appendChild(r);
+  }else if(c.type==="sensor"){
+    var row3=document.createElement("div");row3.className="row";
+    var sv=document.createElement("div");sv.className="val";sv.id="v_"+c.id;
+    var unitS=c.unit?'<span class="unit">'+esc(c.unit)+"</span>":"";
+    sv.innerHTML=(typeof c.value==="number"?(Math.abs(c.value)<10?c.value.toFixed(2):c.value.toFixed(1)):"—")+unitS;
+    sv.dataset.unit=unitS;
+    row3.appendChild(sv);card.appendChild(row3);
+  }else if(c.type==="color"){
+    var row4=document.createElement("div");row4.className="row";
+    var cp=document.createElement("input");cp.type="color";cp.value=c.value||"#000000";cp.id="v_"+c.id;
+    var hx=document.createElement("div");hx.className="hex";hx.id="hx_"+c.id;hx.textContent=(c.value||"#000000").toUpperCase();
+    var commit2;
+    cp.addEventListener("input",function(e){hx.textContent=e.target.value.toUpperCase();clearTimeout(commit2);commit2=setTimeout(function(){send(c.id,e.target.value)},80)});
+    row4.appendChild(hx);row4.appendChild(cp);card.appendChild(row4);
+  }else if(c.type==="text"){
+    var disp=document.createElement("div");disp.className="tdisp";disp.id="v_"+c.id;disp.textContent=c.value||"";
+    card.appendChild(disp);
+    var bx=document.createElement("div");bx.className="tx";
+    var ti=document.createElement("input");ti.type="text";ti.placeholder="Enter text…";ti.maxLength=31;
+    var bt=document.createElement("button");bt.textContent="Set";
+    function go(){if(!ti.value)return;send(c.id,ti.value);ti.value=""}
+    bt.addEventListener("click",go);
+    ti.addEventListener("keydown",function(e){if(e.key==="Enter")go()});
+    bx.appendChild(ti);bx.appendChild(bt);card.appendChild(bx);
+  }
+  return card;
+}
+function applyUpdate(id,value){
+  var c=caps[id];if(!c)return;
+  var el=$("v_"+id);if(!el)return;
+  if(c.type==="switch"){el.textContent=value?"On":"Off";var i=el.parentNode.querySelector("input");if(i)i.checked=!!value}
+  else if(c.type==="slider"){el.innerHTML=Math.round(value)+'<span class="unit">'+esc(c.min)+"–"+esc(c.max)+"</span>";var rr=el.parentNode.parentNode.querySelector('input[type=range]');if(rr&&document.activeElement!==rr)rr.value=value}
+  else if(c.type==="sensor"){el.innerHTML=(typeof value==="number"?(Math.abs(value)<10?value.toFixed(2):value.toFixed(1)):esc(value))+(el.dataset.unit||"")}
+  else if(c.type==="color"){if(document.activeElement!==el)el.value=value;var hh=$("hx_"+id);if(hh)hh.textContent=(""+value).toUpperCase()}
+  else if(c.type==="text"){el.textContent=value}
+}
+function loadInfo(){
+  fetch("/api/info").then(function(r){return r.json()}).then(function(d){
+    info=d;
+    $("name").textContent=d.name||"Trellis Device";document.title=(d.name||"Trellis")+" · Trellis";
+    $("plat").textContent=d.platform||"";
+    $("fw").textContent=d.firmware?"v"+d.firmware:"";
+    $("id").textContent=d.id||"";
+    renderSystem(d.system);
+    var g=$("grid");g.innerHTML="";caps={};
+    if(!d.capabilities||!d.capabilities.length){g.innerHTML='<div class="empty full">No capabilities exposed yet.</div>';return}
+    d.capabilities.forEach(function(c){caps[c.id]=c;g.appendChild(buildCard(c))});
+    connectWs();
+  }).catch(function(){setStatus("off","unreachable");setTimeout(loadInfo,3000)});
+}
+function connectWs(){
+  try{ws=new WebSocket("ws://"+host+":"+wsPort+"/")}catch(e){return scheduleReconnect()}
+  ws.onopen=function(){setStatus("on","live")};
+  ws.onclose=function(){setStatus("off","reconnecting…");scheduleReconnect()};
+  ws.onerror=function(){};
+  ws.onmessage=function(ev){
+    try{var m=JSON.parse(ev.data)}catch(e){return}
+    if(m.event==="update"){applyUpdate(m.id,m.value)}
+    else if(m.event==="heartbeat"&&m.system){renderSystem(m.system)}
+  };
+}
+function scheduleReconnect(){clearTimeout(reconnectT);reconnectT=setTimeout(connectWs,2000)}
+loadInfo();
+})();
+</script>
+</body>
+</html>

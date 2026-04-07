@@ -9,6 +9,7 @@ Trellis::Trellis(const char* name, uint16_t port)
     _webServer(nullptr),
     _discovery(nullptr),
     _provisioning(nullptr),
+    _webUIEnabled(true),
     _lastBroadcast(0),
     _lastHeartbeat(0) {
   memset(_capabilities, 0, sizeof(_capabilities));
@@ -38,10 +39,15 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
 
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);
+  _webServer->setWebUIEnabled(_webUIEnabled);
   _webServer->begin(_port);
 
   Serial.printf("[Trellis] %s ready at http://%s:%d\n",
     _name, WiFi.localIP().toString().c_str(), _port);
+  if (_webUIEnabled) {
+    Serial.printf("[Trellis] Open http://%s:%d/ in a browser to control this device\n",
+      WiFi.localIP().toString().c_str(), _port);
+  }
 
   return true;
 }
@@ -62,12 +68,24 @@ bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
 
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);
+  _webServer->setWebUIEnabled(_webUIEnabled);
   _webServer->begin(_port);
 
   Serial.printf("[Trellis] %s ready at http://%s:%d\n",
     _name, WiFi.localIP().toString().c_str(), _port);
+  if (_webUIEnabled) {
+    Serial.printf("[Trellis] Open http://%s:%d/ in a browser to control this device\n",
+      WiFi.localIP().toString().c_str(), _port);
+  }
 
   return true;
+}
+
+void Trellis::enableWebUI(bool enabled) {
+  _webUIEnabled = enabled;
+  if (_webServer) {
+    _webServer->setWebUIEnabled(enabled);
+  }
 }
 
 void Trellis::loop() {

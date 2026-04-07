@@ -79,6 +79,7 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 - **15 lines to integrate** — drop-in library, minimal boilerplate
 - **Self-description protocol** — device declares its own capabilities
 - **WebSocket** — real-time bidirectional communication
+- **Embedded web dashboard** — open `http://<device-ip>/` from any phone or laptop browser. Auto-renders all your switches, sliders, sensors, color picker and text fields with live WebSocket updates. No desktop app required, no install.
 - **Live broadcasts** — periodic sensor values + system telemetry
 - **Device logging** — logInfo()/logWarn()/logError() sent to desktop app
 - **OTA ready** — firmware updates from the desktop app (ESP32)

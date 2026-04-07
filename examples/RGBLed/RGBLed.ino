@@ -1,7 +1,9 @@
 /*
  * Trellis — RGB LED Example
  *
- * Controls an RGB LED using the color picker in the Trellis app.
+ * Controls an RGB LED using the color picker in the Trellis app — or by
+ * opening http://<device-ip>/ in your phone's browser. The embedded
+ * dashboard exposes the same color picker, no install required.
  * Adjust GPIO pins for your wiring.
  *
  * Works on: ESP32, Pico W, Pico 2 W

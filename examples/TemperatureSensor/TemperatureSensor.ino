@@ -4,6 +4,10 @@
  * Reads an analog temperature sensor and reports it to the Trellis app.
  * Replace readTemperature() with your actual sensor reading logic.
  *
+ * Open http://<device-ip>/ on your phone to see live temperature without
+ * installing the desktop app — the embedded dashboard updates in real time
+ * via WebSocket.
+ *
  * Works on: ESP32, Pico W, Pico 2 W
  */
 

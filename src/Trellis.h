@@ -28,7 +28,7 @@
 
 #define TRELLIS_MAX_CAPABILITIES 16
 #define TRELLIS_DEFAULT_PORT 8080
-#define TRELLIS_VERSION "0.1.5"
+#define TRELLIS_VERSION "0.3.0"
 
 class Trellis {
 public:
@@ -65,6 +65,10 @@ public:
   // Firmware version
   void setFirmwareVersion(const char* version);
 
+  // Embedded web dashboard (default: enabled). Call before begin() to disable
+  // the on-device control panel served at GET /. Saves ~13 KB of flash when off.
+  void enableWebUI(bool enabled = true);
+
   // Logging — sent to desktop app via WebSocket
   void log(const char* severity, const char* message);
   void logInfo(const char* message);
@@ -95,6 +99,8 @@ private:
   TrellisDiscovery* _discovery;
   TrellisTelemetry _telemetry;
   TrellisProvisioning* _provisioning;
+
+  bool _webUIEnabled;
 
   unsigned long _lastBroadcast;
   unsigned long _lastHeartbeat;

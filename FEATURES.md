@@ -93,6 +93,17 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] HTTP server: `GET /api/info` — capability declaration
 - [x] WebSocket server — real-time commands & telemetry
 
+### Embedded Web Dashboard (v0.3.0)
+- [x] On-device control panel served at `GET /` from PROGMEM (no RAM cost)
+- [x] Self-contained: vanilla HTML/CSS/JS, no build step, no external CDN
+- [x] Renders all 5 capability types (switch, slider, sensor, color, text)
+- [x] Live updates via WebSocket — auto-reconnect on broker drop
+- [x] System telemetry tiles (signal, free heap, uptime)
+- [x] Mobile-first responsive layout, dark theme, inline SVG favicon
+- [x] Default-on, opt-out via `trellis.enableWebUI(false)` (toggleable at runtime)
+- [x] Saves ~13 KB of flash when disabled
+- [x] Verified end-to-end on real ESP32 hardware
+
 ### OTA
 - [x] HTTP OTA update handler (ESP32)
 - [x] OTA progress reporting via WebSocket

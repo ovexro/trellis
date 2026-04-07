@@ -7,6 +7,10 @@
  * Connect to it with your phone/laptop and enter your WiFi credentials.
  * Credentials are saved — next boot connects automatically.
  *
+ * After connecting, the device prints its IP to Serial. Open that IP in
+ * your browser to control the device from any phone or laptop on the
+ * network — no desktop app needed.
+ *
  * Works on: ESP32, Pico W, Pico 2 W
  */
 

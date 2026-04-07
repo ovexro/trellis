@@ -2,7 +2,10 @@
  * Trellis — Basic Switch Example
  *
  * Controls an LED or relay on GPIO 2 (built-in LED on most ESP32 boards).
- * The switch appears automatically in the Trellis desktop app.
+ *
+ * The switch appears automatically in the Trellis desktop app, AND on the
+ * device's own dashboard — open http://<device-ip>/ in any phone or laptop
+ * browser on the same WiFi network. No app required.
  *
  * Works on: ESP32, Pico W, Pico 2 W
  */

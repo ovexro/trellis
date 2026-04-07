@@ -7,6 +7,11 @@
  * - Sensor: humidity reading
  * - Slider: fan speed (PWM)
  *
+ * After flashing, open http://<device-ip>/ from any device on the same
+ * network — the embedded dashboard renders all four controls in a
+ * mobile-friendly layout. Useful for headless monitoring without the
+ * desktop app running.
+ *
  * Works on: ESP32, Pico W, Pico 2 W
  */
 
