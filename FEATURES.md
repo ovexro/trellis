@@ -154,6 +154,22 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Scene persistence (localStorage)
 - [x] Device/capability/value selector per action
 
+## MQTT Bridge
+
+- [x] In-app MQTT client (rumqttc), worker-thread design
+- [x] Settings UI: broker host/port/username/password, base topic, HA discovery prefix, enable + test connection
+- [x] Tauri commands: get_mqtt_config, set_mqtt_config, get_mqtt_status, test_mqtt_connection
+- [x] REST API: GET/PUT /api/settings/mqtt, GET /api/mqtt/status
+- [x] Last-will availability (`<base_topic>/bridge/availability` retained)
+- [x] Bidirectional state sync (Trellis → MQTT and MQTT → device commands)
+- [x] Home Assistant MQTT discovery — auto-creates entities for switch/slider/sensor/color/text
+- [x] HA diagnostic sensors per device — Signal strength (dBm), Free heap (B), Uptime (s, total_increasing)
+- [x] Instant discovery on bridge enable (no 30s wait)
+- [x] Republish discovery on broker reconnect (handles broker restart)
+- [x] Heartbeat → MQTT mirroring (device telemetry visible in HA without Trellis desktop app open)
+- [x] Multi-segment base topics (e.g. `home/iot/trellis`) supported via prefix-strip
+- [ ] TLS/encrypted broker connection (deferred — MVP scope)
+
 ## Automation
 
 - [x] Scheduled actions (cron-based: "turn on pump at 6am daily")
