@@ -2,6 +2,15 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.3.2] — 2026-04-07
+
+### Release infrastructure
+
+- **Lean Arduino Library Manager tarball.** The published `Trellis-X.Y.Z.zip` on Arduino LM drops from ~740 KB / 122 files (entire monorepo, including the Tauri desktop app source, both lockfiles, and 530 KB of screenshots) to ~50 KB / 25 files (library only). No library code changes — same `src/`, same examples, same API. Achieved by tagging future releases from a lean orphan `library-release` branch (managed by `scripts/release-library.sh`) instead of from `main`. The desktop CI still builds from main's tree by reading a `main-sha:` line embedded in the tag annotation.
+- **Why this was needed.** The Arduino Library Manager indexer (`arduino/libraries-repository-engine`) walks the cloned repo with `filepath.Walk()` and only excludes SCCS dirs, symlinks, and dotfiles — it does **not** honor `.gitattributes export-ignore`. Our `git archive` produced a clean ~50 KB tarball already, but the indexer ignored it. Forcing the indexer to see only library files required a separate, lean commit at the tag.
+- **Old tags unchanged.** v0.1.8 → v0.3.1 stay bloated in the LM index (immutable index entries). Only v0.3.2 onward will be lean. PIO is unaffected — it has always honored `library.json export.include`.
+- **Releases must now use the script.** `./scripts/release-library.sh vX.Y.Z` is the only supported way to tag a release; raw `git tag && git push` will fail loudly because `release.yml` requires the `main-sha:` line in the tag annotation.
+
 ## [0.3.1] — 2026-04-07
 
 ### Added — embedded web dashboard polish pass
