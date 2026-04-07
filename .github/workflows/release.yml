@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ─── Build for release ─────────────────────────────────────────────────
+  build:
+    name: Build release (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+
+    steps:
+      # Step 1: full clone so we can read the tag's annotation and reach
+      # the referenced main commit. The release.yml workflow is fired by
+      # a tag push from the `library-release` branch (lean tree, no app/),
+      # so we must explicitly check out the main commit recorded in the
+      # tag annotation to get the desktop app sources back.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve main SHA from tag annotation
+        id: resolve
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "Tag: $tag"
+          ann="$(git for-each-ref "refs/tags/$tag" --format='%(contents)')"
+          echo "Annotation:"
+          printf '%s\n' "$ann" | sed 's/^/  /'
+          main_sha="$(printf '%s\n' "$ann" | awk '/^main-sha:/ {print $2; exit}')"
+          if [ -z "$main_sha" ]; then
+            echo "ERROR: tag $tag annotation does not contain a 'main-sha:' line." >&2
+            echo "       This release was not produced by scripts/release-library.sh." >&2
+            exit 1
+          fi
+          echo "Resolved main sha: $main_sha"
+          # Check the SHA out so subsequent build steps see main's tree.
+          git checkout "$main_sha"
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            libudev-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build Tauri app
+        working-directory: app
+        run: npx tauri build
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp app/src-tauri/target/release/bundle/deb/*.deb release/ 2>/dev/null || true
+          cp app/src-tauri/target/release/bundle/rpm/*.rpm release/ 2>/dev/null || true
+          cp app/src-tauri/target/release/bundle/appimage/*.AppImage release/ 2>/dev/null || true
+          # Rename AppImage for installer script compatibility
+          for f in release/*.AppImage; do
+            [ -f "$f" ] && mv "$f" "release/Trellis_${{ matrix.arch }}.AppImage"
+          done
+          ls -la release/
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: release/
+
+  # ─── Publish GitHub Release ────────────────────────────────────────────
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          # Auto-generated notes are disabled because tags now live on the
+          # `library-release` branch (lean library tree). The commits between
+          # consecutive tags on that branch are just one-line release stubs,
+          # so the auto-notes would be uninformative. The user updates
+          # CHANGELOG.md manually as the source of truth, and edits the
+          # release body after publish if more detail is wanted.
+          generate_release_notes: false
+          body: |
+            ## Installation
+
+            ### One-command install (Linux)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/ovexro/trellis/main/install.sh | bash
+            ```
+
+            ### Manual download
+            - **Ubuntu/Mint/Debian**: Download the `.deb` file
+            - **Fedora/RHEL**: Download the `.rpm` file
+            - **Any Linux**: Download the `.AppImage` file
+
+            ### Arduino Library
+            Install via Arduino Library Manager: `arduino-cli lib install Trellis` (or search "Trellis" in the Arduino IDE Library Manager). For PlatformIO: add `Trellis` to your `platformio.ini` `lib_deps`.
+
+            ---
+
+            If you find Trellis useful, consider [supporting development](https://www.paypal.com/paypalme/ovexro).
