@@ -221,3 +221,4 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] GitHub releases with app binaries
 - [x] Arduino Library Manager submission (arduino/library-registry#8088 merged 2026-04-07)
 - [x] PlatformIO registry submission (nubiraorg/Trellis v0.1.8 published 2026-04-07)
+- [x] Lean Arduino LM tarball — `library-release` orphan branch + `scripts/release-library.sh` + tag-annotation main-sha resolver in `release.yml`. Drops the published Trellis-X.Y.Z.zip from ~740 KB / 122 files (entire monorepo) to ~50 KB / 25 files (library only) for v0.3.2 onward. Old tags v0.1.8 → v0.3.1 stay bloated in the LM index (immutable).
