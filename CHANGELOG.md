@@ -2,6 +2,15 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.1.6] — 2026-04-07
+
+### Fixed
+- **Critical**: desktop command relay race that dropped switch/slider/OTA commands. `send_to_device` opened a short-lived WebSocket per command and called `socket.close()` before the device's `WebSocketsServer.loop()` could dispatch the text frame to `processCommand()`. The frame was sitting in the device buffer when the disconnect tore it down, so commands appeared "sent" to the desktop but never landed on the device. Reproducible across **all** capability types (switch, slider, color, text, OTA). Discovered during hardware-test gate that should have run before v0.1.5.
+
+### Changed
+- `send_to_device` now pushes commands through an `mpsc::channel` into the existing persistent `ws_reader_loop`, which writes them on the same WebSocket it reads events from. Eliminates the short-lived-connection race entirely. A one-shot fallback (with a 200ms hold-off before close) is preserved for the brief race window before discovery establishes the persistent connection.
+- Reader loop's socket read timeout dropped from 2s to 50ms so outbound commands are flushed promptly.
+
 ## [0.1.0] — 2026-04-06
 
 ### Added

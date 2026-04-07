@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -18,6 +19,7 @@ struct DeviceConnection {
     device_id: String,
     stop_flag: Arc<Mutex<bool>>,
     thread: Option<thread::JoinHandle<()>>,
+    command_tx: mpsc::Sender<String>,
 }
 
 pub struct ConnectionManager {
@@ -51,9 +53,10 @@ impl ConnectionManager {
         let app_handle = self.app_handle.clone();
         let id = device_id.to_string();
         let url = format!("ws://{}:{}", ip, ws_port);
+        let (command_tx, command_rx) = mpsc::channel::<String>();
 
         let thread = thread::spawn(move || {
-            ws_reader_loop(&id, &url, stop_clone, app_handle);
+            ws_reader_loop(&id, &url, stop_clone, app_handle, command_rx);
         });
 
         conns.insert(
@@ -62,6 +65,7 @@ impl ConnectionManager {
                 device_id: device_id.to_string(),
                 stop_flag,
                 thread: Some(thread),
+                command_tx,
             },
         );
 
@@ -86,33 +90,34 @@ impl ConnectionManager {
         ws_port: u16,
         message: &str,
     ) -> Result<(), String> {
-        // For commands, we open a short-lived connection
-        // The persistent connection is for receiving events only
+        // Preferred path: push through the persistent connection's command channel.
+        // The reader loop will write the frame on the same WebSocket it uses for
+        // events, so the device never sees a short-lived connection that could
+        // race with WStype_TEXT dispatch.
+        {
+            let conns = self.connections.lock().unwrap();
+            if let Some(conn) = conns.get(device_id) {
+                conn.command_tx
+                    .send(message.to_string())
+                    .map_err(|e| format!("Command channel send: {}", e))?;
+                return Ok(());
+            }
+        }
+
+        // Fallback: no persistent connection yet (e.g. just-added device, called
+        // before discovery's connect_device ran). Open a one-shot connection,
+        // send, and give the device time to dispatch the frame before closing.
         let url = format!("ws://{}:{}", ip, ws_port);
         let (mut socket, _) =
             connect(&url).map_err(|e| format!("WebSocket connect: {}", e))?;
         socket
             .send(Message::Text(message.to_string()))
             .map_err(|e| format!("WebSocket send: {}", e))?;
-
-        // Read the response (broadcast update echo)
-        match socket.read() {
-            Ok(Message::Text(resp)) => {
-                // Emit the response as a device event
-                if let Some(handle) = self.app_handle.lock().unwrap().as_ref() {
-                    let _ = handle.emit(
-                        "device-event",
-                        DeviceEvent {
-                            device_id: device_id.to_string(),
-                            event_type: "update".to_string(),
-                            payload: serde_json::from_str(&resp).unwrap_or_default(),
-                        },
-                    );
-                }
-            }
-            _ => {}
-        }
-
+        // Let the device's WebSocketsServer.loop() dispatch the frame to
+        // processCommand before we tear down the connection. Without this
+        // delay, the close arrives before WStype_TEXT fires and the frame
+        // is dropped on disconnect teardown.
+        thread::sleep(Duration::from_millis(200));
         let _ = socket.close(None);
         Ok(())
     }
@@ -128,6 +133,7 @@ fn ws_reader_loop(
     url: &str,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
+    command_rx: mpsc::Receiver<String>,
 ) {
     loop {
         if *stop_flag.lock().unwrap() {
@@ -138,15 +144,46 @@ fn ws_reader_loop(
 
         match connect(url) {
             Ok((mut socket, _)) => {
-                // Set read timeout so we can check stop_flag periodically
+                // Short read timeout so we can interleave channel polling and
+                // stop_flag checks without blocking.
                 if let Some(stream) = socket.get_ref().as_tcp_stream() {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
                 }
 
                 loop {
                     if *stop_flag.lock().unwrap() {
                         let _ = socket.close(None);
                         return;
+                    }
+
+                    // Drain any pending outbound commands and write them on the
+                    // same socket. Sharing the persistent connection eliminates
+                    // the short-lived-connection race that drops frames on
+                    // disconnect teardown.
+                    let mut write_failed = false;
+                    loop {
+                        match command_rx.try_recv() {
+                            Ok(msg) => {
+                                if let Err(e) = socket.send(Message::Text(msg)) {
+                                    log::warn!(
+                                        "[WS] Send error for device {}: {}",
+                                        device_id,
+                                        e
+                                    );
+                                    write_failed = true;
+                                    break;
+                                }
+                            }
+                            Err(mpsc::TryRecvError::Empty) => break,
+                            Err(mpsc::TryRecvError::Disconnected) => {
+                                // No more senders — manager dropped this connection
+                                let _ = socket.close(None);
+                                return;
+                            }
+                        }
+                    }
+                    if write_failed {
+                        break;
                     }
 
                     match socket.read() {
@@ -178,7 +215,7 @@ fn ws_reader_loop(
                             if e.kind() == std::io::ErrorKind::WouldBlock
                                 || e.kind() == std::io::ErrorKind::TimedOut =>
                         {
-                            // Timeout — just loop and check stop_flag
+                            // Timeout — just loop and check stop_flag/commands
                             continue;
                         }
                         Err(e) => {
