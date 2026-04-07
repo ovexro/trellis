@@ -1,8 +1,40 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { save, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Download, Upload, Check, Bell } from "lucide-react";
+import { Download, Upload, Check, Bell, Radio } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
+
+type MqttConfig = {
+  enabled: boolean;
+  broker_host: string;
+  broker_port: number;
+  username: string;
+  password: string;
+  base_topic: string;
+  ha_discovery_prefix: string;
+  ha_discovery_enabled: boolean;
+  client_id: string;
+};
+
+type MqttStatus = {
+  enabled: boolean;
+  connected: boolean;
+  last_error: string | null;
+  messages_published: number;
+  messages_received: number;
+};
+
+const DEFAULT_MQTT_CONFIG: MqttConfig = {
+  enabled: false,
+  broker_host: "localhost",
+  broker_port: 1883,
+  username: "",
+  password: "",
+  base_topic: "trellis",
+  ha_discovery_prefix: "homeassistant",
+  ha_discovery_enabled: true,
+  client_id: "trellis-bridge",
+};
 
 export default function Settings() {
   const { devices } = useDeviceStore();
@@ -17,6 +49,12 @@ export default function Settings() {
   const [ntfySavedTopic, setNtfySavedTopic] = useState<string | null>(null);
   const [ntfyStatus, setNtfyStatus] = useState("");
 
+  // MQTT bridge state
+  const [mqttConfig, setMqttConfig] = useState<MqttConfig>(DEFAULT_MQTT_CONFIG);
+  const [mqttStatus, setMqttStatus] = useState<MqttStatus | null>(null);
+  const [mqttFeedback, setMqttFeedback] = useState("");
+  const [mqttBusy, setMqttBusy] = useState(false);
+
   useEffect(() => {
     invoke<string | null>("get_setting", { key: "ntfy_topic" }).then((topic) => {
       if (topic) {
@@ -28,7 +66,57 @@ export default function Settings() {
     invoke<string | null>("get_setting", { key: "scan_interval" }).then((val) => {
       if (val) setScanInterval(val);
     }).catch(() => {});
+
+    invoke<MqttConfig>("get_mqtt_config")
+      .then((cfg) => setMqttConfig({ ...DEFAULT_MQTT_CONFIG, ...cfg }))
+      .catch(() => {});
+
+    refreshMqttStatus();
+    const id = setInterval(refreshMqttStatus, 5000);
+    return () => clearInterval(id);
   }, []);
+
+  const refreshMqttStatus = async () => {
+    try {
+      const s = await invoke<MqttStatus>("get_mqtt_status");
+      setMqttStatus(s);
+    } catch {
+      // Silent — bridge not initialized yet during early startup
+    }
+  };
+
+  const saveMqttConfig = async () => {
+    setMqttBusy(true);
+    setMqttFeedback("");
+    try {
+      const newStatus = await invoke<MqttStatus>("set_mqtt_config", { config: mqttConfig });
+      setMqttStatus(newStatus);
+      setMqttFeedback(
+        mqttConfig.enabled
+          ? "Settings saved — bridge starting"
+          : "Settings saved — bridge stopped"
+      );
+      setTimeout(() => setMqttFeedback(""), 4000);
+    } catch (err) {
+      setMqttFeedback(`Save failed: ${err}`);
+    } finally {
+      setMqttBusy(false);
+    }
+  };
+
+  const testMqttConnection = async () => {
+    setMqttBusy(true);
+    setMqttFeedback("Testing connection…");
+    try {
+      await invoke("test_mqtt_connection", { config: mqttConfig });
+      setMqttFeedback("Connection succeeded");
+      setTimeout(() => setMqttFeedback(""), 4000);
+    } catch (err) {
+      setMqttFeedback(`Connection failed: ${err}`);
+    } finally {
+      setMqttBusy(false);
+    }
+  };
 
   const saveNtfyTopic = async () => {
     const trimmed = ntfyTopic.trim();
@@ -393,6 +481,151 @@ export default function Settings() {
           </div>
         </div>
 
+        {/* MQTT bridge */}
+        <div>
+          <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+            MQTT bridge
+          </h2>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm text-zinc-300">
+              <Radio
+                size={16}
+                className={
+                  mqttStatus?.connected
+                    ? "text-trellis-400"
+                    : mqttStatus?.enabled
+                    ? "text-amber-400"
+                    : "text-zinc-500"
+                }
+              />
+              {mqttStatus?.connected ? (
+                <span>
+                  Connected to <code className="px-1.5 py-0.5 bg-zinc-800 rounded text-trellis-400 text-xs">{mqttConfig.broker_host}:{mqttConfig.broker_port}</code>
+                  {" — "}
+                  <span className="text-zinc-500">
+                    {mqttStatus.messages_published} pub / {mqttStatus.messages_received} sub
+                  </span>
+                </span>
+              ) : mqttStatus?.enabled ? (
+                <span className="text-amber-400">Enabled but not connected{mqttStatus.last_error ? ` — ${mqttStatus.last_error}` : ""}</span>
+              ) : (
+                <span className="text-zinc-500">Disabled</span>
+              )}
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={mqttConfig.enabled}
+                onChange={(e) => setMqttConfig({ ...mqttConfig, enabled: e.target.checked })}
+                className="rounded border-zinc-700 bg-zinc-800"
+              />
+              Enable MQTT bridge
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">Broker host</label>
+                <input
+                  type="text"
+                  value={mqttConfig.broker_host}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, broker_host: e.target.value })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="localhost"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">Port</label>
+                <input
+                  type="number"
+                  value={mqttConfig.broker_port}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, broker_port: parseInt(e.target.value) || 1883 })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="1883"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">Username (optional)</label>
+                <input
+                  type="text"
+                  value={mqttConfig.username}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, username: e.target.value })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="(none)"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">Password (optional)</label>
+                <input
+                  type="password"
+                  value={mqttConfig.password}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, password: e.target.value })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="(none)"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">Base topic</label>
+                <input
+                  type="text"
+                  value={mqttConfig.base_topic}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, base_topic: e.target.value })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="trellis"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-zinc-500 block mb-1">HA discovery prefix</label>
+                <input
+                  type="text"
+                  value={mqttConfig.ha_discovery_prefix}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, ha_discovery_prefix: e.target.value })}
+                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  placeholder="homeassistant"
+                />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={mqttConfig.ha_discovery_enabled}
+                onChange={(e) => setMqttConfig({ ...mqttConfig, ha_discovery_enabled: e.target.checked })}
+                className="rounded border-zinc-700 bg-zinc-800"
+              />
+              Publish Home Assistant discovery configs
+            </label>
+
+            <div className="flex gap-2">
+              <button
+                onClick={saveMqttConfig}
+                disabled={mqttBusy}
+                className="px-4 py-2 bg-trellis-600 hover:bg-trellis-500 disabled:bg-zinc-700 text-white rounded-lg text-sm transition-colors"
+              >
+                Save & apply
+              </button>
+              <button
+                onClick={testMqttConnection}
+                disabled={mqttBusy}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 text-zinc-300 rounded-lg text-sm transition-colors"
+              >
+                Test connection
+              </button>
+            </div>
+
+            {mqttFeedback && (
+              <p className={`text-xs ${mqttFeedback.includes("failed") ? "text-red-400" : "text-trellis-400"}`}>
+                {mqttFeedback}
+              </p>
+            )}
+
+            <p className="text-xs text-zinc-600">
+              Bridges your Trellis devices to an MQTT broker so Home Assistant, Node-RED, and other tools can read sensor values and send commands.
+              When HA discovery is on, devices auto-appear as entities — no YAML needed.
+            </p>
+          </div>
+        </div>
+
         {/* Diagnostics */}
         <div>
           <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
@@ -441,7 +674,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.1.5</p>
+            <p>Trellis v0.2.0</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">

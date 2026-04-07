@@ -10,17 +10,20 @@ use serde_json::Value;
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::discovery::Discovery;
+use crate::mqtt::{MqttBridge, MqttConfig};
 
 struct ApiContext {
     db: Database,
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
+    mqtt_bridge: Arc<MqttBridge>,
 }
 
 pub fn start_api_server(
     db_path: PathBuf,
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
+    mqtt_bridge: Arc<MqttBridge>,
 ) {
     std::thread::spawn(move || {
         let conn = match Connection::open(&db_path) {
@@ -34,6 +37,7 @@ pub fn start_api_server(
             db: Database { conn: Mutex::new(conn) },
             discovery,
             connection_manager,
+            mqtt_bridge,
         });
 
         let listener = match TcpListener::bind("0.0.0.0:9090") {
@@ -410,6 +414,35 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
                 Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
                 Err(e) => json_error(500, &e),
             }
+        }
+
+        // ─── MQTT bridge ────────────────────────────────────────────
+        // Defined BEFORE the generic /api/settings/ routes so /api/settings/mqtt
+        // hits this typed handler instead of the raw key-value getter.
+        ("GET", "/api/settings/mqtt") => {
+            json_ok(&ctx.mqtt_bridge.get_config())
+        }
+
+        ("PUT", "/api/settings/mqtt") => {
+            let cfg: MqttConfig = match serde_json::from_str(&req.body) {
+                Ok(c) => c,
+                Err(e) => return json_error(400, &format!("Invalid MQTT config JSON: {}", e)),
+            };
+            // Persist
+            if let Ok(json) = serde_json::to_string(&cfg) {
+                if let Err(e) = ctx.db.set_setting("mqtt_config", &json) {
+                    return json_error(500, &e);
+                }
+            }
+            // Apply
+            match ctx.mqtt_bridge.apply_config(cfg) {
+                Ok(()) => json_ok(&ctx.mqtt_bridge.get_status()),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("GET", "/api/mqtt/status") => {
+            json_ok(&ctx.mqtt_bridge.get_status())
         }
 
         // ─── Settings ───────────────────────────────────────────────

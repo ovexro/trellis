@@ -2,6 +2,7 @@ use crate::connection::ConnectionManager;
 use crate::db::{AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
+use crate::mqtt::{MqttBridge, MqttConfig, MqttStatus};
 use crate::ota;
 use crate::serial::{SerialManager, SerialPortInfo};
 use serde_json::Value;
@@ -12,6 +13,7 @@ pub struct AppState {
     pub discovery: Arc<Discovery>,
     pub connection_manager: Arc<ConnectionManager>,
     pub serial_manager: Arc<SerialManager>,
+    pub mqtt_bridge: Arc<MqttBridge>,
 }
 
 // ─── Device discovery ────────────────────────────────────────────────────────
@@ -454,6 +456,40 @@ pub fn send_ntfy(topic: String, title: String, message: String, priority: u8) ->
         .send_string(&body.to_string())
         .map_err(|e| format!("ntfy send failed: {}", e))?;
     Ok(())
+}
+
+// ─── MQTT bridge ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_mqtt_config(state: State<'_, AppState>) -> Result<MqttConfig, String> {
+    Ok(state.mqtt_bridge.get_config())
+}
+
+#[tauri::command]
+pub fn set_mqtt_config(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    config: MqttConfig,
+) -> Result<MqttStatus, String> {
+    // Persist first so a restart picks up the new config
+    let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    db.set_setting("mqtt_config", &json)?;
+
+    state.mqtt_bridge.apply_config(config)?;
+    Ok(state.mqtt_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn get_mqtt_status(state: State<'_, AppState>) -> Result<MqttStatus, String> {
+    Ok(state.mqtt_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn test_mqtt_connection(
+    state: State<'_, AppState>,
+    config: MqttConfig,
+) -> Result<(), String> {
+    state.mqtt_bridge.test_connection(&config)
 }
 
 #[tauri::command]

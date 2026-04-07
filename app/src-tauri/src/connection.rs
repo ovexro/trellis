@@ -8,6 +8,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tungstenite::{connect, Message};
 
+use crate::mqtt::MqttBridge;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceEvent {
     pub device_id: String,
@@ -25,6 +27,7 @@ struct DeviceConnection {
 pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<String, DeviceConnection>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
+    mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
 }
 
 impl ConnectionManager {
@@ -32,12 +35,17 @@ impl ConnectionManager {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
+            mqtt_bridge: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn set_app_handle(&self, handle: AppHandle) {
         let mut h = self.app_handle.lock().unwrap();
         *h = Some(handle);
+    }
+
+    pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
+        *self.mqtt_bridge.lock().unwrap() = Some(bridge);
     }
 
     pub fn connect_device(&self, device_id: &str, ip: &str, ws_port: u16) {
@@ -51,12 +59,13 @@ impl ConnectionManager {
         let stop_flag = Arc::new(Mutex::new(false));
         let stop_clone = stop_flag.clone();
         let app_handle = self.app_handle.clone();
+        let mqtt_bridge = self.mqtt_bridge.clone();
         let id = device_id.to_string();
         let url = format!("ws://{}:{}", ip, ws_port);
         let (command_tx, command_rx) = mpsc::channel::<String>();
 
         let thread = thread::spawn(move || {
-            ws_reader_loop(&id, &url, stop_clone, app_handle, command_rx);
+            ws_reader_loop(&id, &url, stop_clone, app_handle, mqtt_bridge, command_rx);
         });
 
         conns.insert(
@@ -133,6 +142,7 @@ fn ws_reader_loop(
     url: &str,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
+    mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
     command_rx: mpsc::Receiver<String>,
 ) {
     loop {
@@ -194,6 +204,20 @@ fn ws_reader_loop(
                                     .and_then(|e| e.as_str())
                                     .unwrap_or("unknown")
                                     .to_string();
+
+                                // Mirror state updates to MQTT (no-op when bridge disabled)
+                                if event_type == "update" {
+                                    if let (Some(cap_id), Some(value)) = (
+                                        json.get("id").and_then(|v| v.as_str()),
+                                        json.get("value"),
+                                    ) {
+                                        if let Some(bridge) =
+                                            mqtt_bridge.lock().unwrap().as_ref()
+                                        {
+                                            bridge.publish_state(device_id, cap_id, value);
+                                        }
+                                    }
+                                }
 
                                 if let Some(handle) = app_handle.lock().unwrap().as_ref() {
                                     let _ = handle.emit(

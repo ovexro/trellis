@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::device::{Device, DeviceInfo};
+use crate::mqtt::MqttBridge;
 
 const SERVICE_TYPE: &str = "_trellis._tcp.local.";
 const DEFAULT_HEALTH_CHECK_SECS: u64 = 30;
@@ -23,6 +24,7 @@ struct DeviceDiscoveryEvent {
 pub struct Discovery {
     devices: Arc<Mutex<HashMap<String, Device>>>,
     connection_manager: Arc<ConnectionManager>,
+    mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
     stop_flag: Arc<Mutex<bool>>,
 }
 
@@ -31,30 +33,37 @@ impl Discovery {
         Self {
             devices: Arc::new(Mutex::new(HashMap::new())),
             connection_manager,
+            mqtt_bridge: Arc::new(Mutex::new(None)),
             stop_flag: Arc::new(Mutex::new(false)),
         }
+    }
+
+    pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
+        *self.mqtt_bridge.lock().unwrap() = Some(bridge);
     }
 
     /// Start continuous background discovery
     pub fn start_background(&self, app_handle: AppHandle) {
         let devices = self.devices.clone();
         let conn_mgr = self.connection_manager.clone();
+        let bridge = self.mqtt_bridge.clone();
         let stop_flag = self.stop_flag.clone();
         let handle = app_handle.clone();
 
         // mDNS continuous browsing thread
         thread::spawn(move || {
-            mdns_browse_loop(devices.clone(), conn_mgr.clone(), stop_flag.clone(), handle.clone());
+            mdns_browse_loop(devices.clone(), conn_mgr.clone(), bridge.clone(), stop_flag.clone(), handle.clone());
         });
 
         // Health check thread
         let devices2 = self.devices.clone();
         let conn_mgr2 = self.connection_manager.clone();
+        let bridge2 = self.mqtt_bridge.clone();
         let stop_flag2 = self.stop_flag.clone();
         let handle2 = app_handle;
 
         thread::spawn(move || {
-            health_check_loop(devices2, conn_mgr2, stop_flag2, handle2);
+            health_check_loop(devices2, conn_mgr2, bridge2, stop_flag2, handle2);
         });
     }
 
@@ -83,6 +92,11 @@ impl Discovery {
         self.connection_manager
             .connect_device(&device_info.id, ip, port + 1);
 
+        // Publish HA discovery configs (no-op when bridge disabled)
+        if let Some(bridge) = self.mqtt_bridge.lock().unwrap().as_ref() {
+            bridge.publish_discovery(&device);
+        }
+
         // Notify frontend
         let _ = app_handle.emit(
             "device-discovered",
@@ -104,6 +118,7 @@ impl Discovery {
 fn mdns_browse_loop(
     devices: Arc<Mutex<HashMap<String, Device>>>,
     conn_mgr: Arc<ConnectionManager>,
+    mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: AppHandle,
 ) {
@@ -167,6 +182,11 @@ fn mdns_browse_loop(
                         // Connect WebSocket for live updates
                         conn_mgr.connect_device(&device_info.id, &ip, port + 1);
 
+                        // Publish HA discovery configs (no-op when bridge disabled)
+                        if let Some(bridge) = mqtt_bridge.lock().unwrap().as_ref() {
+                            bridge.publish_discovery(&device);
+                        }
+
                         // Notify frontend
                         let _ = app_handle.emit(
                             "device-discovered",
@@ -198,7 +218,7 @@ fn mdns_browse_loop(
                     .collect();
 
                 for id in lost {
-                    if let Some(mut device) = devs.get_mut(&id) {
+                    if let Some(device) = devs.get_mut(&id) {
                         device.online = false;
                         let _ = app_handle.emit(
                             "device-discovered",
@@ -209,6 +229,9 @@ fn mdns_browse_loop(
                         );
                     }
                     conn_mgr.disconnect_device(&id);
+                    if let Some(bridge) = mqtt_bridge.lock().unwrap().as_ref() {
+                        bridge.forget_discovery(&id);
+                    }
                     log::info!("[Discovery] Device lost: {}", id);
                 }
             }
@@ -221,6 +244,7 @@ fn mdns_browse_loop(
 fn health_check_loop(
     devices: Arc<Mutex<HashMap<String, Device>>>,
     conn_mgr: Arc<ConnectionManager>,
+    mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: AppHandle,
 ) {
@@ -271,6 +295,11 @@ fn health_check_loop(
                                 },
                             );
                             log::info!("[Health] Device {} came back online", id);
+                        }
+
+                        // Republish HA discovery (handles capability changes after firmware updates)
+                        if let Some(bridge) = mqtt_bridge.lock().unwrap().as_ref() {
+                            bridge.publish_discovery(device);
                         }
                     }
                 }

@@ -2,6 +2,29 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.2.0] — 2026-04-07
+
+### Added
+
+- **MQTT bridge with Home Assistant discovery**. Trellis now ships an in-app MQTT bridge that mirrors every device's capabilities to a user-configured broker. When enabled, switches/sliders/sensors/colors/text capabilities are auto-published as MQTT topics under `<base_topic>/<device_id>/<cap_id>/state` and accept commands at `…/set`. With Home Assistant MQTT discovery enabled (default), devices appear in HA's UI as native entities with no YAML — switches map to `switch`, sliders to `number`, sensors to `sensor` (with units), colors to RGB `light`, and text to `text`.
+- New `Settings → MQTT bridge` panel: broker host/port, username/password, base topic, HA discovery prefix + toggle, enable toggle, "Test connection" button, live status indicator (connected / enabled-but-disconnected / disabled, with last-error message and pub/sub counters).
+- New Tauri commands: `get_mqtt_config`, `set_mqtt_config`, `get_mqtt_status`, `test_mqtt_connection`.
+- New REST endpoints on `:9090`: `GET /api/settings/mqtt`, `PUT /api/settings/mqtt`, `GET /api/mqtt/status`. The web dashboard (and any external script) can now drive the bridge config without the desktop UI.
+- **Last-will availability**: when the bridge connects it publishes `online` (retained) to `<base_topic>/bridge/availability`, and the broker auto-publishes `offline` if Trellis crashes or disconnects. HA uses this to mark entities as unavailable.
+
+### Architecture notes
+
+- The bridge runs as a worker thread that owns the rumqttc Client + EventLoop, started/stopped from `MqttBridge::apply_config`. When config changes the worker is cleanly stopped (offline retain message + disconnect + thread join) before a new one is spawned.
+- Inbound commands are routed through the existing race-free `ConnectionManager::send_to_device` path (the post-v0.1.6 fix), so MQTT-driven commands are subject to the same correctness guarantees as the REST and Tauri command paths.
+- HA discovery configs are deduped — they only republish when a device's capability list actually changes (firmware update / capability add). This avoids spamming the broker on every health-check tick.
+- Empty/whitespace `base_topic` and `ha_discovery_prefix` fall back to defaults; trailing slashes are stripped. Multi-segment base topics (e.g. `home/iot/trellis`) are supported via prefix-stripping rather than naive segment counting.
+- Password is stored in the SQLite settings table as plain text (same security model as the rest of the app's local-only state). TLS connections to the broker are not yet supported — MVP scope.
+
+### Known limitations
+
+- If the MQTT broker is restarted, retained discovery configs are lost. Trellis does not currently re-publish on reconnect — the user can toggle the bridge off and back on to repopulate. A "republish on reconnect" hook is on the follow-up list.
+- The Settings UI doesn't yet show the running config diff vs the saved config; clicking "Save & apply" applies whatever is currently in the form.
+
 ## [0.1.8] — 2026-04-07
 
 ### Changed (BREAKING — repo layout)

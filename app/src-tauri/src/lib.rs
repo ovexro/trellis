@@ -4,6 +4,7 @@ mod connection;
 mod db;
 mod device;
 mod discovery;
+mod mqtt;
 mod ota;
 mod scheduler;
 mod serial;
@@ -11,6 +12,7 @@ mod serial;
 use commands::*;
 use connection::ConnectionManager;
 use discovery::Discovery;
+use mqtt::MqttBridge;
 use serial::SerialManager;
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
@@ -22,13 +24,21 @@ pub fn run() {
     env_logger::init();
 
     let connection_manager = Arc::new(ConnectionManager::new());
+    let mqtt_bridge = Arc::new(MqttBridge::new(connection_manager.clone()));
     let discovery = Arc::new(Discovery::new(connection_manager.clone()));
     let serial_manager = Arc::new(SerialManager::new());
+
+    // Wire the bridge into ConnectionManager so device-event updates are
+    // mirrored to MQTT in real time, and into Discovery so HA discovery
+    // configs are republished when devices appear or change.
+    connection_manager.set_mqtt_bridge(mqtt_bridge.clone());
+    discovery.set_mqtt_bridge(mqtt_bridge.clone());
 
     let app_state = AppState {
         discovery: discovery.clone(),
         connection_manager: connection_manager.clone(),
         serial_manager,
+        mqtt_bridge: mqtt_bridge.clone(),
     };
 
     tauri::Builder::default()
@@ -94,6 +104,10 @@ pub fn run() {
             install_arduino_deps,
             compile_sketch,
             flash_sketch,
+            get_mqtt_config,
+            set_mqtt_config,
+            get_mqtt_status,
+            test_mqtt_connection,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
@@ -215,7 +229,18 @@ pub fn run() {
             let db_path = app.path().app_data_dir()
                 .expect("failed to get app data dir")
                 .join("trellis.db");
-            api::start_api_server(db_path, discovery.clone(), connection_manager.clone());
+            api::start_api_server(db_path, discovery.clone(), connection_manager.clone(), mqtt_bridge.clone());
+
+            // Restore saved MQTT bridge config and start it if it was enabled
+            if let Some(db_state) = app.try_state::<db::Database>() {
+                if let Ok(Some(json)) = db_state.get_setting("mqtt_config") {
+                    if let Ok(cfg) = serde_json::from_str::<mqtt::MqttConfig>(&json) {
+                        if let Err(e) = mqtt_bridge.apply_config(cfg) {
+                            log::warn!("[MQTT] Failed to start bridge from saved config: {}", e);
+                        }
+                    }
+                }
+            }
 
             log::info!("[Trellis] Background discovery + scheduler + API server started");
             Ok(())
