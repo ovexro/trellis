@@ -24,11 +24,14 @@ trellis/
 │   │   ├── stores/          #     Zustand device state
 │   │   └── lib/             #     types, protocol definitions
 │   └── package.json
-├── library/                 # Arduino library
-│   ├── src/                 #   C++ source (Trellis.h, Discovery, WebServer, OTA, Telemetry)
-│   └── examples/            #   Example sketches
+├── src/                     # Arduino library source (Trellis.h, Discovery, WebServer, OTA, Telemetry)
+├── examples/                # Arduino library example sketches
+├── library.properties       # Arduino library manifest (at repo root for Library Manager)
+├── library.json             # PlatformIO manifest
 └── docs/                    # Protocol spec, guides
 ```
+
+The repo is a monorepo: the root doubles as the Arduino library so the Arduino Library Manager and PlatformIO Registry can index it directly. The desktop app lives under `app/`.
 
 ## Development — Desktop App
 
@@ -46,17 +49,23 @@ npm run tauri build    # production build
 
 ## Development — Arduino Library
 
-Install in Arduino IDE or PlatformIO by symlinking:
+Once Trellis is published in the Arduino Library Manager, install with:
+
+```bash
+arduino-cli lib install Trellis
+```
+
+For local development against the source, symlink the repo root into your Arduino libraries folder:
 
 ```bash
 # Arduino IDE
-ln -s /path/to/trellis/library ~/Arduino/libraries/Trellis
+ln -s /path/to/trellis ~/Arduino/libraries/Trellis
 
 # PlatformIO — add to platformio.ini:
-# lib_extra_dirs = /path/to/trellis/library
+# lib_extra_dirs = /path/to/trellis
 ```
 
-Then open any example sketch and upload to your board.
+Then open any example sketch from `examples/` and upload to your board.
 
 ## Code Style
 

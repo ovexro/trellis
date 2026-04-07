@@ -36,11 +36,11 @@ jobs:
       - name: Install library dependencies
         run: |
           arduino-cli lib install ArduinoJson WebSockets
-          ln -s ${{ github.workspace }}/library ~/Arduino/libraries/Trellis
+          ln -s ${{ github.workspace }} ~/Arduino/libraries/Trellis
 
       - name: Compile examples
         run: |
-          for sketch in library/examples/*/; do
+          for sketch in examples/*/; do
             echo "::group::Compiling $(basename $sketch)"
             arduino-cli compile --fqbn ${{ matrix.board.fqbn }} "$sketch"
             echo "::endgroup::"

@@ -112,7 +112,7 @@ jobs:
             - **Any Linux**: Download the `.AppImage` file
 
             ### Arduino Library
-            Copy the `library/` directory to your Arduino libraries folder, or add via PlatformIO.
+            Install via Arduino Library Manager: `arduino-cli lib install Trellis` (or search "Trellis" in the Arduino IDE Library Manager). For PlatformIO: add `Trellis` to your `platformio.ini` `lib_deps`.
 
             ---
 

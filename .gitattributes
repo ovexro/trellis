@@ -1,0 +1,14 @@
+# Exclude desktop-app and project-meta paths from `git archive` output.
+# Honored by GitHub-generated tarballs and any tooling that uses git archive,
+# so users who download the Arduino library tarball don't get the desktop app
+# source bundled with it.
+app/             export-ignore
+docs/            export-ignore
+screenshots/     export-ignore
+.github/         export-ignore
+install.sh       export-ignore
+ABOUT.md         export-ignore
+FEATURES.md      export-ignore
+CONTRIBUTING.md  export-ignore
+.gitignore       export-ignore
+.gitattributes   export-ignore

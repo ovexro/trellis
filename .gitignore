@@ -33,8 +33,7 @@ app/src-tauri/WixTools/
 app/src-tauri/gen/
 
 # Arduino / PlatformIO
-library/.pio/
-library/build/
+.pio/
 *.o
 *.elf
 *.bin

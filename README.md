@@ -97,9 +97,12 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 ```
 trellis/
 ├── app/          # Tauri 2 desktop app (Rust + React)
-├── library/      # Arduino library (ESP32 + Pico W)
+├── src/          # Arduino library source (ESP32 + Pico W)
+├── examples/     # Arduino library examples
 └── docs/         # Protocol spec + guides
 ```
+
+The repo is a monorepo: the root doubles as the Arduino library (so Library Manager can index `src/`, `examples/`, `library.properties` at the repo root) while `app/` holds the desktop app and `docs/` holds protocol/guides.
 
 **Desktop App**: Tauri 2 (Rust backend + React frontend). Local-first, no cloud dependency. SQLite for device history and metrics.
 
