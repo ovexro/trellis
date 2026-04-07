@@ -152,6 +152,14 @@ LIB_FILES=(
   LICENSE
   README.md
   CHANGELOG.md
+  # release.yml MUST be in the tagged commit's tree, otherwise GitHub
+  # Actions has no workflow to fire on the tag push and the desktop CI
+  # never runs. (release.yml only triggers on tag pushes, so build.yml
+  # is intentionally NOT included — it watches main only.)
+  # The Arduino LM indexer's filepath.Walk skips dotfiles, so the
+  # `.github/` directory is filtered out of the published .zip and the
+  # tarball stays lean.
+  .github/workflows/release.yml
 )
 
 # Wipe everything in the worktree (tracked + untracked, but not .git)
@@ -162,13 +170,20 @@ LIB_FILES=(
   fi
 )
 
-# Copy each library path from main into the worktree
+# Copy each library path from main into the worktree, preserving any
+# nested directory structure (so e.g. .github/workflows/release.yml
+# lands at .github/workflows/release.yml in the worktree, not just
+# release.yml at the root).
 for path in "${LIB_FILES[@]}"; do
   if [ ! -e "$REPO_ROOT/$path" ]; then
     echo "ERROR: $REPO_ROOT/$path missing — refusing to release a broken tree" >&2
     exit 1
   fi
-  cp -a "$REPO_ROOT/$path" "$WORKTREE_PATH/"
+  parent_dir="$(dirname "$path")"
+  if [ "$parent_dir" != "." ]; then
+    mkdir -p "$WORKTREE_PATH/$parent_dir"
+  fi
+  cp -a "$REPO_ROOT/$path" "$WORKTREE_PATH/$path"
 done
 
 # Add to staging
@@ -194,7 +209,7 @@ for required in library.properties library.json LICENSE README.md src/Trellis.h 
     exit 1
   fi
 done
-for forbidden in app docs scripts screenshots install.sh ABOUT.md FEATURES.md CONTRIBUTING.md .github; do
+for forbidden in app docs scripts screenshots install.sh ABOUT.md FEATURES.md CONTRIBUTING.md; do
   if [ -e "$WORKTREE_PATH/$forbidden" ]; then
     echo "ERROR: forbidden path $forbidden present in lean tree" >&2
     exit 1
