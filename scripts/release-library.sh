@@ -186,6 +186,15 @@ for path in "${LIB_FILES[@]}"; do
   cp -a "$REPO_ROOT/$path" "$WORKTREE_PATH/$path"
 done
 
+# Write the main commit SHA into a dotfile inside the lean tree.
+# release.yml reads this file to know which commit on main to check out
+# for the desktop app build. Using a dedicated file (not the tag
+# annotation) avoids subtleties with how actions/checkout fetches
+# annotated tag bodies — `cat` always works regardless of clone shape.
+# The dotfile name keeps it filtered out of the Arduino LM .zip
+# (the LM indexer's filepath.Walk skips dotfiles).
+echo "$MAIN_SHA" > "$WORKTREE_PATH/.release-main-sha"
+
 # Add to staging
 (cd "$WORKTREE_PATH" && git add -A)
 
