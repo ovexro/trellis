@@ -35,6 +35,8 @@ app/src-tauri/gen/
 # Arduino / PlatformIO
 .pio/
 *.o
+# pio pkg pack output
+Trellis-*.tar.gz
 *.elf
 *.bin
 *.hex

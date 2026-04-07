@@ -18,6 +18,17 @@
   "homepage": "https://github.com/ovexro/trellis",
   "frameworks": ["arduino"],
   "platforms": ["espressif32", "raspberrypi"],
+  "export": {
+    "include": [
+      "src",
+      "examples",
+      "library.properties",
+      "library.json",
+      "LICENSE",
+      "README.md",
+      "CHANGELOG.md"
+    ]
+  },
   "dependencies": {
     "bblanchon/ArduinoJson": "^7.0.0",
     "links2004/WebSockets": "^2.4.0"
