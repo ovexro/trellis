@@ -44,6 +44,7 @@ use serde_json::Value;
 
 use crate::connection::ConnectionManager;
 use crate::device::Device;
+use crate::discovery::Discovery;
 
 const DEFAULT_BASE_TOPIC: &str = "trellis";
 const DEFAULT_HA_PREFIX: &str = "homeassistant";
@@ -152,6 +153,10 @@ pub struct MqttBridge {
     /// so we only republish when a device's capability list actually changes.
     discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
     connection_manager: Arc<ConnectionManager>,
+    /// Set after construction (avoids a circular new() arg). Used by polish #1
+    /// (instant discovery on enable) and polish #2 (republish on broker
+    /// reconnect) to look up the live device list.
+    discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
 }
 
 impl MqttBridge {
@@ -164,7 +169,12 @@ impl MqttBridge {
             stop_flag: Arc::new(Mutex::new(false)),
             discovery_published: Arc::new(Mutex::new(HashMap::new())),
             connection_manager,
+            discovery: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn set_discovery(&self, discovery: Arc<Discovery>) {
+        *self.discovery.lock().unwrap() = Some(discovery);
     }
 
     /// Get the current configuration (clone — cheap).
@@ -216,6 +226,17 @@ impl MqttBridge {
 
         if new_config.enabled {
             self.start()?;
+            // Polish #1: publish HA discovery configs for all currently-known
+            // devices immediately, instead of waiting for the next 30s
+            // health-check tick. The first ConnAck inside the worker thread
+            // will also trigger a republish via polish #2 — that's idempotent
+            // because we clear the dedupe tracker first.
+            //
+            // Tiny sleep so the rumqttc client has a moment to connect before
+            // we start queuing publishes; the publishes still queue regardless
+            // but the broker sees them after the ConnAck this way.
+            thread::sleep(Duration::from_millis(200));
+            self.publish_all_discovery();
         } else {
             let mut s = self.status.lock().unwrap();
             s.enabled = false;
@@ -272,6 +293,9 @@ impl MqttBridge {
         let stop_flag = self.stop_flag.clone();
         let config_for_worker = self.config.clone();
         let conn_mgr = self.connection_manager.clone();
+        let discovery_for_worker = self.discovery.clone();
+        let client_for_worker = self.client.clone();
+        let tracker_for_worker = self.discovery_published.clone();
 
         {
             let mut s = status.lock().unwrap();
@@ -281,7 +305,16 @@ impl MqttBridge {
         }
 
         let handle = thread::spawn(move || {
-            event_loop(connection, status, stop_flag, config_for_worker, conn_mgr);
+            event_loop(
+                connection,
+                status,
+                stop_flag,
+                config_for_worker,
+                conn_mgr,
+                discovery_for_worker,
+                client_for_worker,
+                tracker_for_worker,
+            );
         });
 
         *self.worker.lock().unwrap() = Some(handle);
@@ -337,9 +370,10 @@ impl MqttBridge {
         }
     }
 
-    /// Publish HA discovery configs for every capability of a device. Called
-    /// when a device first appears (or its capability list changes). The
-    /// payloads cause Home Assistant to create entities automatically.
+    /// Publish HA discovery configs for every capability of a device, plus
+    /// the three synthetic system sensors (RSSI, free heap, uptime). Called
+    /// when a device first appears, when its capability list changes, and
+    /// (since polish #2) when the broker reconnects.
     pub fn publish_discovery(&self, device: &Device) {
         let cfg = self.config.lock().unwrap().clone();
         if !cfg.enabled || !cfg.ha_discovery_enabled {
@@ -349,103 +383,80 @@ impl MqttBridge {
             Some(c) => c.clone(),
             None => return,
         };
+        publish_discovery_for_device(
+            device,
+            &cfg,
+            &client,
+            &self.discovery_published,
+            &self.status,
+        );
+    }
 
-        // De-dupe: only republish if the capability list changed
-        {
-            let mut tracker = self.discovery_published.lock().unwrap();
-            let new_caps: Vec<String> = device.capabilities.iter().map(|c| c.id.clone()).collect();
-            if let Some(existing) = tracker.get(&device.id) {
-                if *existing == new_caps {
-                    return;
-                }
-            }
-            tracker.insert(device.id.clone(), new_caps);
+    /// Iterate the live device list (via the wired-in `Discovery` handle)
+    /// and publish HA discovery configs for every device. Used by polish #1
+    /// (instant discovery on bridge enable) and polish #2 (republish on
+    /// broker reconnect — see `event_loop` ConnAck branch).
+    pub fn publish_all_discovery(&self) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled || !cfg.ha_discovery_enabled {
+            return;
         }
-
-        let availability_topic = format!("{}/{}", cfg.base_topic, BRIDGE_AVAILABILITY_SUFFIX);
-
-        for cap in &device.capabilities {
-            let component = match cap.cap_type.as_str() {
-                "switch" => "switch",
-                "slider" => "number",
-                "sensor" => "sensor",
-                "color" => "light",
-                "text" => "text",
-                _ => continue,
-            };
-
-            // unique_id is the entity identity. We also use it as the discovery
-            // config topic identifier — MQTT topics permit dashes, so no
-            // sanitization is needed even though device IDs from the firmware
-            // contain dashes (e.g. "trellis-fccfb7c8").
-            let unique_id = format!("trellis_{}_{}", device.id, cap.id);
-            let config_topic = format!(
-                "{}/{}/{}/config",
-                cfg.ha_discovery_prefix, component, unique_id
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let devices = match self.discovery.lock().unwrap().as_ref() {
+            Some(d) => d.get_devices(),
+            None => return,
+        };
+        // Force a republish (the dedupe tracker would otherwise skip devices
+        // we've already announced — but on reconnect / enable we want HA to
+        // see fresh configs).
+        self.discovery_published.lock().unwrap().clear();
+        for device in &devices {
+            publish_discovery_for_device(
+                device,
+                &cfg,
+                &client,
+                &self.discovery_published,
+                &self.status,
             );
-            let state_topic = format!("{}/{}/{}/state", cfg.base_topic, device.id, cap.id);
-            let command_topic = format!("{}/{}/{}/set", cfg.base_topic, device.id, cap.id);
+        }
+    }
 
-            let mut config = serde_json::json!({
-                "name": cap.label,
-                "unique_id": unique_id,
-                "state_topic": state_topic,
-                "availability_topic": availability_topic,
-                "payload_available": PAYLOAD_ONLINE,
-                "payload_not_available": PAYLOAD_OFFLINE,
-                "device": {
-                    "identifiers": [format!("trellis_{}", device.id)],
-                    "name": device.name,
-                    "manufacturer": "Trellis",
-                    "model": device.platform,
-                    "sw_version": device.firmware,
-                },
-            });
+    /// Publish a heartbeat (system telemetry: rssi, heap_free, uptime_s)
+    /// to MQTT state topics so HA can graph the device's health. Called by
+    /// `connection.rs` whenever a `heartbeat` event arrives over the WS.
+    pub fn publish_heartbeat(&self, device_id: &str, system: &Value) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
 
-            // Component-specific fields
-            match cap.cap_type.as_str() {
-                "switch" => {
-                    config["command_topic"] = command_topic.into();
-                    config["payload_on"] = "true".into();
-                    config["payload_off"] = "false".into();
-                    config["state_on"] = "true".into();
-                    config["state_off"] = "false".into();
-                }
-                "slider" => {
-                    config["command_topic"] = command_topic.into();
-                    if let Some(min) = cap.min {
-                        config["min"] = min.into();
-                    }
-                    if let Some(max) = cap.max {
-                        config["max"] = max.into();
-                    }
-                    config["mode"] = "slider".into();
-                }
-                "sensor" => {
-                    if let Some(unit) = &cap.unit {
-                        config["unit_of_measurement"] = unit.clone().into();
-                    }
-                }
-                "color" => {
-                    config["command_topic"] = command_topic.into();
-                    config["schema"] = "json".into();
-                    config["supported_color_modes"] = serde_json::json!(["rgb"]);
-                }
-                "text" => {
-                    config["command_topic"] = command_topic.into();
-                    config["mode"] = "text".into();
-                }
-                _ => {}
-            }
-
-            let payload = serde_json::to_string(&config).unwrap_or_default();
-            if let Err(e) =
-                client.publish(&config_topic, QoS::AtLeastOnce, true, payload.into_bytes())
-            {
-                log::warn!("[MQTT] discovery publish {} failed: {}", config_topic, e);
+        let mut count = 0u64;
+        for (field, suffix) in [
+            ("rssi", "rssi"),
+            ("heap_free", "heap_free"),
+            ("uptime_s", "uptime_s"),
+        ] {
+            let value = match system.get(field) {
+                Some(v) => v,
+                None => continue,
+            };
+            let topic = format!("{}/{}/_sys/{}/state", cfg.base_topic, device_id, suffix);
+            let payload = value_to_mqtt_payload(value);
+            if let Err(e) = client.publish(&topic, QoS::AtMostOnce, false, payload) {
+                log::warn!("[MQTT] heartbeat publish {} failed: {}", topic, e);
             } else {
-                self.status.lock().unwrap().messages_published += 1;
+                count += 1;
             }
+        }
+        if count > 0 {
+            self.status.lock().unwrap().messages_published += count;
         }
     }
 
@@ -487,6 +498,170 @@ impl MqttBridge {
     }
 }
 
+/// Build and publish HA discovery configs for one device's regular
+/// capabilities AND its synthetic system telemetry sensors (rssi, heap, uptime).
+/// Free function so both `MqttBridge::publish_discovery` (per-device) and
+/// `MqttBridge::publish_all_discovery` (bulk on enable / reconnect) can call
+/// it without re-locking the bridge state.
+fn publish_discovery_for_device(
+    device: &Device,
+    cfg: &MqttConfig,
+    client: &Client,
+    discovery_published: &Mutex<HashMap<String, Vec<String>>>,
+    status: &Mutex<MqttStatus>,
+) {
+    // De-dupe: only republish if the capability list changed. Callers that
+    // want a forced republish (broker reconnect, bridge enable) clear the
+    // tracker before calling us, so the first iteration always proceeds.
+    {
+        let mut tracker = discovery_published.lock().unwrap();
+        let new_caps: Vec<String> = device.capabilities.iter().map(|c| c.id.clone()).collect();
+        if let Some(existing) = tracker.get(&device.id) {
+            if *existing == new_caps {
+                return;
+            }
+        }
+        tracker.insert(device.id.clone(), new_caps);
+    }
+
+    let availability_topic = format!("{}/{}", cfg.base_topic, BRIDGE_AVAILABILITY_SUFFIX);
+    let device_block = serde_json::json!({
+        "identifiers": [format!("trellis_{}", device.id)],
+        "name": device.name,
+        "manufacturer": "Trellis",
+        "model": device.platform,
+        "sw_version": device.firmware,
+    });
+    let mut published_count = 0u64;
+
+    for cap in &device.capabilities {
+        let component = match cap.cap_type.as_str() {
+            "switch" => "switch",
+            "slider" => "number",
+            "sensor" => "sensor",
+            "color" => "light",
+            "text" => "text",
+            _ => continue,
+        };
+
+        // unique_id is the entity identity. We also use it as the discovery
+        // config topic identifier — MQTT topics permit dashes, so no
+        // sanitization is needed even though device IDs from the firmware
+        // contain dashes (e.g. "trellis-fccfb7c8").
+        let unique_id = format!("trellis_{}_{}", device.id, cap.id);
+        let config_topic = format!(
+            "{}/{}/{}/config",
+            cfg.ha_discovery_prefix, component, unique_id
+        );
+        let state_topic = format!("{}/{}/{}/state", cfg.base_topic, device.id, cap.id);
+        let command_topic = format!("{}/{}/{}/set", cfg.base_topic, device.id, cap.id);
+
+        let mut config = serde_json::json!({
+            "name": cap.label,
+            "unique_id": unique_id,
+            "state_topic": state_topic,
+            "availability_topic": availability_topic,
+            "payload_available": PAYLOAD_ONLINE,
+            "payload_not_available": PAYLOAD_OFFLINE,
+            "device": device_block,
+        });
+
+        // Component-specific fields
+        match cap.cap_type.as_str() {
+            "switch" => {
+                config["command_topic"] = command_topic.into();
+                config["payload_on"] = "true".into();
+                config["payload_off"] = "false".into();
+                config["state_on"] = "true".into();
+                config["state_off"] = "false".into();
+            }
+            "slider" => {
+                config["command_topic"] = command_topic.into();
+                if let Some(min) = cap.min {
+                    config["min"] = min.into();
+                }
+                if let Some(max) = cap.max {
+                    config["max"] = max.into();
+                }
+                config["mode"] = "slider".into();
+            }
+            "sensor" => {
+                if let Some(unit) = &cap.unit {
+                    config["unit_of_measurement"] = unit.clone().into();
+                }
+            }
+            "color" => {
+                config["command_topic"] = command_topic.into();
+                config["schema"] = "json".into();
+                config["supported_color_modes"] = serde_json::json!(["rgb"]);
+            }
+            "text" => {
+                config["command_topic"] = command_topic.into();
+                config["mode"] = "text".into();
+            }
+            _ => {}
+        }
+
+        let payload = serde_json::to_string(&config).unwrap_or_default();
+        if let Err(e) =
+            client.publish(&config_topic, QoS::AtLeastOnce, true, payload.into_bytes())
+        {
+            log::warn!("[MQTT] discovery publish {} failed: {}", config_topic, e);
+        } else {
+            published_count += 1;
+        }
+    }
+
+    // Polish #3: synthetic system telemetry sensors. Each device gets three
+    // extra HA sensor entities (RSSI, free heap, uptime) so HA users can graph
+    // device health and trigger alerts on weak signal / low memory.
+    for (suffix, friendly, unit, device_class, state_class) in [
+        ("rssi", "Signal strength", Some("dBm"), Some("signal_strength"), Some("measurement")),
+        ("heap_free", "Free heap", Some("B"), None, Some("measurement")),
+        ("uptime_s", "Uptime", Some("s"), Some("duration"), Some("total_increasing")),
+    ] {
+        let unique_id = format!("trellis_{}_sys_{}", device.id, suffix);
+        let config_topic = format!(
+            "{}/sensor/{}/config",
+            cfg.ha_discovery_prefix, unique_id
+        );
+        let state_topic = format!("{}/{}/_sys/{}/state", cfg.base_topic, device.id, suffix);
+
+        let mut config = serde_json::json!({
+            "name": friendly,
+            "unique_id": unique_id,
+            "state_topic": state_topic,
+            "availability_topic": availability_topic,
+            "payload_available": PAYLOAD_ONLINE,
+            "payload_not_available": PAYLOAD_OFFLINE,
+            "device": device_block,
+            "entity_category": "diagnostic",
+        });
+        if let Some(u) = unit {
+            config["unit_of_measurement"] = u.into();
+        }
+        if let Some(dc) = device_class {
+            config["device_class"] = dc.into();
+        }
+        if let Some(sc) = state_class {
+            config["state_class"] = sc.into();
+        }
+
+        let payload = serde_json::to_string(&config).unwrap_or_default();
+        if let Err(e) =
+            client.publish(&config_topic, QoS::AtLeastOnce, true, payload.into_bytes())
+        {
+            log::warn!("[MQTT] system sensor publish {} failed: {}", config_topic, e);
+        } else {
+            published_count += 1;
+        }
+    }
+
+    if published_count > 0 {
+        status.lock().unwrap().messages_published += published_count;
+    }
+}
+
 /// Worker thread function: drains the rumqttc event loop, dispatches inbound
 /// commands to the ConnectionManager, and updates the live status.
 fn event_loop(
@@ -495,6 +670,9 @@ fn event_loop(
     stop_flag: Arc<Mutex<bool>>,
     config: Arc<Mutex<MqttConfig>>,
     conn_mgr: Arc<ConnectionManager>,
+    discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
+    client: Arc<Mutex<Option<Client>>>,
+    discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
 ) {
     log::info!("[MQTT] Worker started");
     loop {
@@ -504,9 +682,43 @@ fn event_loop(
         match connection.recv_timeout(Duration::from_secs(1)) {
             Ok(Ok(Event::Incoming(Packet::ConnAck(_)))) => {
                 log::info!("[MQTT] Connected to broker");
-                let mut s = status.lock().unwrap();
-                s.connected = true;
-                s.last_error = None;
+                {
+                    let mut s = status.lock().unwrap();
+                    s.connected = true;
+                    s.last_error = None;
+                }
+                // Polish #2: republish HA discovery configs whenever the
+                // broker accepts a fresh connection. Handles broker restarts
+                // (where retained configs were lost) and reconnects after
+                // transient network drops. Idempotent — discovery_published
+                // is cleared first so even tracked devices get re-announced.
+                let cfg_snapshot = config.lock().unwrap().clone();
+                if cfg_snapshot.enabled && cfg_snapshot.ha_discovery_enabled {
+                    let devices = discovery
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map(|d| d.get_devices())
+                        .unwrap_or_default();
+                    if !devices.is_empty() {
+                        if let Some(c) = client.lock().unwrap().as_ref() {
+                            discovery_published.lock().unwrap().clear();
+                            for device in &devices {
+                                publish_discovery_for_device(
+                                    device,
+                                    &cfg_snapshot,
+                                    c,
+                                    &discovery_published,
+                                    &status,
+                                );
+                            }
+                            log::info!(
+                                "[MQTT] Republished discovery for {} device(s) on reconnect",
+                                devices.len()
+                            );
+                        }
+                    }
+                }
             }
             Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
                 let topic = p.topic.clone();

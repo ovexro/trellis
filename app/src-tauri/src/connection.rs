@@ -205,7 +205,8 @@ fn ws_reader_loop(
                                     .unwrap_or("unknown")
                                     .to_string();
 
-                                // Mirror state updates to MQTT (no-op when bridge disabled)
+                                // Mirror state updates and heartbeats to MQTT
+                                // (no-op when bridge disabled).
                                 if event_type == "update" {
                                     if let (Some(cap_id), Some(value)) = (
                                         json.get("id").and_then(|v| v.as_str()),
@@ -215,6 +216,17 @@ fn ws_reader_loop(
                                             mqtt_bridge.lock().unwrap().as_ref()
                                         {
                                             bridge.publish_state(device_id, cap_id, value);
+                                        }
+                                    }
+                                } else if event_type == "heartbeat" {
+                                    // Polish #3: mirror device telemetry
+                                    // (rssi, heap_free, uptime_s) to MQTT so HA
+                                    // can graph device health.
+                                    if let Some(system) = json.get("system") {
+                                        if let Some(bridge) =
+                                            mqtt_bridge.lock().unwrap().as_ref()
+                                        {
+                                            bridge.publish_heartbeat(device_id, system);
                                         }
                                     }
                                 }

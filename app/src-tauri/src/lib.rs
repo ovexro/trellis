@@ -30,9 +30,13 @@ pub fn run() {
 
     // Wire the bridge into ConnectionManager so device-event updates are
     // mirrored to MQTT in real time, and into Discovery so HA discovery
-    // configs are republished when devices appear or change.
+    // configs are republished when devices appear or change. Also give the
+    // bridge a back-reference to Discovery so polish #1 (instant discovery
+    // on enable) and polish #2 (republish on broker reconnect) can read the
+    // current device list.
     connection_manager.set_mqtt_bridge(mqtt_bridge.clone());
     discovery.set_mqtt_bridge(mqtt_bridge.clone());
+    mqtt_bridge.set_discovery(discovery.clone());
 
     let app_state = AppState {
         discovery: discovery.clone(),

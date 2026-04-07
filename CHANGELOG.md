@@ -20,9 +20,14 @@ All notable changes to Trellis will be documented in this file.
 - Empty/whitespace `base_topic` and `ha_discovery_prefix` fall back to defaults; trailing slashes are stripped. Multi-segment base topics (e.g. `home/iot/trellis`) are supported via prefix-stripping rather than naive segment counting.
 - Password is stored in the SQLite settings table as plain text (same security model as the rest of the app's local-only state). TLS connections to the broker are not yet supported — MVP scope.
 
+### Polish pass
+
+- **Instant HA discovery on bridge enable** — `apply_config` now immediately publishes discovery configs for all currently-known devices instead of waiting for the next 30s health-check tick. Toggling the bridge on in Settings → MQTT bridge populates HA within ~1 second.
+- **Republish HA discovery on broker reconnect** — the worker thread re-emits discovery configs for every known device on every successful `ConnAck`. Handles broker restarts (where retained configs are lost), transient network drops, and the laptop sleeping/waking. Idempotent: the dedupe tracker is cleared first so even already-tracked devices re-announce.
+- **HA sensors for device system telemetry** — every Trellis device now gets three extra HA sensor entities (Signal strength, Free heap, Uptime) in the `diagnostic` entity category. The bridge listens for `heartbeat` events on the device WebSocket and publishes the values to `<base_topic>/<device_id>/_sys/<field>/state`. HA users can graph weak-signal warnings and memory leaks without needing the Trellis desktop app open.
+
 ### Known limitations
 
-- If the MQTT broker is restarted, retained discovery configs are lost. Trellis does not currently re-publish on reconnect — the user can toggle the bridge off and back on to repopulate. A "republish on reconnect" hook is on the follow-up list.
 - The Settings UI doesn't yet show the running config diff vs the saved config; clicking "Save & apply" applies whatever is currently in the form.
 
 ## [0.1.8] — 2026-04-07
