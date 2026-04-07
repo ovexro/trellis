@@ -186,5 +186,5 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] GitHub Actions CI: build app (Linux)
 - [x] GitHub Actions CI: compile library examples
 - [x] GitHub releases with app binaries
-- [x] Arduino Library Manager submission (PR ovexro/trellis#8088 merged 2026-04-07, indexed within 24h)
-- [ ] PlatformIO registry submission
+- [x] Arduino Library Manager submission (arduino/library-registry#8088 merged 2026-04-07)
+- [x] PlatformIO registry submission (nubiraorg/Trellis v0.1.8 published 2026-04-07)
