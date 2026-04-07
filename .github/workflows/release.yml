@@ -21,7 +21,34 @@ jobs:
             arch: amd64
 
     steps:
+      # Step 1: full clone so we can read the tag's annotation and reach
+      # the referenced main commit. The release.yml workflow is fired by
+      # a tag push from the `library-release` branch (lean tree, no app/),
+      # so we must explicitly check out the main commit recorded in the
+      # tag annotation to get the desktop app sources back.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve main SHA from tag annotation
+        id: resolve
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          echo "Tag: $tag"
+          ann="$(git for-each-ref "refs/tags/$tag" --format='%(contents)')"
+          echo "Annotation:"
+          printf '%s\n' "$ann" | sed 's/^/  /'
+          main_sha="$(printf '%s\n' "$ann" | awk '/^main-sha:/ {print $2; exit}')"
+          if [ -z "$main_sha" ]; then
+            echo "ERROR: tag $tag annotation does not contain a 'main-sha:' line." >&2
+            echo "       This release was not produced by scripts/release-library.sh." >&2
+            exit 1
+          fi
+          echo "Resolved main sha: $main_sha"
+          # Check the SHA out so subsequent build steps see main's tree.
+          git checkout "$main_sha"
+          echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
 
       - name: Install system dependencies
         run: |
@@ -97,7 +124,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
-          generate_release_notes: true
+          # Auto-generated notes are disabled because tags now live on the
+          # `library-release` branch (lean library tree). The commits between
+          # consecutive tags on that branch are just one-line release stubs,
+          # so the auto-notes would be uninformative. The user updates
+          # CHANGELOG.md manually as the source of truth, and edits the
+          # release body after publish if more detail is wanted.
+          generate_release_notes: false
           body: |
             ## Installation
 
