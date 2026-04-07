@@ -6,8 +6,11 @@
 <meta name="color-scheme" content="dark">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b0d10">
 <title>Trellis</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235eead4'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='20' font-weight='800' text-anchor='middle' fill='%23062c2e'%3ET%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%235eead4'/%3E%3Ctext x='90' y='124' font-family='system-ui,sans-serif' font-size='112' font-weight='800' text-anchor='middle' fill='%23062c2e'%3ET%3C/text%3E%3C/svg%3E">
 <style>
 :root{
   --bg:#0b0d10;--panel:#15181d;--panel2:#1c2026;--bd:#252a32;
@@ -15,12 +18,13 @@
   --ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--shadow:0 1px 0 #ffffff08 inset,0 8px 24px #00000040;
 }
 *{box-sizing:border-box}
-html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 a{color:var(--acc)}
 .wrap{max-width:720px;margin:0 auto;padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom))}
-header{display:flex;align-items:center;gap:12px;margin:8px 0 18px}
-header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--acc),#0ea5b1);display:grid;place-items:center;font-weight:800;color:#06292a;box-shadow:var(--shadow)}
-header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px}
+header{display:flex;align-items:center;gap:12px;margin:8px 0 18px;min-width:0}
+header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--acc),#0ea5b1);display:grid;place-items:center;font-weight:800;color:#06292a;box-shadow:var(--shadow);flex:none}
+header .ttl{flex:1;min-width:0;overflow:hidden}
+header h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 header .sub{font-size:12px;color:var(--mut);margin-top:1px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--mut);box-shadow:0 0 0 3px #ffffff08}
 .dot.on{background:var(--ok);box-shadow:0 0 0 3px #22c55e22}
@@ -66,15 +70,67 @@ input[type=color]::-moz-color-swatch{border:none;border-radius:9px}
 .empty{color:var(--mut);text-align:center;padding:36px 16px;border:1px dashed var(--bd);border-radius:14px}
 footer{margin-top:24px;text-align:center;color:var(--mut);font-size:11px}
 footer a{text-decoration:none}
-.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(60px);background:var(--panel2);border:1px solid var(--bd);color:var(--fg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 8px 24px #000a;opacity:0;transition:.25s;pointer-events:none}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(60px);background:var(--panel2);border:1px solid var(--bd);color:var(--fg);padding:9px 16px;border-radius:999px;font-size:13px;box-shadow:0 8px 24px #000a;opacity:0;transition:.25s;pointer-events:none;z-index:50}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* header chips (logs toggle) */
+.chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--bd);color:var(--fg);font:600 11px/1 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.6px;padding:5px 9px;border-radius:999px;cursor:pointer;transition:border-color .15s,background .15s;flex:none}
+.chip:hover{border-color:#3a4150;background:#1f242c}
+.chip.active{border-color:var(--acc);background:#5eead412;color:var(--acc)}
+.chip .ind{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--mut)}
+.chip.active .ind{background:var(--acc)}
+.chip .ct{background:var(--acc);color:#06292a;font-size:10px;font-weight:800;padding:1px 5px;border-radius:999px;min-width:14px;text-align:center;display:none}
+.chip .ct.show{display:inline-block}
+/* log panel */
+.logp{margin-top:14px;background:var(--panel);border:1px solid var(--bd);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;display:none}
+.logp.open{display:block}
+.logp .lh{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--bd);background:var(--panel2)}
+.logp .lh b{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);font-weight:600;flex:1}
+.logp .lh button{background:transparent;border:1px solid var(--bd);color:var(--mut);font:600 10px/1 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.5px;padding:5px 9px;border-radius:7px;cursor:pointer;transition:.15s}
+.logp .lh button:hover{color:var(--fg);border-color:#3a4150}
+.logp .lh button.on{color:var(--acc);border-color:var(--acc)}
+.logp .lb{max-height:240px;overflow-y:auto;font:12px/1.55 ui-monospace,Menlo,Consolas,monospace;padding:8px 14px}
+.logp .lb .ln{padding:2px 0;display:flex;gap:8px;border-top:1px solid #ffffff05;word-break:break-word}
+.logp .lb .ln:first-child{border-top:none}
+.logp .lb .t{color:var(--mut);flex:none;font-variant-numeric:tabular-nums}
+.logp .lb .s{flex:none;font-weight:700;text-transform:uppercase;font-size:10px;padding:1px 5px;border-radius:4px;align-self:flex-start;margin-top:1px}
+.logp .lb .s.info{background:#5eead418;color:var(--acc)}
+.logp .lb .s.warn{background:#f59e0b1f;color:var(--warn)}
+.logp .lb .s.error{background:#ef44441f;color:var(--err)}
+.logp .lb .m{color:var(--fg);flex:1;min-width:0;white-space:pre-wrap}
+.logp .lb .empty{color:var(--mut);text-align:center;padding:20px 8px;border:none}
+/* OTA overlay */
+.ota{position:fixed;inset:0;background:#000000c8;backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:100;padding:20px;animation:fade .2s ease}
+.ota.show{display:flex}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.ota .box{background:var(--panel);border:1px solid var(--bd);border-radius:16px;padding:24px;width:100%;max-width:340px;box-shadow:0 24px 60px #000c;text-align:center}
+.ota .ic{width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--acc),#0ea5b1);display:inline-grid;place-items:center;margin-bottom:14px;color:#06292a;font-size:24px}
+.ota.fail .ic{background:linear-gradient(135deg,#ef4444,#b91c1c);color:#fff}
+.ota h2{margin:0 0 4px;font-size:17px;font-weight:700}
+.ota p{margin:0 0 16px;font-size:13px;color:var(--mut)}
+.ota .bar{width:100%;height:8px;background:#2a2f38;border-radius:999px;overflow:hidden;margin-bottom:10px}
+.ota .bar i{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--acc),var(--accd));transition:width .3s;border-radius:999px}
+.ota.fail .bar i{background:var(--err);width:100%}
+.ota .pct{font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums;text-transform:uppercase;letter-spacing:.6px}
+.ota .dis{margin-top:14px;background:transparent;border:1px solid var(--bd);color:var(--mut);padding:7px 14px;border-radius:8px;font:600 11px/1 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.5px;cursor:pointer;display:none}
+.ota.fail .dis{display:inline-block;color:var(--fg);border-color:#3a4150}
+.ota.fail .dis:hover{border-color:var(--err);color:var(--err)}
+/* PWA install hint (mobile only) */
+.pwa{position:fixed;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));background:var(--panel2);border:1px solid var(--bd);border-radius:14px;padding:14px 16px;box-shadow:0 12px 32px #000a;display:none;align-items:center;gap:12px;z-index:60;animation:rise .3s ease}
+.pwa.show{display:flex}
+@keyframes rise{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.pwa .pi{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--acc),#0ea5b1);display:grid;place-items:center;color:#06292a;font-weight:800;flex:none}
+.pwa .pt{flex:1;min-width:0}
+.pwa .pt b{display:block;font-size:13px;font-weight:600;margin-bottom:1px}
+.pwa .pt span{font-size:11px;color:var(--mut)}
+.pwa .px{background:transparent;border:none;color:var(--mut);font-size:20px;line-height:1;padding:4px 8px;cursor:pointer;border-radius:6px;flex:none}
+.pwa .px:hover{color:var(--fg);background:#ffffff0a}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div class="logo">T</div>
-    <div style="flex:1;min-width:0">
+    <div class="ttl">
       <h1 id="name">Trellis Device</h1>
       <div class="sub">
         <span class="dot" id="dot"></span>
@@ -83,6 +139,7 @@ footer a{text-decoration:none}
         <span class="badge" id="fw"></span>
       </div>
     </div>
+    <button class="chip" id="logToggle" type="button" aria-pressed="false" aria-label="Toggle log panel"><span class="ind"></span>Logs<span class="ct" id="logCt">0</span></button>
   </header>
   <div class="sys">
     <div><b>Signal</b><span id="rssi">—</span></div>
@@ -90,12 +147,35 @@ footer a{text-decoration:none}
     <div><b>Uptime</b><span id="up">—</span></div>
   </div>
   <div class="grid" id="grid"></div>
+  <section class="logp" id="logPanel" aria-label="Device logs">
+    <div class="lh">
+      <b>Live Logs</b>
+      <button type="button" id="logPause">Pause</button>
+      <button type="button" id="logClear">Clear</button>
+    </div>
+    <div class="lb" id="logBody"><div class="empty">Waiting for log events…</div></div>
+  </section>
   <footer>Powered by <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener">Trellis</a> · <span id="id">—</span></footer>
 </div>
 <div class="toast" id="toast"></div>
+<div class="ota" id="otaOverlay" role="dialog" aria-modal="true" aria-labelledby="otaTitle">
+  <div class="box">
+    <div class="ic" id="otaIc">↑</div>
+    <h2 id="otaTitle">Updating firmware</h2>
+    <p id="otaMsg">Please keep this page open. Device will reboot when done.</p>
+    <div class="bar"><i id="otaBar"></i></div>
+    <div class="pct" id="otaPct">starting…</div>
+    <button type="button" class="dis" id="otaDismiss">Dismiss</button>
+  </div>
+</div>
+<div class="pwa" id="pwaHint" role="dialog" aria-label="Install hint">
+  <div class="pi">T</div>
+  <div class="pt"><b id="pwaTitle">Add to Home Screen</b><span id="pwaSub">Install for one-tap access</span></div>
+  <button type="button" class="px" id="pwaClose" aria-label="Dismiss">×</button>
+</div>
 <script>
 (function(){
-var host=location.hostname,wsPort=(parseInt(location.port||"80",10))+1,ws,reconnectT,caps={};
+var host=location.hostname,wsPort=(parseInt(location.port||"80",10))+1,ws,reconnectT,caps={},info=null;
 var $=function(s){return document.getElementById(s)};
 function esc(s){return(""+s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function toast(t){var e=$("toast");e.textContent=t;e.classList.add("show");clearTimeout(toast._t);toast._t=setTimeout(function(){e.classList.remove("show")},1800)}
@@ -170,24 +250,146 @@ function loadInfo(){
     $("id").textContent=d.id||"";
     renderSystem(d.system);
     var g=$("grid");g.innerHTML="";caps={};
-    if(!d.capabilities||!d.capabilities.length){g.innerHTML='<div class="empty full">No capabilities exposed yet.</div>';return}
-    d.capabilities.forEach(function(c){caps[c.id]=c;g.appendChild(buildCard(c))});
+    if(!d.capabilities||!d.capabilities.length){g.innerHTML='<div class="empty full">No capabilities exposed yet.</div>';}
+    else{d.capabilities.forEach(function(c){caps[c.id]=c;g.appendChild(buildCard(c))});}
     connectWs();
   }).catch(function(){setStatus("off","unreachable");setTimeout(loadInfo,3000)});
 }
 function connectWs(){
   try{ws=new WebSocket("ws://"+host+":"+wsPort+"/")}catch(e){return scheduleReconnect()}
-  ws.onopen=function(){setStatus("on","live")};
-  ws.onclose=function(){setStatus("off","reconnecting…");scheduleReconnect()};
+  ws.onopen=function(){setStatus("on","live");if(ota.shown&&!ota.failed){location.reload()}};
+  ws.onclose=function(){setStatus("off","reconnecting…");if(ota.shown&&!ota.failed){otaReboot()}scheduleReconnect()};
   ws.onerror=function(){};
   ws.onmessage=function(ev){
     try{var m=JSON.parse(ev.data)}catch(e){return}
     if(m.event==="update"){applyUpdate(m.id,m.value)}
     else if(m.event==="heartbeat"&&m.system){renderSystem(m.system)}
+    else if(m.event==="log"){addLog(m.severity,m.message)}
+    else if(m.event==="ota_progress"){otaProgress(m.percent)}
   };
 }
 function scheduleReconnect(){clearTimeout(reconnectT);reconnectT=setTimeout(connectWs,2000)}
+
+/* ---------- log panel ---------- */
+var logState={open:false,paused:false,lines:[],unread:0,MAX:200};
+function pad2(n){return n<10?"0"+n:""+n}
+function logTime(){var d=new Date();return pad2(d.getHours())+":"+pad2(d.getMinutes())+":"+pad2(d.getSeconds())}
+function addLog(severity,message){
+  var sev=(severity==="warn"||severity==="error")?severity:"info";
+  var entry={t:logTime(),s:sev,m:""+(message==null?"":message)};
+  logState.lines.push(entry);
+  if(logState.lines.length>logState.MAX)logState.lines.shift();
+  if(logState.open&&!logState.paused){renderLogLine(entry);trimLogDom()}
+  else{logState.unread++;updateLogChip()}
+}
+function renderLogLine(e){
+  var body=$("logBody");
+  var empty=body.querySelector(".empty");if(empty)empty.remove();
+  var ln=document.createElement("div");ln.className="ln";
+  var t=document.createElement("span");t.className="t";t.textContent=e.t;
+  var s=document.createElement("span");s.className="s "+e.s;s.textContent=e.s;
+  var m=document.createElement("span");m.className="m";m.textContent=e.m;
+  ln.appendChild(t);ln.appendChild(s);ln.appendChild(m);
+  body.appendChild(ln);
+  body.scrollTop=body.scrollHeight;
+}
+function trimLogDom(){var body=$("logBody"),lns=body.querySelectorAll(".ln");if(lns.length>logState.MAX){var n=lns.length-logState.MAX;for(var i=0;i<n;i++)lns[i].remove()}}
+function rerenderLog(){
+  var body=$("logBody");body.innerHTML="";
+  if(!logState.lines.length){body.innerHTML='<div class="empty">Waiting for log events…</div>';return}
+  logState.lines.forEach(renderLogLine);
+}
+function updateLogChip(){
+  var ct=$("logCt");
+  if(logState.unread>0&&!logState.open){ct.textContent=logState.unread>99?"99+":(""+logState.unread);ct.classList.add("show")}
+  else{ct.classList.remove("show")}
+}
+function toggleLogPanel(){
+  logState.open=!logState.open;
+  $("logPanel").classList.toggle("open",logState.open);
+  $("logToggle").classList.toggle("active",logState.open);
+  $("logToggle").setAttribute("aria-pressed",logState.open?"true":"false");
+  if(logState.open){logState.unread=0;updateLogChip();rerenderLog()}
+}
+$("logToggle").addEventListener("click",toggleLogPanel);
+$("logPause").addEventListener("click",function(){
+  logState.paused=!logState.paused;
+  this.textContent=logState.paused?"Resume":"Pause";
+  this.classList.toggle("on",logState.paused);
+  if(!logState.paused){logState.unread=0;updateLogChip();rerenderLog()}
+});
+$("logClear").addEventListener("click",function(){logState.lines=[];logState.unread=0;updateLogChip();rerenderLog()});
+
+/* ---------- OTA overlay ---------- */
+var ota={shown:false,failed:false,timer:null};
+function otaShow(){
+  /* Reset state every call so a fresh OTA after a previous failure starts clean */
+  ota.failed=false;
+  if(ota.timer){clearTimeout(ota.timer);ota.timer=null}
+  var o=$("otaOverlay");o.classList.remove("fail");
+  if(!ota.shown){ota.shown=true;o.classList.add("show")}
+  $("otaTitle").textContent="Updating firmware";
+  $("otaIc").textContent="↑";
+  $("otaMsg").textContent="Please keep this page open. Device will reboot when done.";
+  $("otaBar").style.width="0%";
+  $("otaPct").textContent="starting…";
+}
+function otaHide(){
+  ota.shown=false;ota.failed=false;
+  $("otaOverlay").classList.remove("show","fail");
+  if(ota.timer){clearTimeout(ota.timer);ota.timer=null}
+}
+function otaProgress(percent){
+  if(percent===-1){
+    otaShow();
+    ota.failed=true;
+    $("otaOverlay").classList.add("fail");
+    $("otaIc").textContent="!";
+    $("otaTitle").textContent="Update failed";
+    $("otaMsg").textContent="Device rejected the update. It is still running the old firmware.";
+    $("otaPct").textContent="error";
+    return;
+  }
+  otaShow();
+  var p=Math.max(0,Math.min(100,percent|0));
+  $("otaBar").style.width=p+"%";
+  $("otaPct").textContent=p+"%";
+}
+function otaReboot(){
+  /* Called when WS closes during an active update — device is rebooting */
+  $("otaTitle").textContent="Restarting device";
+  $("otaMsg").textContent="The device is rebooting with the new firmware…";
+  $("otaPct").textContent="rebooting";
+  $("otaBar").style.width="100%";
+  if(ota.timer)clearTimeout(ota.timer);
+  ota.timer=setTimeout(function(){location.reload()},6000);
+}
+$("otaDismiss").addEventListener("click",otaHide);
+$("otaOverlay").addEventListener("click",function(e){if(e.target===this&&ota.failed)otaHide()});
+
+/* ---------- Add to Home Screen hint ---------- */
+function maybeShowPwaHint(){
+  try{
+    if(localStorage.getItem("trellis_pwa_hint_seen")==="1")return;
+    if(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)return;
+    if(window.navigator.standalone)return; /* iOS */
+    if(window.innerWidth>=768)return; /* mobile only */
+    var ua=navigator.userAgent||"";
+    var isIOS=/iPad|iPhone|iPod/.test(ua)&&!window.MSStream;
+    var isAndroid=/Android/.test(ua);
+    if(!isIOS&&!isAndroid)return;
+    if(isIOS){$("pwaSub").textContent="Tap Share, then Add to Home Screen"}
+    else{$("pwaSub").textContent="Tap menu (⋮), then Add to Home Screen"}
+    setTimeout(function(){$("pwaHint").classList.add("show")},1200);
+  }catch(e){}
+}
+$("pwaClose").addEventListener("click",function(){
+  $("pwaHint").classList.remove("show");
+  try{localStorage.setItem("trellis_pwa_hint_seen","1")}catch(e){}
+});
+
 loadInfo();
+maybeShowPwaHint();
 })();
 </script>
 </body>

@@ -104,6 +104,12 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Saves ~13 KB of flash when disabled
 - [x] Verified end-to-end on real ESP32 hardware
 
+### Embedded Web Dashboard — Polish (v0.3.1)
+- [x] Live log viewer panel — collapsible, severity-coloured, ring-buffered (200 lines), pause/clear, unread badge
+- [x] OTA progress overlay — start tick, failure tick, reboot detection, auto-reload on success
+- [x] Add-to-home-screen hint — mobile-only, iOS/Android-aware wording, dismiss persisted in localStorage
+- [x] Apple touch icon (180×180) + theme-color + mobile-web-app-capable meta tags for proper PWA installation
+
 ### OTA
 - [x] HTTP OTA update handler (ESP32)
 - [x] OTA progress reporting via WebSocket

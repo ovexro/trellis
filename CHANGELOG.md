@@ -2,6 +2,31 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.3.1] — 2026-04-07
+
+### Added — embedded web dashboard polish pass
+
+Three on-device dashboard features that turn the v0.3.0 control panel into a real debug + monitoring console for any phone:
+
+- **Live log viewer panel.** A "Logs" chip in the dashboard header opens a collapsible panel that streams `event:"log"` WebSocket messages from the device in real time. Severity-coloured rows (info / warn / error), monospace formatting, scrollable ring buffer of the last 200 lines, Pause and Clear controls, and an unread-count badge on the chip when the panel is collapsed. The library already broadcast logs via `broadcastLog`/`logInfo`/`logWarn`/`logError` — this pass is purely the consumer side, no C++ changes required.
+- **OTA progress overlay.** When a device emits `event:"ota_progress"` (currently the start tick at `percent: 0` and the failure tick at `percent: -1`), a full-screen modal appears with a progress bar, status text, and reboot detection. On a successful update the WebSocket closes when the device reboots; the overlay flips to "Restarting device…" and auto-reloads the page once the device is back so the new firmware version appears immediately. On failure the overlay shows a red error state with a dismiss button.
+- **Add to Home Screen hint.** A one-time bottom sheet that appears on mobile viewports (`window.innerWidth < 768` plus iOS or Android UA detection) with platform-specific wording ("Tap Share, then Add to Home Screen" on iOS / "Tap menu (⋮), then Add to Home Screen" on Android). Skipped automatically when already running standalone or after the user dismisses it (stored in localStorage). Paired with `mobile-web-app-capable`, `theme-color`, and a 180×180 `apple-touch-icon` so iOS Safari renders the saved icon properly with no manifest URL.
+
+### Polish pass
+
+- **Header layout reflow** to accommodate the new chip without breaking on narrow viewports. The title block now uses a dedicated `.ttl` flex child with `min-width:0` and ellipsis overflow so the device name truncates instead of pushing the chip off-screen, and the chip is `flex:none` so it always reserves its slot.
+- **Defense-in-depth XSS hygiene** for the new code paths: log message bodies render through `textContent`, severity is filtered to a known whitelist before being interpolated into class names, and the OTA progress percent is `Math.max(0,Math.min(100,p|0))` clamped before being used as a CSS width.
+- **Latent bug fix**: the `info` global was being implicitly created via `info=d` in `loadInfo()` (declared nowhere, leaked to `window`). Now declared in the IIFE-scope `var` list alongside `caps`/`ws`/etc. Spotted while reading the code for the polish pass.
+- **`overflow-x:hidden` on body** as a safety net so any future flex/grid mishap can't trigger horizontal scroll on phones.
+- **OTA reset semantics**: `otaShow()` now resets state on every call (clears the timer, removes `.fail`, resets the bar) so a fresh OTA after a previous failure starts cleanly without forcing the user to dismiss the old overlay first.
+- **Log unread counter** correctly resets to zero both when the panel is opened *and* when it's resumed from a paused state.
+- **Hardware-verified end-to-end** on real ESP32: TestDevice flashed via `/dev/ttyUSB0`, HTTP fetch returns the new 25 KB byte-clean HTML with all three feature markers present, WebSocket round-trip exercises both the existing command path (`set led true` → device acts → update broadcast) and the new log path (`logInfo` from the `onCommand` callback + periodic ticks received). Headless Chrome screenshots at desktop and mobile viewports confirm the chip + responsive grid + PWA hint render correctly.
+
+### Notes
+
+- Headless Chrome (`google-chrome --headless=new`) has a hard minimum viewport width of ~500 px regardless of `--window-size`. Mobile screenshot tests of viewports narrower than that are unreliable and will appear right-clipped — the actual page layout is fine, the screenshot just isn't capturing what the rendering engine reports. Use puppeteer/playwright with `Page.setViewport` (CDP `Emulation.setDeviceMetricsOverride`) for true narrow-viewport tests.
+- Embedded HTML grew from ~13 KB to ~25 KB; ESP32 flash usage stays at 82-83 % across all five examples, Pico W at ~22 %.
+
 ## [0.3.0] — 2026-04-07
 
 ### Added
