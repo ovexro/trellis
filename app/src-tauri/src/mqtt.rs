@@ -687,12 +687,50 @@ fn event_loop(
                     s.connected = true;
                     s.last_error = None;
                 }
+                // Polish #4 (post-v0.2.0): republish the retained `online`
+                // availability message on every ConnAck. The broker fires
+                // our LWT (offline) when it sees the TCP drop on a
+                // restart/network blip. rumqttc reconnects under us and the
+                // bridge keeps publishing state, but the availability topic
+                // would still read `offline` until something forced a
+                // republish. HA marks every entity unavailable when that
+                // happens. Re-asserting `online` here keeps entities live
+                // across broker hiccups.
+                let cfg_snapshot = config.lock().unwrap().clone();
+                if let Some(c) = client.lock().unwrap().as_ref() {
+                    // Polish #4: republish retained `online` availability so
+                    // entities don't stay marked unavailable after a broker
+                    // restart that fired our LWT.
+                    let availability_topic =
+                        format!("{}/{}", cfg_snapshot.base_topic, BRIDGE_AVAILABILITY_SUFFIX);
+                    if let Err(e) = c.publish(
+                        &availability_topic,
+                        QoS::AtLeastOnce,
+                        true,
+                        PAYLOAD_ONLINE,
+                    ) {
+                        log::warn!("[MQTT] availability republish failed: {}", e);
+                    }
+                    // Polish #5: re-subscribe to the command topic. rumqttc
+                    // does NOT automatically replay subscriptions across its
+                    // internal reconnects, so a broker restart leaves us
+                    // connected but deaf — HA toggles never reach the device.
+                    // Re-asserting the subscription on every ConnAck is cheap
+                    // and idempotent.
+                    let set_pattern = format!("{}/+/+/set", cfg_snapshot.base_topic);
+                    if let Err(e) = c.subscribe(&set_pattern, QoS::AtLeastOnce) {
+                        log::warn!(
+                            "[MQTT] resubscribe {} failed: {}",
+                            set_pattern,
+                            e
+                        );
+                    }
+                }
                 // Polish #2: republish HA discovery configs whenever the
                 // broker accepts a fresh connection. Handles broker restarts
                 // (where retained configs were lost) and reconnects after
                 // transient network drops. Idempotent — discovery_published
                 // is cleared first so even tracked devices get re-announced.
-                let cfg_snapshot = config.lock().unwrap().clone();
                 if cfg_snapshot.enabled && cfg_snapshot.ha_discovery_enabled {
                     let devices = discovery
                         .lock()

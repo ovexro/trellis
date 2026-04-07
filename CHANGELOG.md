@@ -2,6 +2,17 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.2.1] — 2026-04-07
+
+### Fixed (MQTT bridge — caught by HA Docker bonus test)
+
+The HA Docker integration test surfaced two related bugs in the MQTT bridge that v0.2.0's polish pass missed: rumqttc's internal reconnect does NOT replay either retained publishes or subscriptions, so a broker restart left the bridge "connected but functionally broken".
+
+- **Republish retained `online` availability on every ConnAck** (polish #4). When the broker restarts (or the network blips long enough for the TCP connection to drop), Mosquitto fires our LWT (`offline`) on the availability topic. rumqttc reconnects under us and the bridge keeps publishing state — but the availability topic still reads `offline` until something forces a republish, so HA marks every entity unavailable. The fix re-asserts `online` in the ConnAck handler.
+- **Re-subscribe to `<base_topic>/+/+/set` on every ConnAck** (polish #5). The original `start()` calls `client.subscribe()` once at startup. rumqttc reconnects automatically when the connection drops, but it does NOT replay subscriptions, so after a broker restart the bridge is "connected" yet deaf — HA toggles never reach the device, even though the messages are visible to other subscribers. The fix re-asserts the subscription in the ConnAck handler. Idempotent.
+
+Both fixes live alongside polish #2 (republish HA discovery configs) in the same `event_loop` ConnAck branch, since they all need to fire on the same trigger.
+
 ## [0.2.0] — 2026-04-07
 
 ### Added
