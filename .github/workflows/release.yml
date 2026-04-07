@@ -30,19 +30,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve main SHA from tag annotation
+      - name: Resolve main SHA from .release-main-sha
         id: resolve
         run: |
           set -euo pipefail
           tag="${GITHUB_REF#refs/tags/}"
           echo "Tag: $tag"
-          ann="$(git for-each-ref "refs/tags/$tag" --format='%(contents)')"
-          echo "Annotation:"
-          printf '%s\n' "$ann" | sed 's/^/  /'
-          main_sha="$(printf '%s\n' "$ann" | awk '/^main-sha:/ {print $2; exit}')"
-          if [ -z "$main_sha" ]; then
-            echo "ERROR: tag $tag annotation does not contain a 'main-sha:' line." >&2
+          if [ ! -f .release-main-sha ]; then
+            echo "ERROR: .release-main-sha is missing from the tagged tree." >&2
             echo "       This release was not produced by scripts/release-library.sh." >&2
+            exit 1
+          fi
+          main_sha="$(tr -d '[:space:]' < .release-main-sha)"
+          if [ -z "$main_sha" ]; then
+            echo "ERROR: .release-main-sha is empty." >&2
             exit 1
           fi
           echo "Resolved main sha: $main_sha"
