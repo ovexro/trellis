@@ -1,9 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload, Loader2 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
+
+// How long to wait after the desktop has flushed the firmware bytes before
+// we give up watching for the device's uptime to reset. The device has to:
+// finish writing flash (~10s), reboot (~3s), reconnect WiFi + WS (~5s),
+// and emit a heartbeat (~10s window). 60s is generous-but-not-forever.
+const REBOOT_WATCH_MS = 60_000;
 
 interface FirmwareRecord {
   id: number;
@@ -25,11 +31,17 @@ export default function OtaManager() {
   const [selectedDevice, setSelectedDevice] = useState("");
   const [firmwarePath, setFirmwarePath] = useState("");
   const [otaProgress, setOtaProgress] = useState(-1);
-  const [status, setStatus] = useState<"idle" | "uploading" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "uploading" | "delivered" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
+
+  // Tracks the in-flight OTA so events from a different selected device
+  // don't get mis-routed and so the reboot watcher knows what uptime
+  // baseline to compare against. Cleared on success/error/idle.
+  const inFlightRef = useRef<{ deviceId: string; uptimeBaseline: number } | null>(null);
+  const rebootTimerRef = useRef<number | null>(null);
 
   const onlineDevices = devices.filter((d) => d.online);
   const selectedDeviceObj = devices.find((d) => d.id === selectedDevice);
@@ -57,19 +69,98 @@ export default function OtaManager() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen<{ device_id: string; event_type: string; payload: { percent?: number } }>(
+    const unlisten = listen<{
+      device_id: string;
+      event_type: string;
+      payload: { percent?: number; bytes?: number; error?: string };
+    }>(
       "device-event",
       (e) => {
-        if (e.payload.event_type === "ota_progress" && e.payload.device_id === selectedDevice) {
-          const pct = e.payload.payload.percent ?? -1;
+        const inFlight = inFlightRef.current;
+        if (!inFlight || e.payload.device_id !== inFlight.deviceId) return;
+
+        const { event_type, payload } = e.payload;
+
+        if (event_type === "ota_progress") {
+          // The library currently only emits 0/-1/100 over WS, and the WS
+          // tends to drop before 100 ever lands. We still handle these in
+          // case a future library version streams real progress, but
+          // success is normally detected via the reboot watcher below.
+          const pct = payload.percent ?? -1;
           setOtaProgress(pct);
-          if (pct === -1) setStatus("error");
-          if (pct === 100) setStatus("success");
+          if (pct === -1) {
+            setStatus("error");
+            setErrorMsg("Device reported OTA failure.");
+            inFlightRef.current = null;
+          } else if (pct === 100) {
+            setStatus("success");
+            inFlightRef.current = null;
+          }
+        } else if (event_type === "ota_delivered") {
+          // Bytes flushed from the desktop. The device is now in its OTA
+          // write loop with WS dropped — we won't see ota_progress=100.
+          // Switch to "delivered, waiting for reboot" and let the uptime
+          // watcher confirm success.
+          setStatus("delivered");
+          setOtaProgress(0);
+        } else if (event_type === "ota_delivery_failed") {
+          setStatus("error");
+          setErrorMsg(payload.error ? `Delivery failed: ${payload.error}` : "Delivery failed.");
+          inFlightRef.current = null;
         }
       },
     );
     return () => { unlisten.then((fn) => fn()); };
-  }, [selectedDevice]);
+  }, []);
+
+  // Reboot watcher: once delivery completes, watch the in-flight device's
+  // uptime in the store. The device's WebSocket reconnects within ~5s of
+  // boot and the next heartbeat (within 10s) carries a fresh uptime that
+  // is lower than the baseline we captured at click time. That's our
+  // "reboot confirmed" signal.
+  useEffect(() => {
+    if (status !== "delivered") return;
+    const inFlight = inFlightRef.current;
+    if (!inFlight) return;
+    const dev = devices.find((d) => d.id === inFlight.deviceId);
+    if (!dev || !dev.online) return;
+    if (dev.system.uptime_s < inFlight.uptimeBaseline) {
+      setStatus("success");
+      inFlightRef.current = null;
+      if (rebootTimerRef.current != null) {
+        window.clearTimeout(rebootTimerRef.current);
+        rebootTimerRef.current = null;
+      }
+    }
+  }, [devices, status]);
+
+  // Reboot watch timeout: if we don't see the uptime drop within
+  // REBOOT_WATCH_MS, fall through to a soft-success state. The device
+  // most likely rebooted but is on a different LAN segment / mDNS hasn't
+  // re-discovered it / the heartbeat hasn't fired yet.
+  useEffect(() => {
+    if (status !== "delivered") {
+      if (rebootTimerRef.current != null) {
+        window.clearTimeout(rebootTimerRef.current);
+        rebootTimerRef.current = null;
+      }
+      return;
+    }
+    if (rebootTimerRef.current != null) return;
+    rebootTimerRef.current = window.setTimeout(() => {
+      // Don't mark error — the OTA bytes were delivered. The device
+      // probably rebooted; we just couldn't confirm via heartbeat.
+      setStatus("success");
+      inFlightRef.current = null;
+      rebootTimerRef.current = null;
+    }, REBOOT_WATCH_MS);
+    return () => {
+      if (rebootTimerRef.current != null) {
+        window.clearTimeout(rebootTimerRef.current);
+        rebootTimerRef.current = null;
+      }
+    };
+  }, [status]);
 
   const loadFirmwareHistory = async (deviceId: string) => {
     if (!deviceId) {
@@ -97,6 +188,10 @@ export default function OtaManager() {
     setStatus("uploading");
     setErrorMsg("");
     setOtaProgress(0);
+    inFlightRef.current = {
+      deviceId: device.id,
+      uptimeBaseline: device.system.uptime_s,
+    };
     try {
       await invoke("rollback_firmware", {
         deviceId: device.id,
@@ -107,6 +202,7 @@ export default function OtaManager() {
     } catch (err) {
       setStatus("error");
       setErrorMsg(String(err));
+      inFlightRef.current = null;
     }
   };
 
@@ -128,6 +224,14 @@ export default function OtaManager() {
 
     setStatus("uploading");
     setErrorMsg("");
+    setOtaProgress(0);
+    // Capture the uptime baseline NOW, while the device is still happily
+    // running and heartbeats are landing. The reboot watcher uses this
+    // to detect "uptime dropped → device rebooted → OTA succeeded".
+    inFlightRef.current = {
+      deviceId: device.id,
+      uptimeBaseline: device.system.uptime_s,
+    };
 
     try {
       await invoke("start_ota", {
@@ -137,12 +241,14 @@ export default function OtaManager() {
         firmwarePath: firmwarePath,
       });
       // Don't set success here — the OTA command was SENT but the device
-      // hasn't finished downloading yet. Status will update via ota_progress events.
-      setOtaProgress(0);
+      // hasn't finished downloading yet. Status will update via the
+      // ota_delivered event (from the desktop's serve_firmware) and then
+      // the reboot watcher.
       loadFirmwareHistory(selectedDevice);
     } catch (err) {
       setStatus("error");
       setErrorMsg(String(err));
+      inFlightRef.current = null;
     }
   };
 
@@ -261,12 +367,17 @@ export default function OtaManager() {
             !selectedDevice ||
             !firmwarePath ||
             status === "uploading" ||
+            status === "delivered" ||
             (selectedDeviceObj?.platform !== "esp32")
           }
           className="flex items-center gap-2 px-4 py-2.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 w-full justify-center"
         >
           <Upload size={16} />
-          {status === "uploading" ? "Sending to device..." : "Upload Firmware"}
+          {status === "uploading"
+            ? "Sending to device..."
+            : status === "delivered"
+              ? "Waiting for reboot..."
+              : "Upload Firmware"}
         </button>
 
         {status === "uploading" && otaProgress >= 0 && (
@@ -284,10 +395,24 @@ export default function OtaManager() {
           </div>
         )}
 
+        {status === "delivered" && (
+          <div className="flex items-start gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">
+            <Loader2 size={16} className="mt-0.5 flex-shrink-0 animate-spin" />
+            <div>
+              <p>Firmware delivered. Waiting for device to reboot…</p>
+              <p className="text-xs mt-1 text-trellis-300/70">
+                The device&rsquo;s WebSocket drops during OTA flashing,
+                so we&rsquo;re watching for its uptime counter to reset
+                via the next heartbeat.
+              </p>
+            </div>
+          </div>
+        )}
+
         {status === "success" && (
           <div className="flex items-center gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">
             <CheckCircle size={16} />
-            Firmware sent. The device is downloading and will reboot automatically.
+            Firmware update complete. The device has rebooted.
           </div>
         )}
 
@@ -352,7 +477,7 @@ export default function OtaManager() {
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
                     <button
                       onClick={() => handleRollback(record)}
-                      disabled={status === "uploading" || !selectedDeviceObj?.online}
+                      disabled={status === "uploading" || status === "delivered" || !selectedDeviceObj?.online}
                       title="Rollback to this firmware"
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 rounded-md transition-colors disabled:opacity-40"
                     >

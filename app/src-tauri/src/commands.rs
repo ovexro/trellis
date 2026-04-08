@@ -159,8 +159,10 @@ pub async fn start_ota(
     let dest_str = dest_path.to_string_lossy().to_string();
     db.store_firmware_record(&device_id, &version, &dest_str, file_size)?;
 
+    let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let (url, _stop_flag) = ota::serve_firmware(&firmware_path)?;
+        let (url, _stop_flag) =
+            ota::serve_firmware(&firmware_path, serve_handle, device_id.clone())?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
@@ -192,6 +194,7 @@ pub fn delete_firmware_record(
 #[tauri::command]
 pub async fn rollback_firmware(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     device_id: String,
     ip: String,
     port: u16,
@@ -199,8 +202,10 @@ pub async fn rollback_firmware(
 ) -> Result<(), String> {
     let conn_mgr = state.connection_manager.clone();
     let ws_port = port + 1;
+    let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let (url, _stop_flag) = ota::serve_firmware(&firmware_record_path)?;
+        let (url, _stop_flag) =
+            ota::serve_firmware(&firmware_record_path, serve_handle, device_id.clone())?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;

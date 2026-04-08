@@ -5,9 +5,24 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use tauri::{AppHandle, Emitter};
+
+use crate::connection::DeviceEvent;
+
 /// Serves a firmware file via HTTP on a random port.
 /// Returns the URL that devices can use to download the firmware.
-pub fn serve_firmware(firmware_path: &str) -> Result<(String, Arc<Mutex<bool>>), String> {
+///
+/// Once the device fetches the firmware and the bytes are flushed (or
+/// delivery fails), emits a `device-event` with `event_type` either
+/// `"ota_delivered"` or `"ota_delivery_failed"` so the UI can switch
+/// from "stuck at 0%" to a "delivered, waiting for reboot" state. This
+/// matters because the device's WebSocket drops the moment OTA starts,
+/// so the streaming `ota_progress` events from the library never arrive.
+pub fn serve_firmware(
+    firmware_path: &str,
+    app_handle: AppHandle,
+    device_id: String,
+) -> Result<(String, Arc<Mutex<bool>>), String> {
     let path = PathBuf::from(firmware_path);
     if !path.exists() {
         return Err(format!("Firmware file not found: {}", firmware_path));
@@ -47,6 +62,8 @@ pub fn serve_firmware(firmware_path: &str) -> Result<(String, Arc<Mutex<bool>>),
             if !*stop_clone.lock().unwrap() {
                 match stream {
                     Ok(mut stream) => {
+                        let peer = stream.peer_addr().ok();
+
                         // Read the request (we don't care about the contents)
                         let mut buf = [0u8; 1024];
                         let _ = stream.read(&mut buf);
@@ -57,18 +74,67 @@ pub fn serve_firmware(firmware_path: &str) -> Result<(String, Arc<Mutex<bool>>),
                             firmware_size
                         );
 
-                        if stream.write_all(header.as_bytes()).is_ok() {
-                            let _ = stream.write_all(&firmware_data);
-                            let _ = stream.flush();
+                        let mut delivered = false;
+                        let mut delivery_error: Option<String> = None;
+                        match stream.write_all(header.as_bytes()) {
+                            Ok(()) => match stream.write_all(&firmware_data) {
+                                Ok(()) => match stream.flush() {
+                                    Ok(()) => {
+                                        delivered = true;
+                                    }
+                                    Err(e) => delivery_error = Some(format!("flush: {}", e)),
+                                },
+                                Err(e) => delivery_error = Some(format!("body: {}", e)),
+                            },
+                            Err(e) => delivery_error = Some(format!("header: {}", e)),
                         }
 
-                        log::info!("[OTA] Firmware served to {:?}", stream.peer_addr());
+                        if delivered {
+                            log::info!("[OTA] Firmware served to {:?}", peer);
+                        } else {
+                            log::warn!(
+                                "[OTA] Firmware delivery to {:?} failed: {}",
+                                peer,
+                                delivery_error.as_deref().unwrap_or("unknown")
+                            );
+                        }
+
+                        // Emit event so the UI can leave the "stuck at 0%" state.
+                        let event_type = if delivered {
+                            "ota_delivered"
+                        } else {
+                            "ota_delivery_failed"
+                        };
+                        let payload = if delivered {
+                            serde_json::json!({ "bytes": firmware_size })
+                        } else {
+                            serde_json::json!({
+                                "bytes": firmware_size,
+                                "error": delivery_error.unwrap_or_else(|| "unknown".to_string()),
+                            })
+                        };
+                        let _ = app_handle.emit(
+                            "device-event",
+                            DeviceEvent {
+                                device_id: device_id.clone(),
+                                event_type: event_type.to_string(),
+                                payload,
+                            },
+                        );
 
                         // One-shot: stop after serving
                         *stop_clone.lock().unwrap() = true;
                     }
                     Err(e) => {
                         log::warn!("[OTA] Accept error: {}", e);
+                        let _ = app_handle.emit(
+                            "device-event",
+                            DeviceEvent {
+                                device_id: device_id.clone(),
+                                event_type: "ota_delivery_failed".to_string(),
+                                payload: serde_json::json!({ "error": format!("accept: {}", e) }),
+                            },
+                        );
                     }
                 }
             }
