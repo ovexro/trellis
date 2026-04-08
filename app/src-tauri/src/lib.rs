@@ -119,6 +119,14 @@ pub fn run() {
             // Set app handle for connection manager
             connection_manager.set_app_handle(app.handle().clone());
 
+            // Hydrate saved devices from SQLite into the in-memory map BEFORE
+            // starting background discovery. This makes saved devices visible
+            // to every consumer (desktop UI, REST API, web dashboard, MQTT
+            // bridge) immediately on launch as offline placeholders. The
+            // health check loop's first probe will flip them online if
+            // reachable.
+            discovery.hydrate_from_db(app.handle());
+
             // Start continuous background discovery
             discovery.start_background(app.handle().clone());
 

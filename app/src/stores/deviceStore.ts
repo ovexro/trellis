@@ -343,36 +343,37 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       },
     );
 
-    // Load saved devices from SQLite (show as offline until rediscovered)
-    invoke<Array<{ id: string; name: string; ip: string; port: number; firmware: string; platform: string; nickname: string | null; tags: string; group_id: number | null; last_seen: string }>>(
-      "get_saved_devices",
-    ).then((saved) => {
-      if (saved.length > 0) {
-        const offlineDevices: Device[] = saved.map((s) => ({
-          id: s.id,
-          name: s.name,
-          ip: s.ip,
-          port: s.port,
-          firmware: s.firmware || "",
-          platform: s.platform || "",
-          capabilities: [],
-          system: { rssi: 0, heap_free: 0, uptime_s: 0, chip: "" },
-          online: false,
-          last_seen: s.last_seen || "",
-          nickname: s.nickname || undefined,
-          tags: s.tags || undefined,
-          group_id: s.group_id ?? undefined,
+    // Boot: load the backend's device list (which now hydrates saved devices
+    // from SQLite as offline placeholders at startup — see Discovery::
+    // hydrate_from_db in src-tauri/src/discovery.rs), then enrich each entry
+    // with React-only metadata (nickname/tags/group_id) that isn't part of
+    // the Rust Device struct. The previous version of this block manufactured
+    // ghost offline devices in React, but raced with refreshDevices() and
+    // lost cross-subnet devices on every restart. Backend hydration is the
+    // single source of truth now; this pass only fills in metadata.
+    (async () => {
+      await get().refreshDevices();
+      try {
+        const saved = await invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null }>>(
+          "get_saved_devices",
+        );
+        if (saved.length === 0) return;
+        const savedById = new Map(saved.map((s) => [s.id, s]));
+        set((state) => ({
+          devices: state.devices.map((d) => {
+            const s = savedById.get(d.id);
+            if (!s) return d;
+            return {
+              ...d,
+              nickname: s.nickname || d.nickname,
+              tags: s.tags || d.tags,
+              group_id: s.group_id ?? d.group_id,
+            };
+          }),
         }));
-        set((state) => {
-          // Only add devices not already in the list (mDNS may have found them first)
-          const existing = new Set(state.devices.map((d) => d.id));
-          const newDevices = offlineDevices.filter((d) => !existing.has(d.id));
-          return { devices: [...state.devices, ...newDevices] };
-        });
+      } catch (err) {
+        console.error("Failed to load saved device metadata:", err);
       }
-    }).catch((err) => console.error("Failed to load saved devices:", err));
-
-    // Load live device list
-    get().refreshDevices();
+    })();
   },
 }));

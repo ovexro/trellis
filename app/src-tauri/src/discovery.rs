@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::connection::ConnectionManager;
 use crate::db::Database;
-use crate::device::{Device, DeviceInfo};
+use crate::device::{Device, DeviceInfo, SystemInfo};
 use crate::mqtt::MqttBridge;
 
 const SERVICE_TYPE: &str = "_trellis._tcp.local.";
@@ -40,6 +40,61 @@ impl Discovery {
 
     pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
         *self.mqtt_bridge.lock().unwrap() = Some(bridge);
+    }
+
+    /// Hydrate the in-memory device map from SQLite at startup so saved devices
+    /// (especially cross-subnet ones added by IP that mDNS can't rediscover)
+    /// reappear in the desktop UI, REST API, web dashboard, and MQTT bridge
+    /// immediately on app launch instead of waiting for the user to manually
+    /// re-add them. Devices start as offline; the health check loop's first
+    /// tick (now run-immediately, see health_check_loop) will probe each one
+    /// and flip them online if reachable.
+    pub fn hydrate_from_db(&self, app_handle: &AppHandle) {
+        let Some(db) = app_handle.try_state::<Database>() else {
+            log::warn!("[Discovery] hydrate_from_db: Database state not available");
+            return;
+        };
+        let saved = match db.get_all_saved_devices() {
+            Ok(rows) => rows,
+            Err(e) => {
+                log::warn!("[Discovery] hydrate_from_db: failed to read SQLite: {}", e);
+                return;
+            }
+        };
+        if saved.is_empty() {
+            return;
+        }
+        let mut devs = self.devices.lock().unwrap();
+        for s in &saved {
+            // Don't overwrite anything mDNS may have already populated in the
+            // tiny window between discovery construction and hydration. (In
+            // practice this is impossible because hydrate_from_db is called
+            // before start_background, but be defensive.)
+            if devs.contains_key(&s.id) {
+                continue;
+            }
+            devs.insert(
+                s.id.clone(),
+                Device {
+                    id: s.id.clone(),
+                    name: s.name.clone(),
+                    ip: s.ip.clone(),
+                    port: s.port,
+                    firmware: s.firmware.clone(),
+                    platform: s.platform.clone(),
+                    capabilities: Vec::new(),
+                    system: SystemInfo {
+                        rssi: 0,
+                        heap_free: 0,
+                        uptime_s: 0,
+                        chip: String::new(),
+                    },
+                    online: false,
+                    last_seen: s.last_seen.clone(),
+                },
+            );
+        }
+        log::info!("[Discovery] Hydrated {} saved devices from SQLite (offline until reachable)", saved.len());
     }
 
     /// Start continuous background discovery
@@ -249,14 +304,6 @@ fn health_check_loop(
     app_handle: AppHandle,
 ) {
     loop {
-        // Read configurable scan interval from DB settings, default to 30s
-        let interval_secs = app_handle
-            .try_state::<crate::db::Database>()
-            .and_then(|db| db.get_setting("scan_interval").ok().flatten())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(DEFAULT_HEALTH_CHECK_SECS);
-        thread::sleep(Duration::from_secs(interval_secs));
-
         if *stop_flag.lock().unwrap() {
             break;
         }
@@ -322,6 +369,16 @@ fn health_check_loop(
                 }
             }
         }
+
+        // Sleep AFTER the work, not before. This makes the first probe run
+        // immediately on app startup so cross-subnet hydrated devices flip
+        // online within seconds instead of waiting a full interval.
+        let interval_secs = app_handle
+            .try_state::<crate::db::Database>()
+            .and_then(|db| db.get_setting("scan_interval").ok().flatten())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_HEALTH_CHECK_SECS);
+        thread::sleep(Duration::from_secs(interval_secs));
     }
 }
 
