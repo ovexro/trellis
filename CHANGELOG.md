@@ -2,6 +2,32 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.3.4] — 2026-04-08
+
+A focused security release that finishes closing the LAN-exposure surface that v0.3.3 only partially addressed. The REST API on port 9090 is now token-gated for every non-loopback request.
+
+### Added — REST API authentication tokens
+
+- **The risk model.** v0.3.3 patched one specific leak (the MQTT broker password was being returned in `GET /api/settings/mqtt` over the LAN), but the underlying problem was untouched: the REST API binds to `0.0.0.0:9090` with **zero authentication** for any of its ~30 endpoints. Anyone on the same WiFi could `curl /api/devices/foo/command` to flip switches, drain sensor history, mint webhooks, or read every setting key. The MQTT redaction was a band-aid; this release closes the wound.
+- **Bearer tokens, scoped to the REST API.** New `api_tokens` SQLite table stores `(name, sha256-hex digest, created_at, last_used_at)` rows. Tokens are minted in plaintext, returned to the user **exactly once** at creation, and immediately hashed for storage. A stolen database cannot be used to make authenticated requests — the attacker would need to brute-force a 256-bit secret.
+- **Token format.** `trls_<43 chars of base64url-no-pad>` (32 bytes from `OsRng`, total length 48). The `trls_` prefix mirrors `ghp_` etc. — greppable in logs and trivially distinguishable from other secrets in a config file.
+- **Auth gate logic in `api.rs`.** Every request runs through `auth::check_auth` before route dispatch. CORS preflight (`OPTIONS`) is always allowed; loopback requests (127.0.0.1, ::1) are bypassed by default so the desktop app's embedded WebView and any local CLI work with zero setup; non-loopback requests **always** require a valid `Authorization: Bearer trls_…` header. There is no opt-out and no read-only fallback — if you want LAN access, you mint a token. The first-time user gets a distinct, helpful error message ("open Settings → API Tokens and click Create") instead of the generic "missing Authorization header".
+- **Strict-loopback opt-in.** New `require_auth_localhost` setting (off by default). When on, even loopback requests must present a token — defense in depth against malicious local processes on a shared machine. The desktop app authenticates over Tauri IPC, not HTTP, so it's unaffected, but local CLI tools and the embedded `localhost:9090/` web dashboard will then also need a token.
+- **Friendly HTML for browser users.** A non-loopback `GET /` (the embedded web dashboard, which is a thick client polling `/api/*` from the same origin) returns a styled HTML page explaining what happened and how to authenticate, instead of a bare JSON 401 dumped onto the user's screen. Points users at the Trellis desktop app, the per-device dashboard at `<device-ip>:8080/`, or the curl token flow.
+- **Token management.** Three new Tauri commands (`list_api_tokens`, `create_api_token`, `revoke_api_token`) and three new REST endpoints (`GET/POST/DELETE /api/tokens`) — the REST endpoints are themselves gated by the same auth check, so you can't mint a token from outside without already having one (or being on loopback). The Settings UI grows an **API Tokens** section with a name input, a one-shot "your token is" modal that surfaces the plaintext exactly once with copy + curl-snippet hints, a list of existing tokens with `created_at` / `last_used_at` columns, and a per-row revoke button. Revocation is immediate — the next request bearing that token gets 401.
+- **`auth.rs` module.** Token generation, SHA-256 hashing, Bearer header parsing, loopback detection, and the `check_auth` middleware live in their own module so the Tauri command layer and the HTTP middleware share one implementation. 6 unit tests cover token shape, hash stability, scheme parsing, and loopback detection — `cargo test --lib auth::` is the gate.
+- **New deps.** `sha2 = "0.10"`, `rand = "0.8"`. Both are tiny, audited, and battle-tested.
+- **Verified end-to-end** on the cross-subnet ESP32 at `192.168.1.108`. From a non-loopback IP: `curl http://desktop-pc:9090/api/devices` → 401 with "Authentication required" body; mint a token in Settings → curl with `Authorization: Bearer trls_…` → 200 with the device list; `last_used_at` updates on the next list refresh; revoke the token → next request → 401. From loopback: everything continues to work without setup. The friendly HTML page renders correctly for browser navigation to `http://desktop-pc:9090/`. Toggling strict-loopback mode flips the localhost behaviour as expected.
+- **Upgrading from v0.3.3.** The behavior change is loud: any consumer that was talking to the REST API from a non-loopback IP needs a token. The desktop app and the localhost dashboard continue to work with zero changes. The user guide now has a full "Authentication" subsection in §15 with the curl recipe.
+
+### Out of scope (deliberately deferred)
+
+- **Multi-user / role-based access control.** This release gates the existing single-user surface; full RBAC is the next layer up.
+- **Token expiry / TTL.** v1 is "valid until revoked" like GitHub PATs. Add later if a workflow needs it.
+- **Rate limiting / IP allowlists / failed-auth backoff.** Separate hardening pass.
+- **Cookie/session auth, OAuth, JWT.** Bearer tokens are enough for a programmatic API.
+- **Auth on the embedded device's own dashboard at `:8080/`.** That's served by the Arduino library, on the device itself, and is a separate trust boundary. Untouched here.
+
 ## [0.3.3] — 2026-04-08
 
 A four-fix maintenance release covering security, UX, and connectivity follow-ups noticed during the v0.2.0 → v0.3.2 sessions. No new top-level features; existing flows get materially safer and more usable.
