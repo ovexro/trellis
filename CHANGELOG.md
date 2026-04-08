@@ -2,6 +2,21 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.3] — 2026-04-08
+
+A desktop UX patch release that fixes the OTA progress bar's "stuck at 0%" symptom — a real bug that bit the v0.4.2 hardware test cycle and could easily have been mistaken for a delivery failure when the OTA had actually succeeded.
+
+### Fixed
+
+- **Desktop OTA UI no longer sits on "Downloading firmware to device... 0%" forever.** The previous flow relied on the device sending `ota_progress` WebSocket events back to the desktop, but the device's WS connection drops the moment OTA flashing starts — so progress=100 never arrives, the success path never fires, and the user has no way to tell whether the bytes were delivered, the device crashed, or the desktop is just not reporting anything. Two changes fix this:
+    - **`serve_firmware()` now emits a `device-event` with `event_type: "ota_delivered"`** (or `"ota_delivery_failed"`) the moment `write_all` and `flush` complete on the firmware HTTP listener. This is the point where the bytes have provably left the desktop's send buffer. The Tauri event carries the `device_id` so multiple in-flight OTAs (theoretical — the UI only allows one at a time) wouldn't cross-pollute.
+    - **`OtaManager.tsx` adds a "delivered, waiting for reboot" UI phase** that triggers on the new event, plus a reboot watcher that compares the in-flight device's `system.uptime_s` against a baseline captured at click time. When the next heartbeat arrives carrying an uptime *lower* than the baseline (which can only happen after a reboot, since uptime is monotonic per boot), the UI flips to a green "Firmware update complete. The device has rebooted." card. A 60-second soft-success timeout prevents the UI from sitting on "delivered" forever if the heartbeat path is slow to recover (the OTA bytes were delivered, after all — the device just rebooted to somewhere we can't see).
+- Validated end-to-end on real ESP32 hardware (greenhouse-controller, 192.168.1.108) by pushing `test/TestDevice/TestDevice.ino` compiled against the v0.4.2-snapshot library. The cross-subnet path was unusually slow this session (~270 B/s sustained, ~3 minutes for 1 MB) which made the in-flight phase visibly long — but that itself was a useful test: the new "delivered" overlay appeared the instant `write_all` returned, and the reboot watcher caught the uptime drop within ~5 seconds of the device reconnecting.
+
+### Library
+
+- **Library code is byte-identical to v0.4.2 except the `TRELLIS_VERSION` macro.** No microcontroller behavior changes. Same situation as v0.4.1 vs v0.4.0: the Arduino LM and PIO releases exist purely so all three distribution endpoints stay in lockstep with the desktop app version (per the release-sync rule).
+
 ## [0.4.2] — 2026-04-08
 
 A small patch release that ships two fixes both surfaced by an end-to-end OTA test on real ESP32 hardware: a clippy `never_loop` cleanup in the desktop OTA delivery code, and a previously-undiscovered library crash on the no-WiFi path that affected every example sketch in this repo.
