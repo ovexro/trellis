@@ -2,6 +2,66 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.3.3] — 2026-04-08
+
+A four-fix maintenance release covering security, UX, and connectivity follow-ups noticed during the v0.2.0 → v0.3.2 sessions. No new top-level features; existing flows get materially safer and more usable.
+
+### Fixed — saved devices auto-load on app restart
+
+- **The bug.** Cross-subnet devices added via "Add by IP" disappeared from the desktop app on every restart and had to be re-added manually. The `deviceStore` had hydration code that loaded saved devices from SQLite as offline placeholders, but it raced with `refreshDevices()`'s `set({ devices })` clobber: Tauri processes sync IPC commands roughly in queue order, so `get_saved_devices` returned first → React appended the offline placeholders → then `refreshDevices` returned and wiped the array. mDNS rediscovered same-subnet devices within 1-2 seconds via the additive event listener (masking the bug in dev), but cross-subnet devices stayed missing. Discovered during MQTT testing with a cross-subnet ESP32.
+- **The fix.** Hydration moves into the Rust backend (`Discovery::hydrate_from_db`) so every consumer benefits — desktop UI, REST API at `:9090`, mobile web dashboard, MQTT bridge. Called from `lib.rs` setup between `init_db` and `start_background`. Capabilities and system info are refetched from the device on the first health-check probe (which now runs immediately at startup instead of waiting a full 30-second interval).
+- The `health_check_loop` was restructured to "work, then sleep" instead of "sleep, then work". Cross-subnet hydrated devices flip online within ~1 second of app launch instead of 30+ seconds.
+- The React-side hydration block was simplified to just enrich existing devices with React-only metadata (nickname/tags/group_id) since the backend now owns the device list — no more ghost-device manufacturing, no more clobber race.
+- **Verified end-to-end.** Cross-subnet ESP32 (`trellis-fccfb7c8` at `192.168.1.108` from a `192.168.2.x` dev machine) reappears in `/api/devices` fully populated with `online: true` and four capabilities within 1 second of `trellis` launch.
+
+### Fixed — MQTT broker password no longer leaked over the LAN, encrypted at rest
+
+This started as "encrypt the password at rest" and grew after discovering a more urgent network leak during the implementation read-through.
+
+- **Network leak (sub-fix A).** The REST API binds to `0.0.0.0:9090` (so the mobile web dashboard can reach it from a phone), and `GET /api/settings/mqtt` was returning the **plaintext** broker password in the response body. Anyone on the same WiFi could `curl` it and walk away with credentials that typically grant control of the user's entire smart home. The Tauri `get_mqtt_config` command had the same shape but is only callable from inside the desktop app — not network-exposed but worth fixing for consistency.
+- **The redaction.** Introduced a new `MqttConfigPublic` struct that omits `password` and adds a `has_password: bool` flag. Used by both `get_mqtt_config` (Tauri) and `GET /api/settings/mqtt` (REST). The plaintext is never serialized to a user-facing endpoint.
+- **Preserve-blank save semantics.** When the form submits a config with an empty `password` field, the backend now keeps the existing stored password rather than blanking it out — the form loads with empty password (because GET redacts it), and a save round-trip would otherwise wipe it on every Save & apply. New `merge_preserving_password()` + `apply_config_from_user()` / `test_connection_from_user()` wrappers apply the merge; the internal `apply_config()` / `test_connection()` stay raw and are used by the trusted startup-load path.
+- **Explicit clear path.** New `clear_mqtt_password` Tauri command and `POST /api/mqtt/clear-password` REST endpoint for the "I really want to remove the stored password" UX. Without this, users could never clear a password (empty field = preserve). Settings UI grows a Clear button next to the password field that appears when a password is currently stored.
+- **Sensitive-key blocklist.** `GET` and `PUT` to `/api/settings/<key>` now return 403 for any key in the `SENSITIVE_SETTING_KEYS` allowlist (currently just `mqtt_config`). Stops the generic key-value getter from being used to bypass the typed endpoint's redaction.
+- **At-rest encryption (sub-fix B).** `secret_store.rs` wraps an `age` x25519 identity stored in the OS keyring (Linux Secret Service via `libsecret`) with a 0600 key file fallback at `<app_data_dir>/secret.key` for headless setups. Wire format for stored passwords is `enc:v1:<base64>` where the base64 payload is binary age ciphertext. The encryption/decryption boundary is the SQLite write/read for `mqtt_config` — wired into `set_mqtt_config` (Tauri), `PUT /api/settings/mqtt` (REST), `clear_mqtt_password`, and the startup load path in `lib.rs`.
+- **Lazy migration.** At startup, if the loaded `mqtt_config` has a plaintext password (from a pre-encryption build), the bridge gets it as-is so it keeps working, and the config is re-saved encrypted. Migration completes on the very first launch of this build with no user action.
+- **New deps.** `age 0.10`, `base64 0.22`, `keyring 3` (with `sync-secret-service` + `vendored`). `keyring` pulls in vendored openssl, adding ~30 s to a cold build but keeping the binary self-contained for the deb/rpm/AppImage.
+- **Settings UI.** Password input loads empty, placeholder switches between `(none)` and `(unchanged — type to update)` based on `has_password`, Clear button appears when a password is currently stored.
+- **Verified end-to-end.** `curl GET /api/settings/mqtt` no longer contains a `password` field; `/api/settings/mqtt_config` returns 403; planted a legacy plaintext blob in SQLite, launched trellis, the blob became `enc:v1:<base64>` automatically; second restart decrypted cleanly; PUT with empty password preserved the existing one; POST clear-password emptied it; the bridge stayed connected through all of it.
+
+### Added — TLS broker support (rustls + custom CA)
+
+Builds on the password fixes above. The previous work keeps credentials out of GET responses and SQLite plaintext; this work encrypts them in flight so brokers reachable over the public internet (or any untrusted network) are usable.
+
+- **Two new `MqttConfig` fields**: `tls_enabled: bool` (default `false` for back-compat with existing local-broker setups) and `tls_ca_cert_path: Option<String>` (None = system trust roots, Some = read PEM from this path and use **only** this CA). Both have `serde` defaults so legacy configs from pre-TLS builds parse cleanly.
+- **rumqttc 0.24's default feature is `use-rustls`**, so TLS is already linked — no Cargo.toml changes for the TLS code path. New `build_tls_transport()` helper constructs the right `Transport` variant from the `MqttConfig` and is wired into both `MqttBridge::start()` (live bridge) and `::test_connection()` (Settings UI test button).
+- **Settings UI** grows a collapsible TLS subsection: enable checkbox + Tauri-dialog file picker for the CA cert (with PEM extension filter) + helper text. Toggling TLS on auto-bumps the broker port from 1883 → 8883 if it was still on the plaintext default.
+- **`MqttConfigPublic` exposes the new fields** — they're not sensitive (the CA path is just a filesystem location, `tls_enabled` is operational state).
+- **Verified end-to-end.** Public brokers `broker.emqx.io:8883` and `broker.hivemq.com:8883` connect cleanly using system trust roots. Local Mosquitto on `:18883` with a self-signed CA + server cert pair connects when pointed at the CA path, fails with `UnknownIssuer` without it (correct behaviour), and a bogus CA path returns a clean file-not-found error (no panic). TLS config persists across `trellis` restart and the bridge auto-reconnects.
+- **Two rustls strictness gotchas worth knowing.** `test.mosquitto.org:8883` fails with `UnsupportedCertVersion` because their cert has a non-RFC-compliant version field — rustls is stricter than OpenSSL. Production brokers (the ones users actually integrate against) work fine. Self-signed certs generated with the default `openssl req -x509` don't include `basicConstraints=CA:TRUE`, so rustls rejects them as a CA with `CaUsedAsEndEntity` — users with self-signed setups need either the basic-constraint extension OR a proper CA + server cert pair.
+- **`insecure_skip_verify` was intentionally not implemented.** It's a security footgun and there's no realistic case where it makes a user safer than the CA file path. If you have a workflow that needs it, it's an additive follow-up.
+
+### Fixed — embedded web UI cache invalidates correctly across firmware updates
+
+- **The bug.** The on-device dashboard sent `Cache-Control: public, max-age=300`, meaning browsers cached on the old HTML wouldn't pull new HTML for up to 5 minutes after an OTA push. Hot-reload during library development had the same friction — every `web_ui.html` edit needed a hard-reload or a 5-minute wait.
+- **The fix.** ETag-based conditional GET tied to a content hash:
+    `"<TRELLIS_VERSION>-<sha256-prefix-of-HTML>"`
+  e.g. `"0.3.3-c443bd0afb4c2bfd"`. The version prefix is for human inspection (curl the / endpoint, see what firmware you're talking to). The content-hash suffix is the actual cache key — if the embedded HTML changes, the hash changes, the ETag changes, browsers pull the new content. **Critically, this means a release that forgets to bump `TRELLIS_VERSION` still gets correct cache invalidation as long as the HTML actually changed.** Belt and suspenders.
+- `scripts/build_web_ui_header.py` emits a new `TRELLIS_WEB_UI_HTML_HASH` constant alongside the existing PROGMEM byte array — first 16 hex chars of `sha256(html)`. 64 bits is collision-negligible for ETag purposes and keeps the header compact.
+- `TrellisWebServer::begin` now calls `_http->collectHeaders()` with `If-None-Match` before `_http->begin()`. The Arduino `WebServer` library drops unregistered request headers silently — without this, the conditional GET path never fires and there's no error to debug.
+- `Cache-Control` becomes `no-cache, must-revalidate` (browser must revalidate every load, but can reuse the cached body when the server says 304).
+- **Verified end-to-end on real ESP32**: first GET → 200 + ETag + 25668-byte body; GET with correct `If-None-Match` → 304 + empty body + ETag header still set; GET with wrong `If-None-Match` → 200 + full body. All five examples × ESP32/Pico W still compile clean (sizes match v0.3.1 baseline; ETag code adds <200 bytes). `arduino-lint --library-manager update` clean.
+
+### Fixed — `TRELLIS_VERSION` macro in sync with the published library version
+
+- **The bug.** The v0.3.2 release left `TRELLIS_VERSION` in `src/Trellis.h` on `"0.3.1"` because `reference_build.md`'s procedural recipe omitted it from the version-bump checklist (even though `feedback_release_sync.md` had it listed). The published v0.3.2 library binary reported the wrong version internally — and now that the embedded UI ETag depends on this macro, a mismatch would skip cache invalidation entirely.
+- **The fix.** Bumped the macro to `"0.3.3"` for this release. The release procedure documentation has been updated to make `src/Trellis.h` the sixth file in the version-bump list (was five). The content-hash half of the ETag is a backstop that catches HTML changes even if you forget the version bump, but it's not a substitute for keeping the macro in sync.
+
+### Notes
+
+- No new user-facing features. Five existing flows (saved-devices restore, MQTT password handling, MQTT TLS, web-UI cache, version macro) get materially safer or more usable.
+- All four follow-up tasks were verified end-to-end on real hardware: cross-subnet ESP32 at `192.168.1.108` (saved-devices fix), local Mosquitto on `127.0.0.1:18883` with a self-signed CA pair (TLS), `test/TestDevice` flashed via `/dev/ttyUSB0` (ETag round-trip), and the encrypted MQTT password migration was exercised against the live SQLite store.
+
 ## [0.3.2] — 2026-04-07
 
 ### Release infrastructure
