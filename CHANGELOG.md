@@ -2,6 +2,19 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.1] — 2026-04-08
+
+A cosmetic patch release that fixes the version string in the desktop app's About dialog and Sidebar badge — and rewires the underlying mechanism so it can't drift again.
+
+### Fixed
+
+- **Stale version strings in the desktop app UI.** The Sidebar badge button, the Sidebar's About modal, and the Settings → About panel were all hardcoded — they showed `v0.1.5` and `Trellis v0.2.0` long after the project had moved past those versions. The strings were missing from `feedback_release_sync.md`'s "six files to bump" list because nobody noticed they were React literals, so every release after 0.2.0 silently shipped the wrong number to users.
+- **Wired the React version display to `package.json` so it can't drift again.** Vite's `define` feature injects `__APP_VERSION__` at build time, sourced from `app/package.json` via `fs.readFileSync` at config load. Declaration in `app/src/vite-env.d.ts` keeps the strict `tsc -b` happy. The three call sites now use `v{__APP_VERSION__}` and `Trellis v{__APP_VERSION__}`. Future version bumps no longer need to remember to update React strings — bumping `app/package.json` is enough.
+
+### Library
+
+- **Library code is byte-identical to v0.4.0 except the `TRELLIS_VERSION` macro.** No microcontroller behavior changes. The Arduino LM and PIO releases exist purely so all three distribution endpoints stay in lockstep with the desktop app version (per the release-sync rule).
+
 ## [0.4.0] — 2026-04-08
 
 The remote-access release. The v0.3.4 token gate was the prerequisite that made it safe to expose `:9090` beyond the LAN — this release ships everything you need to actually do that, with first-class support for two transports and a token-aware web dashboard that survives the trip through a tunnel.
