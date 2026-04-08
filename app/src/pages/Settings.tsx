@@ -1343,7 +1343,7 @@ export default function Settings() {
             About
           </h2>
           <div className="text-sm text-zinc-500 space-y-1">
-            <p>Trellis v0.2.0</p>
+            <p>Trellis v{__APP_VERSION__}</p>
             <p>The easiest way to deploy and control ESP32 and Pico W devices.</p>
             <p className="pt-2">
               <a href="https://github.com/ovexro/trellis" target="_blank" rel="noopener noreferrer" className="text-trellis-400 hover:text-trellis-300">
