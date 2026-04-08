@@ -89,9 +89,13 @@ void Trellis::enableWebUI(bool enabled) {
 }
 
 void Trellis::loop() {
-  if (_webServer) {
-    _webServer->loop();
-  }
+  // If begin() failed (WiFi timeout), _webServer was never instantiated.
+  // Skip everything — there is nothing to service, no one to broadcast to,
+  // and dereferencing the null _webServer in the broadcast block below would
+  // panic with LoadProhibited.
+  if (!_webServer) return;
+
+  _webServer->loop();
   _telemetry.update();
 
   unsigned long now = millis();
@@ -122,9 +126,7 @@ void Trellis::loop() {
   // Broadcast heartbeat with system telemetry
   if (now - _lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
     _lastHeartbeat = now;
-    if (_webServer) {
-      _webServer->broadcastHeartbeat(_telemetry.getData());
-    }
+    _webServer->broadcastHeartbeat(_telemetry.getData());
   }
 }
 
