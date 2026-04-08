@@ -14,6 +14,8 @@ type MqttConfig = {
   ha_discovery_prefix: string;
   ha_discovery_enabled: boolean;
   client_id: string;
+  tls_enabled: boolean;
+  tls_ca_cert_path: string | null;
 };
 
 // Network-safe view returned by get_mqtt_config — the password field is
@@ -40,6 +42,8 @@ const DEFAULT_MQTT_CONFIG: MqttConfig = {
   ha_discovery_prefix: "homeassistant",
   ha_discovery_enabled: true,
   client_id: "trellis-bridge",
+  tls_enabled: false,
+  tls_ca_cert_path: null,
 };
 
 export default function Settings() {
@@ -647,6 +651,87 @@ export default function Settings() {
                   placeholder="homeassistant"
                 />
               </div>
+            </div>
+
+            {/* TLS subsection. Collapsed unless enabled. Toggling enables
+                TLS and (if the port is still the plaintext default) auto-
+                suggests 8883. */}
+            <div className="border border-zinc-800 rounded-lg p-3 space-y-2">
+              <label className="flex items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={mqttConfig.tls_enabled}
+                  onChange={(e) => {
+                    const next = { ...mqttConfig, tls_enabled: e.target.checked };
+                    // UI nicety: when the user enables TLS and the port is
+                    // still on the plaintext default (1883), bump it to the
+                    // standard MQTTS port (8883). The user can override
+                    // afterwards. We don't auto-revert when disabling TLS —
+                    // they may have a non-standard port intentionally.
+                    if (e.target.checked && mqttConfig.broker_port === 1883) {
+                      next.broker_port = 8883;
+                    }
+                    setMqttConfig(next);
+                  }}
+                  className="rounded border-zinc-700 bg-zinc-800"
+                />
+                Use TLS (mqtts://)
+              </label>
+              {mqttConfig.tls_enabled && (
+                <div>
+                  <label className="text-xs text-zinc-500 block mb-1">
+                    CA certificate (PEM, optional)
+                  </label>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      value={mqttConfig.tls_ca_cert_path || ""}
+                      onChange={(e) => setMqttConfig({
+                        ...mqttConfig,
+                        tls_ca_cert_path: e.target.value || null,
+                      })}
+                      className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500 font-mono"
+                      placeholder="(blank — use system trust roots)"
+                    />
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const path = await openDialog({
+                            multiple: false,
+                            filters: [
+                              { name: "PEM certificate", extensions: ["pem", "crt", "cer"] },
+                              { name: "All files", extensions: ["*"] },
+                            ],
+                          });
+                          if (typeof path === "string") {
+                            setMqttConfig({ ...mqttConfig, tls_ca_cert_path: path });
+                          }
+                        } catch (err) {
+                          console.error("CA file picker failed:", err);
+                        }
+                      }}
+                      className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
+                    >
+                      Browse…
+                    </button>
+                    {mqttConfig.tls_ca_cert_path && (
+                      <button
+                        type="button"
+                        onClick={() => setMqttConfig({ ...mqttConfig, tls_ca_cert_path: null })}
+                        className="px-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-lg text-xs transition-colors"
+                        title="Clear CA cert path"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-zinc-600 mt-1">
+                    Leave blank for public brokers (uses your OS trust store, same as your browser).
+                    For self-signed brokers, point this at the broker's certificate file or its CA.
+                  </p>
+                </div>
+              )}
             </div>
 
             <label className="flex items-center gap-2 text-sm text-zinc-300">

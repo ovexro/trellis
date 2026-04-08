@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use rumqttc::{Client, Connection as MqttConnection, Event, LastWill, MqttOptions, Packet, QoS};
+use rumqttc::{Client, Connection as MqttConnection, Event, LastWill, MqttOptions, Packet, QoS, Transport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,12 +53,15 @@ const PAYLOAD_ONLINE: &str = "online";
 const PAYLOAD_OFFLINE: &str = "offline";
 
 /// Persisted MQTT bridge configuration. Stored as JSON in the existing
-/// `settings` table under key `mqtt_config`. None of these fields are
-/// encrypted at rest — keep that in mind for the password.
+/// `settings` table under key `mqtt_config`. The password field is encrypted
+/// at rest with `enc:v1:` prefix (see secret_store.rs); all other fields are
+/// plaintext for inspectability.
 ///
 /// Every field has a serde default so partial JSON payloads (e.g. from the
 /// REST API or older saved configs missing newer fields) deserialize
-/// cleanly into the defaults.
+/// cleanly into the defaults. This is what makes adding new fields like
+/// `tls_enabled` safe — old saved configs from pre-TLS builds parse fine
+/// with `tls_enabled = false`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MqttConfig {
     #[serde(default)]
@@ -79,6 +82,21 @@ pub struct MqttConfig {
     pub ha_discovery_enabled: bool,
     #[serde(default = "default_client_id")]
     pub client_id: String,
+    /// When true, the bridge connects to the broker over TLS (`mqtts://`).
+    /// Defaults to plaintext (`mqtt://`) for backwards compatibility with
+    /// existing local-broker setups. Most public brokers and any broker
+    /// reachable over an untrusted network should have this on.
+    #[serde(default)]
+    pub tls_enabled: bool,
+    /// Optional path to a PEM-encoded CA certificate. When `Some`, rustls
+    /// uses ONLY this CA to verify the broker. When `None`, rustls uses the
+    /// system trust roots (the same trust store the OS browser uses), which
+    /// is the right choice for any broker with a publicly-issued cert. For
+    /// self-signed brokers, point this at either the broker's own cert or
+    /// the CA that signed it — both work because rustls just builds a chain
+    /// to a trusted anchor.
+    #[serde(default)]
+    pub tls_ca_cert_path: Option<String>,
 }
 
 fn default_broker_host() -> String {
@@ -112,6 +130,8 @@ impl Default for MqttConfig {
             ha_discovery_prefix: default_ha_prefix(),
             ha_discovery_enabled: true,
             client_id: default_client_id(),
+            tls_enabled: false,
+            tls_ca_cert_path: None,
         }
     }
 }
@@ -123,6 +143,10 @@ impl Default for MqttConfig {
 /// anyone on the same network. The `has_password` flag tells the UI whether
 /// a password is currently stored, so it can show "(unchanged — type to
 /// update)" instead of "(none)".
+///
+/// TLS settings are returned as-is — neither tls_enabled nor the CA file
+/// path are sensitive (the CA path is just a filesystem location, and
+/// tls_enabled is operational state visible to anyone watching the broker).
 #[derive(Debug, Clone, Serialize)]
 pub struct MqttConfigPublic {
     pub enabled: bool,
@@ -134,6 +158,8 @@ pub struct MqttConfigPublic {
     pub ha_discovery_enabled: bool,
     pub client_id: String,
     pub has_password: bool,
+    pub tls_enabled: bool,
+    pub tls_ca_cert_path: Option<String>,
 }
 
 impl From<&MqttConfig> for MqttConfigPublic {
@@ -148,6 +174,8 @@ impl From<&MqttConfig> for MqttConfigPublic {
             ha_discovery_enabled: c.ha_discovery_enabled,
             client_id: c.client_id.clone(),
             has_password: !c.password.is_empty(),
+            tls_enabled: c.tls_enabled,
+            tls_ca_cert_path: c.tls_ca_cert_path.clone(),
         }
     }
 }
@@ -353,6 +381,9 @@ impl MqttBridge {
         opts.set_keep_alive(Duration::from_secs(30));
         if !cfg.username.is_empty() {
             opts.set_credentials(&cfg.username, &cfg.password);
+        }
+        if cfg.tls_enabled {
+            opts.set_transport(build_tls_transport(&cfg)?);
         }
 
         let availability_topic = format!("{}/{}", cfg.base_topic, BRIDGE_AVAILABILITY_SUFFIX);
@@ -574,6 +605,9 @@ impl MqttBridge {
         if !cfg.username.is_empty() {
             opts.set_credentials(&cfg.username, &cfg.password);
         }
+        if cfg.tls_enabled {
+            opts.set_transport(build_tls_transport(cfg)?);
+        }
 
         let (client, mut connection) = Client::new(opts, 10);
 
@@ -590,6 +624,41 @@ impl MqttBridge {
             }
         }
         Err("No ConnAck received".to_string())
+    }
+}
+
+/// Build a rumqttc `Transport::Tls(...)` from an MqttConfig with TLS enabled.
+///
+/// - If `tls_ca_cert_path` is None, uses the system trust roots
+///   (rustls-native-certs reads /etc/ssl/certs and friends). This is the
+///   right choice for any broker with a publicly-issued cert.
+/// - If `tls_ca_cert_path` is Some, reads the file as PEM and uses ONLY
+///   that CA to verify the broker. Works for self-signed brokers (point
+///   at the broker's own cert or its CA) and private PKI setups.
+///
+/// Returns Err if `tls_enabled` is true but the CA file path is set and
+/// the file can't be read or parsed.
+fn build_tls_transport(cfg: &MqttConfig) -> Result<Transport, String> {
+    match &cfg.tls_ca_cert_path {
+        None => {
+            // System trust roots — what test.mosquitto.org and any public
+            // broker need. rumqttc's default config calls
+            // `load_native_certs()` internally.
+            Ok(Transport::tls_with_default_config())
+        }
+        Some(path) => {
+            let ca_pem = std::fs::read(path).map_err(|e| {
+                format!("Failed to read TLS CA cert at {}: {}", path, e)
+            })?;
+            // Empty file is almost certainly user error — fail loudly
+            // rather than letting rustls produce a confusing parse error.
+            if ca_pem.is_empty() {
+                return Err(format!("TLS CA cert file is empty: {}", path));
+            }
+            // Transport::tls(ca, client_auth=None, alpn=None) builds a
+            // TlsConfiguration::Simple that rustls will parse as PEM.
+            Ok(Transport::tls(ca_pem, None, None))
+        }
     }
 }
 
