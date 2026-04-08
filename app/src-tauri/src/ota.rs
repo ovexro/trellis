@@ -43,37 +43,33 @@ pub fn serve_firmware(firmware_path: &str) -> Result<(String, Arc<Mutex<bool>>),
             .ok();
 
         // Serve a single request then stop
-        for stream in listener.incoming() {
-            if *stop_clone.lock().unwrap() {
-                break;
-            }
+        if let Some(stream) = listener.incoming().next() {
+            if !*stop_clone.lock().unwrap() {
+                match stream {
+                    Ok(mut stream) => {
+                        // Read the request (we don't care about the contents)
+                        let mut buf = [0u8; 1024];
+                        let _ = stream.read(&mut buf);
 
-            match stream {
-                Ok(mut stream) => {
-                    // Read the request (we don't care about the contents)
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf);
+                        // Send HTTP response with firmware
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            firmware_size
+                        );
 
-                    // Send HTTP response with firmware
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        firmware_size
-                    );
+                        if stream.write_all(header.as_bytes()).is_ok() {
+                            let _ = stream.write_all(&firmware_data);
+                            let _ = stream.flush();
+                        }
 
-                    if stream.write_all(header.as_bytes()).is_ok() {
-                        let _ = stream.write_all(&firmware_data);
-                        let _ = stream.flush();
+                        log::info!("[OTA] Firmware served to {:?}", stream.peer_addr());
+
+                        // One-shot: stop after serving
+                        *stop_clone.lock().unwrap() = true;
                     }
-
-                    log::info!("[OTA] Firmware served to {:?}", stream.peer_addr());
-
-                    // One-shot: stop after serving
-                    *stop_clone.lock().unwrap() = true;
-                    break;
-                }
-                Err(e) => {
-                    log::warn!("[OTA] Accept error: {}", e);
-                    break;
+                    Err(e) => {
+                        log::warn!("[OTA] Accept error: {}", e);
+                    }
                 }
             }
         }
