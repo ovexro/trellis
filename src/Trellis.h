@@ -28,7 +28,7 @@
 
 #define TRELLIS_MAX_CAPABILITIES 16
 #define TRELLIS_DEFAULT_PORT 8080
-#define TRELLIS_VERSION "0.4.1"
+#define TRELLIS_VERSION "0.4.2"
 
 class Trellis {
 public:
