@@ -1,6 +1,6 @@
 [package]
 name = "trellis"
-version = "0.3.3"
+version = "0.3.4"
 description = "Desktop control center for ESP32 and Pico W devices"
 authors = ["Joshua-Ovidiu Drobota <nubiraorg@gmail.com>"]
 license = "MIT"
@@ -40,3 +40,11 @@ rumqttc = "0.24"
 age = "0.10"
 base64 = "0.22"
 keyring = { version = "3", features = ["sync-secret-service", "vendored"] }
+# SHA-256 for hashing API tokens before storage. Tokens are minted in
+# plaintext, returned to the user exactly once, then immediately hashed —
+# the SQLite row only ever holds the digest, so a leaked database can't be
+# used to authenticate against the REST API.
+sha2 = "0.10"
+# Cryptographically secure RNG for API token byte generation. We use 32
+# bytes from the OS RNG → base64url-encoded → prefixed `trls_`.
+rand = "0.8"

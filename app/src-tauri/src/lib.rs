@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod commands;
 mod connection;
 mod db;
@@ -115,6 +116,9 @@ pub fn run() {
             clear_mqtt_password,
             get_mqtt_status,
             test_mqtt_connection,
+            list_api_tokens,
+            create_api_token,
+            revoke_api_token,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

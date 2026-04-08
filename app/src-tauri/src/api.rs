@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 use serde_json::Value;
 
+use crate::auth::{self, AuthResult, REQUIRE_AUTH_LOCALHOST_KEY};
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::discovery::Discovery;
@@ -86,6 +87,9 @@ struct HttpRequest {
     path: String,
     query: HashMap<String, String>,
     body: String,
+    /// Raw value of the `Authorization:` header, if present. The auth
+    /// middleware extracts the Bearer token from this — see auth.rs.
+    authorization: Option<String>,
 }
 
 fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
@@ -112,8 +116,12 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         (full_path, HashMap::new())
     };
 
-    // Read headers
+    // Read headers. We capture two headers explicitly: Content-Length (so
+    // we know how many body bytes to read) and Authorization (so the auth
+    // middleware can validate the Bearer token). All other headers are
+    // dropped — Trellis doesn't use any of them.
     let mut content_length: usize = 0;
+    let mut authorization: Option<String> = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line).map_err(|e| e.to_string())?;
@@ -124,6 +132,16 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         let lower = trimmed.to_ascii_lowercase();
         if let Some(val) = lower.strip_prefix("content-length:") {
             content_length = val.trim().parse().unwrap_or(0);
+        } else if lower.starts_with("authorization:") {
+            // Preserve the original-case header value (the token body is
+            // case-sensitive base64url) — only the header *name* match is
+            // case-insensitive per RFC 7230.
+            if let Some(idx) = trimmed.find(':') {
+                let val = trimmed[idx + 1..].trim().to_string();
+                if !val.is_empty() {
+                    authorization = Some(val);
+                }
+            }
         }
     }
 
@@ -135,7 +153,13 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         body = String::from_utf8_lossy(&buf).to_string();
     }
 
-    Ok(HttpRequest { method, path, query, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        query,
+        body,
+        authorization,
+    })
 }
 
 fn parse_query_string(qs: &str) -> HashMap<String, String> {
@@ -163,7 +187,7 @@ fn send_json(stream: &mut TcpStream, status: u16, body: &str) {
         _ => "OK",
     };
     let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n{}",
         status, status_text, body.len(), body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -189,7 +213,7 @@ fn send_csv(stream: &mut TcpStream, body: &str) {
 }
 
 fn send_cors_preflight(stream: &mut TcpStream) {
-    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
@@ -211,12 +235,75 @@ fn json_error(status: u16, msg: &str) -> (u16, String) {
 fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), String> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
 
+    // Capture peer addr BEFORE consuming the stream for parsing — this is
+    // the loopback-vs-remote signal the auth gate needs.
+    let peer_addr: SocketAddr = stream
+        .peer_addr()
+        .map_err(|e| format!("peer_addr unavailable: {}", e))?;
+
     let req = parse_request(&stream)?;
 
-    // CORS preflight
+    // CORS preflight: always allow. Browsers send these without credentials
+    // before any cross-origin call; the actual request that follows still
+    // gets gated by the auth check below.
     if req.method == "OPTIONS" {
         send_cors_preflight(&mut stream);
         return Ok(());
+    }
+
+    // Auth gate. Runs on every non-OPTIONS request. Reads the
+    // `require_auth_localhost` setting once per request — cheap (single
+    // SQLite SELECT against the keyed `settings` row) and avoids the
+    // alternative of caching it in process memory and having to invalidate
+    // when the user changes it via the Settings UI.
+    let require_strict = ctx
+        .db
+        .get_setting(REQUIRE_AUTH_LOCALHOST_KEY)
+        .ok()
+        .flatten()
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+
+    match auth::check_auth(
+        &ctx.db,
+        &peer_addr,
+        req.authorization.as_deref(),
+        require_strict,
+    ) {
+        AuthResult::Allow(token_id) => {
+            // Bump last_used_at on the matched token. Best-effort — a
+            // failure here just leaves the timestamp stale, the request
+            // still proceeds.
+            if let Some(id) = token_id {
+                if let Err(e) = ctx.db.touch_api_token(id) {
+                    log::warn!("[Auth] Failed to touch token {}: {}", id, e);
+                }
+            }
+        }
+        AuthResult::Deny(status, msg) => {
+            // Log every auth failure at WARN. Useful for spotting LAN
+            // probing attempts and for debugging legitimate clients that
+            // forgot to include the header. Includes peer addr + status +
+            // method + path so a single grep tells the whole story.
+            log::warn!(
+                "[Auth] Denied {} {} from {} -> {} ({})",
+                req.method,
+                req.path,
+                peer_addr,
+                status,
+                msg
+            );
+            // Special case: a non-loopback GET / from a browser should land
+            // on a friendly HTML page explaining how to authenticate, not a
+            // bare JSON 401. Everything else gets the standard JSON error.
+            if req.method == "GET" && req.path == "/" && !auth::is_loopback(&peer_addr) {
+                send_html_status(&mut stream, status, &auth_required_html());
+            } else {
+                let body = serde_json::json!({"error": msg}).to_string();
+                send_json(&mut stream, status, &body);
+            }
+            return Ok(());
+        }
     }
 
     let (status, body) = route(&req, ctx);
@@ -232,6 +319,100 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
     }
 
     Ok(())
+}
+
+/// Friendly HTML response for non-loopback `GET /` when the caller has no
+/// valid token. The dashboard at `:9090/` is a thick client that polls
+/// `/api/*` from the same origin — there's no in-page login flow, so the
+/// "right" answer for browser users is "use the desktop app, the per-device
+/// dashboard at <device>:8080, or mint a token and curl from your
+/// scripting environment". This page just makes that explicit instead of
+/// dumping a raw JSON 401 onto the user's screen.
+fn auth_required_html() -> String {
+    r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trellis — authentication required</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 2rem 1rem;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #0a0a0b; color: #e4e4e7;
+    display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
+  }
+  main {
+    max-width: 560px; width: 100%;
+    background: #18181b; border: 1px solid #27272a; border-radius: 12px;
+    padding: 1.75rem 1.5rem;
+  }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; color: #fafafa; }
+  p { margin: .5rem 0; color: #a1a1aa; }
+  ol { padding-left: 1.25rem; color: #d4d4d8; }
+  li { margin: .35rem 0; }
+  code {
+    background: #27272a; padding: .15em .4em; border-radius: 4px;
+    font: 13px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #fde68a;
+  }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #fbbf24; background: rgba(251,191,36,.1); padding: .2rem .55rem;
+    border: 1px solid rgba(251,191,36,.25); border-radius: 999px;
+    margin-bottom: .9rem;
+  }
+  hr { border: 0; border-top: 1px solid #27272a; margin: 1.25rem 0 .9rem; }
+  small { color: #71717a; }
+</style>
+</head>
+<body>
+  <main>
+    <div class="badge">401 — Authentication required</div>
+    <h1>This Trellis dashboard requires a token</h1>
+    <p>Trellis v0.3.4 closed an LAN-exposure issue: the REST API on
+      port 9090 no longer serves requests from non-loopback addresses
+      without an API token.</p>
+    <hr>
+    <p><strong>How to get access:</strong></p>
+    <ol>
+      <li>Open the Trellis desktop app on the machine running the server.</li>
+      <li>Go to <strong>Settings → API Tokens</strong> and click <strong>Create token</strong>.</li>
+      <li>Copy the token (it's only shown once).</li>
+      <li>Use it from your scripts:
+        <br><code>curl -H "Authorization: Bearer trls_..." http://this-host:9090/api/devices</code></li>
+    </ol>
+    <p>To control devices from your phone without a token, open the
+      device's own dashboard at <code>http://&lt;device-ip&gt;:8080/</code> instead
+      — every Trellis device serves a self-contained control panel.</p>
+    <hr>
+    <small>If you're seeing this on the same machine that runs Trellis,
+      you've enabled the <em>require auth on localhost</em> setting.
+      Disable it in Settings or include a token in your request.</small>
+  </main>
+</body>
+</html>
+"#
+    .to_string()
+}
+
+fn send_html_status(stream: &mut TcpStream, status: u16, body: &str) {
+    let status_text = match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "OK",
+    };
+    let response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status, status_text, body.len(), body
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
@@ -557,6 +738,28 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
             }
         }
 
+        // ─── API tokens ──────────────────────────────────────────────
+        // The auth gate has already cleared the request before reaching
+        // this point, so anyone who can hit these endpoints is already
+        // authorized to mint/revoke tokens.
+        ("GET", "/api/tokens") => match ctx.db.list_api_tokens() {
+            Ok(tokens) => json_ok(&tokens),
+            Err(e) => json_error(500, &e),
+        },
+
+        ("POST", "/api/tokens") => handle_create_token(ctx, &req.body),
+
+        ("DELETE", p) if p.starts_with("/api/tokens/") => {
+            let id: i64 = match p["/api/tokens/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid token ID"),
+            };
+            match ctx.db.delete_api_token(id) {
+                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
     }
@@ -723,6 +926,33 @@ fn handle_set_setting(ctx: &ApiContext, key: &str, body: &str) -> (u16, String) 
 
     match ctx.db.set_setting(key, value) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = v["name"].as_str().unwrap_or("").trim();
+    if name.is_empty() {
+        return json_error(400, "Token name is required");
+    }
+    let (plaintext, hash) = auth::generate_token();
+    match ctx.db.create_api_token(name, &hash) {
+        Ok(id) => {
+            // The plaintext is returned ONCE here and never persisted.
+            // Once this response is on the wire, the only proof of the
+            // token is the SHA-256 digest in `api_tokens.token_hash`.
+            let resp = serde_json::json!({
+                "id": id,
+                "name": name,
+                "token": plaintext,
+                "warning": "Store this token now — it will not be shown again."
+            });
+            (201, resp.to_string())
+        }
         Err(e) => json_error(500, &e),
     }
 }

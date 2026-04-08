@@ -5610,7 +5610,7 @@ dependencies = [
 
 [[package]]
 name = "trellis"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "age",
  "base64 0.22.1",
@@ -5620,11 +5620,13 @@ dependencies = [
  "keyring",
  "log",
  "mdns-sd",
+ "rand 0.8.5",
  "rumqttc",
  "rusqlite",
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

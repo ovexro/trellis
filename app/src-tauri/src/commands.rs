@@ -1,11 +1,13 @@
+use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
 use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, State};
@@ -523,6 +525,44 @@ pub fn test_mqtt_connection(
     // Same preserve-blank rule as set_mqtt_config: if the user didn't retype
     // the password, exercise the test against the stored one.
     state.mqtt_bridge.test_connection_from_user(config)
+}
+
+// ─── API tokens ─────────────────────────────────────────────────────────────
+
+/// Response shape for `create_api_token`. The plaintext `token` field is
+/// the only place in the codebase the value is exposed — the UI must
+/// surface it immediately and the user must copy it before dismissing the
+/// modal. After this returns, only the SHA-256 digest survives in SQLite.
+#[derive(Debug, Serialize)]
+pub struct CreatedApiToken {
+    pub id: i64,
+    pub name: String,
+    pub token: String,
+}
+
+#[tauri::command]
+pub fn list_api_tokens(db: State<'_, Database>) -> Result<Vec<ApiToken>, String> {
+    db.list_api_tokens()
+}
+
+#[tauri::command]
+pub fn create_api_token(db: State<'_, Database>, name: String) -> Result<CreatedApiToken, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Token name is required".to_string());
+    }
+    let (plaintext, hash) = auth::generate_token();
+    let id = db.create_api_token(trimmed, &hash)?;
+    Ok(CreatedApiToken {
+        id,
+        name: trimmed.to_string(),
+        token: plaintext,
+    })
+}
+
+#[tauri::command]
+pub fn revoke_api_token(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_api_token(id)
 }
 
 #[tauri::command]

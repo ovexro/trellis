@@ -358,6 +358,35 @@ Trellis runs an HTTP API on port **9090** alongside the desktop app. Use it for 
 
 **Base URL**: `http://localhost:9090/api`
 
+### Authentication (v0.3.4+)
+
+The REST API binds to `0.0.0.0:9090` so other machines on your LAN can reach it, but every non-loopback request requires a Bearer token. Loopback (`127.0.0.1`, `::1`) is allowed without a token by default so the desktop app and any local scripts keep working with no setup.
+
+**Mint a token:**
+
+1. Open the Trellis desktop app
+2. Go to **Settings → API Tokens**
+3. Type a memorable name (e.g. `homeassistant`, `phone`, `ci`) and click **Create token**
+4. Copy the token from the dialog — it's shown **exactly once** and cannot be recovered afterwards (only the SHA-256 digest is stored)
+
+**Use it in your requests:**
+
+```bash
+TOKEN="trls_..."   # paste the token you just copied
+
+# From the same machine (loopback) — token is optional
+curl http://localhost:9090/api/devices
+
+# From another machine on your LAN — token is required
+curl -H "Authorization: Bearer $TOKEN" http://desktop-pc:9090/api/devices
+```
+
+**Revoke a token** at any time from **Settings → API Tokens** — click the trash icon next to the token name. Revocation is immediate; the next request bearing that token gets a 401.
+
+**Strict-loopback mode** (defense in depth): if you're on a multi-user machine and want to require a token even for `127.0.0.1` requests, tick **"Require token even for localhost requests"** in the API Tokens section. The desktop app's embedded WebView authenticates over Tauri IPC, not HTTP, so it's unaffected — but local CLI tools and the embedded web dashboard at `localhost:9090/` will then also need a token.
+
+> **Upgrading from v0.3.3 or earlier:** the old behavior was "wide open over the LAN" — anything on your WiFi could curl `/api/devices/foo/command` and flip switches. v0.3.4 closes that. After upgrading, mint a token before any non-loopback automation breaks. The desktop app and the localhost web dashboard continue to work with zero changes.
+
 ### Key endpoints
 
 ```bash
@@ -383,6 +412,15 @@ curl http://localhost:9090/api/schedules
 
 # List groups
 curl http://localhost:9090/api/groups
+
+# Token management (for scripting — same operations as the Settings UI)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:9090/api/tokens
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-script"}' \
+  http://localhost:9090/api/tokens
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://localhost:9090/api/tokens/3
 ```
 
 Full CRUD is available for devices, groups, schedules, rules, webhooks, alerts, templates, firmware history, and settings. CORS headers are included for browser access.
@@ -392,6 +430,8 @@ Full CRUD is available for devices, groups, schedules, rules, webhooks, alerts, 
 ## 16. Web Dashboard
 
 A responsive web UI is served at `http://localhost:9090` — open it on your phone, tablet, or any browser on your network.
+
+> **Token-gated since v0.3.4.** The dashboard itself is a thick client that polls `/api/*` from the same origin, and there's no in-page login flow, so accessing it from a non-loopback IP returns a friendly "authentication required" page instead of the dashboard. Open it from `localhost:9090` on the machine running Trellis, or use the per-device dashboard at `http://<device-ip>:8080/` which is hosted on the device itself and unaffected by this change.
 
 Features:
 - Device cards with live status

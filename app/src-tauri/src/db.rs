@@ -667,6 +667,95 @@ impl Database {
             .map_err(|e| e.to_string())?;
         Ok(path)
     }
+
+    // ─── API tokens ──────────────────────────────────────────────────────
+
+    /// Insert a new token row. The caller is responsible for generating the
+    /// plaintext token and computing its SHA-256 hex digest — this method
+    /// only stores the digest. Returns the new row id so the caller can
+    /// echo it back to the UI alongside the plaintext.
+    pub fn create_api_token(&self, name: &str, token_hash: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO api_tokens (name, token_hash) VALUES (?1, ?2)",
+            rusqlite::params![name, token_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Return all tokens for the Settings UI listing — name + timestamps,
+    /// no hash field. The hash is never exposed via the UI; it's only used
+    /// internally by `find_api_token_by_hash` for auth checks.
+    pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id, name, created_at, last_used_at FROM api_tokens ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(ApiToken {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    last_used_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Look up a token by its SHA-256 hex digest. Returns the row id if
+    /// found — that's all callers need; the digest itself is what matched.
+    /// `None` means "no such token", which is the auth-failure path.
+    pub fn find_api_token_by_hash(&self, token_hash: &str) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT id FROM api_tokens WHERE token_hash = ?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map(rusqlite::params![token_hash], |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(Ok(id)) => Ok(Some(id)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Bump the `last_used_at` column. Called from the auth path on every
+    /// successful authenticated request — best-effort, errors are logged
+    /// but not surfaced to the user (a stale last-used timestamp is not a
+    /// reason to fail their request).
+    pub fn touch_api_token(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE api_tokens SET last_used_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Delete a token by row id. After this returns Ok, any subsequent
+    /// request bearing the matching token gets 401 — there's no soft-delete
+    /// or grace period, revocation is immediate.
+    pub fn delete_api_token(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM api_tokens WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Return the count of tokens. The auth middleware uses this as a fast
+    /// pre-check: when zero tokens exist, every non-loopback request gets a
+    /// distinct error message ("mint a token first") instead of the generic
+    /// "invalid token" 401, which is more useful for first-time users.
+    pub fn count_api_tokens(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |row| row.get(0))
+            .map_err(|e| e.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -729,6 +818,18 @@ pub struct LogEntry {
     pub severity: String,
     pub message: String,
     pub timestamp: String,
+}
+
+/// Public-facing view of an API token row. The plaintext token is **never**
+/// stored or returned after creation — only its SHA-256 digest lives in
+/// SQLite. List/get endpoints return this struct so the UI can show name,
+/// creation, and last-used timestamps without exposing anything sensitive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
 }
 
 pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -851,12 +952,26 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             FOREIGN KEY (device_id) REFERENCES devices(id)
         );
 
+        -- API tokens for the REST API on :9090. The plaintext token is
+        -- shown to the user exactly once at creation and never persisted —
+        -- only the SHA-256 hex digest lives here. The hash column is the
+        -- lookup key for auth checks (UNIQUE INDEX makes it O(log n)).
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_metrics_device_time
             ON metrics(device_id, metric_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_device_time
             ON device_logs(device_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_firmware_device
             ON firmware_history(device_id, uploaded_at);
+        CREATE INDEX IF NOT EXISTS idx_api_tokens_hash
+            ON api_tokens(token_hash);
         ",
     )?;
 

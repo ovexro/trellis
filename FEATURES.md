@@ -158,6 +158,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Settings read/write endpoints
 - [x] CORS support for cross-origin access
 - [x] CSV metrics export endpoint
+- [x] **Bearer token authentication (v0.3.4)** — every non-loopback request must include `Authorization: Bearer trls_…`. Tokens minted in `Settings → API Tokens`, stored as SHA-256 digests, surfaced in plaintext exactly once at creation. Loopback bypass on by default so the desktop app and local CLI work with zero setup; opt-in `require_auth_localhost` setting for defense in depth on shared machines. Friendly HTML 401 page for browser users instead of bare JSON. New `/api/tokens` CRUD endpoints + `auth.rs` module with 6 unit tests covering token shape, hash stability, scheme parsing, and loopback detection. Closes the LAN-exposure surface that v0.3.3 only partially addressed.
 
 ### Web UI Dashboard
 - [x] Responsive web dashboard (phone + desktop) at localhost:9090
