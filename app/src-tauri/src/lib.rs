@@ -119,6 +119,7 @@ pub fn run() {
             list_api_tokens,
             create_api_token,
             revoke_api_token,
+            probe_remote_url,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

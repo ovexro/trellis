@@ -10,6 +10,7 @@ use crate::serial::{SerialManager, SerialPortInfo};
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 pub struct AppState {
@@ -563,6 +564,132 @@ pub fn create_api_token(db: State<'_, Database>, name: String) -> Result<Created
 #[tauri::command]
 pub fn revoke_api_token(db: State<'_, Database>, id: i64) -> Result<(), String> {
     db.delete_api_token(id)
+}
+
+// ─── Remote access reachability probe ───────────────────────────────────────
+
+/// Result of a single round-trip from the desktop app to a user-supplied
+/// public URL (e.g. a Cloudflare Tunnel hostname or a Tailscale Funnel
+/// `*.ts.net` URL). Hits `<url>/api/devices` with the supplied token and
+/// reports back what happened.
+///
+/// `category` is a fixed-set string the Settings UI uses to color/style the
+/// result without parsing free-form messages: `success`, `auth_failed`,
+/// `not_trellis`, `tunnel_down`, `unexpected`, `network_error`, `timeout`.
+#[derive(Debug, Serialize)]
+pub struct RemoteProbeResult {
+    pub ok: bool,
+    pub status: u16,
+    pub latency_ms: u64,
+    pub category: String,
+    pub message: String,
+}
+
+/// Probe a public URL for remote-access reachability. Used by the Remote
+/// Access Settings panel's "Test reachability" button so the user can
+/// verify their tunnel + token combo end-to-end without having to copy
+/// curl commands. The probe runs entirely from the desktop app's process
+/// — it does NOT bounce through the local :9090 server, because the whole
+/// point is to verify the path through the *external* network back to
+/// :9090.
+///
+/// Spawned on a blocking task because ureq is sync; the 8-second timeout
+/// keeps the UI responsive even on dead URLs.
+#[tauri::command]
+pub async fn probe_remote_url(url: String, token: String) -> Result<RemoteProbeResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let trimmed = url.trim().trim_end_matches('/').to_string();
+        if trimmed.is_empty() {
+            return Err("URL is required.".to_string());
+        }
+        if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+            return Err("URL must start with http:// or https://.".to_string());
+        }
+        let token_trimmed = token.trim();
+        if token_trimmed.is_empty() {
+            return Err(
+                "Token is required to test reachability — mint one in API Tokens above first."
+                    .to_string(),
+            );
+        }
+        if !token_trimmed.starts_with("trls_") {
+            return Err(
+                "Token must start with `trls_`. Did you paste the wrong value?".to_string(),
+            );
+        }
+        let probe_url = format!("{}/api/devices", trimmed);
+        let started = Instant::now();
+        let result = ureq::get(&probe_url)
+            .timeout(Duration::from_secs(8))
+            .set("Authorization", &format!("Bearer {}", token_trimmed))
+            .call();
+        let latency_ms = started.elapsed().as_millis() as u64;
+        Ok(match result {
+            Ok(_resp) => RemoteProbeResult {
+                ok: true,
+                status: 200,
+                latency_ms,
+                category: "success".to_string(),
+                message: "Reachable. Authentication accepted end-to-end.".to_string(),
+            },
+            Err(ureq::Error::Status(status, _)) => {
+                let (category, message) = match status {
+                    401 => (
+                        "auth_failed",
+                        "Reached the destination, but the token was rejected. Mint a new token in API Tokens above and try again.",
+                    ),
+                    403 => (
+                        "auth_failed",
+                        "Reached the destination, but access was forbidden. Verify the URL points at your Trellis instance.",
+                    ),
+                    404 => (
+                        "not_trellis",
+                        "Reached an HTTP server, but `/api/devices` returned 404. Make sure the URL points at Trellis on port 9090.",
+                    ),
+                    502..=504 => (
+                        "tunnel_down",
+                        "Tunnel responded but could not reach Trellis. Make sure the desktop app is running and the tunnel forwards to localhost:9090.",
+                    ),
+                    _ => ("unexpected", "Unexpected HTTP status from the destination."),
+                };
+                RemoteProbeResult {
+                    ok: false,
+                    status,
+                    latency_ms,
+                    category: category.to_string(),
+                    message: format!("HTTP {} — {}", status, message),
+                }
+            }
+            Err(ureq::Error::Transport(t)) => {
+                // Network-level error. ureq's ErrorKind enum discrimination
+                // has varied across patch releases, so we classify by
+                // formatted-string substring matching — slightly less
+                // precise but immune to upstream patch-version churn.
+                let raw = format!("{}", t);
+                let lower = raw.to_lowercase();
+                let (category, message) = if lower.contains("dns") || lower.contains("resolve") {
+                    ("network_error", "DNS lookup failed — check the hostname.")
+                } else if lower.contains("timed out") || lower.contains("timeout") {
+                    ("timeout", "Connection timed out — the tunnel may be slow or unreachable.")
+                } else if lower.contains("refused") {
+                    ("network_error", "Connection refused — is the tunnel running and forwarding to :9090?")
+                } else if lower.contains("tls") || lower.contains("certificate") || lower.contains("handshake") {
+                    ("network_error", "TLS handshake failed — check the URL is HTTPS and the cert is valid.")
+                } else {
+                    ("network_error", "Network error — check the URL and that the tunnel is running.")
+                };
+                RemoteProbeResult {
+                    ok: false,
+                    status: 0,
+                    latency_ms,
+                    category: category.to_string(),
+                    message: format!("{} ({})", message, raw),
+                }
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("Probe task failed: {}", e))?
 }
 
 #[tauri::command]

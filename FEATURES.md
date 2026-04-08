@@ -150,6 +150,14 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Settings UI for ntfy topic configuration
 - [x] Test notification button
 
+### Remote Access (v0.4.0)
+- [x] **Settings → Remote Access panel** with two transport cards: Cloudflare Tunnel (recommended) and Tailscale Funnel (no-domain alternative). Each card has a step-by-step setup recipe with inline links to upstream installers. No third-party binaries bundled — the user installs `cloudflared` / `tailscale` themselves.
+- [x] **Token-aware embedded web UI.** `web_ui.html` reads `localStorage.trellis_api_token` on every fetch and adds `Authorization: Bearer trls_…` when present. On loopback (no token needed) the dashboard works exactly as before. Through a tunnel, the first `/api/*` 401 pops an inline modal asking for a token; the user pastes it once, the page reloads, and every subsequent request carries the header.
+- [x] **`GET /` always allowed** by the auth gate via a pre-auth special case in `api.rs::handle_connection`. The HTML itself is harmless static content; every dynamic surface (`/api/*`) still goes through the v0.3.4 token gate.
+- [x] **Reachability probe.** New `probe_remote_url` Tauri command + Settings widget that runs a single `GET /api/devices` from the desktop machine through the user's tunnel and back. Classifies the result into `success`, `auth_failed`, `not_trellis`, `tunnel_down`, `network_error`, `timeout`, or `unexpected` and surfaces a human-friendly explanation. URL is persisted between probes; the token is held in component memory only.
+- [x] **Safety check** on the Settings panel: amber warning card if zero API tokens are minted ("the tunnel will be reachable but unusable").
+- [x] User guide §16 walks through both transports + the reachability probe, including the "mint a token first" prerequisite and a one-paragraph "why not ngrok" note.
+
 ### REST API
 - [x] HTTP API server on port 9090 (runs alongside desktop app)
 - [x] Full device CRUD (list, get, delete, send command, set nickname/group)

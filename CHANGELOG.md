@@ -2,6 +2,46 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.0] — 2026-04-08
+
+The remote-access release. The v0.3.4 token gate was the prerequisite that made it safe to expose `:9090` beyond the LAN — this release ships everything you need to actually do that, with first-class support for two transports and a token-aware web dashboard that survives the trip through a tunnel.
+
+### Added — Remote access via Cloudflare Tunnel and Tailscale Funnel
+
+- **The user demand.** "I want to flip a switch from outside the house" was the #1 unsolved request after v0.3.4 closed the LAN-exposure surface. Now that the auth boundary exists, layering a tunnel on top is the obvious next step. v0.4.0 picks two transports, documents both end-to-end, and ships the small client-side and server-side changes needed to make the existing dashboard usable through them — without bundling any third-party agents.
+- **Cloudflare Tunnel (recommended).** Free, no inbound port, terminates TLS at the edge, brandable URL on your own domain (`https://trellis.<your-domain>`). Composes with Cloudflare Access for free SSO if you want defense in depth on top of the token gate. Settings → Remote Access has a step-by-step recipe.
+- **Tailscale Funnel (no-domain alternative).** Three commands (`tailscale up`, `tailscale funnel 9090 on`, done). URL is `*.ts.net`. Personal use is free.
+- **No bundled agents.** The user installs `cloudflared` or `tailscale` themselves; Trellis just walks them through it and verifies the result. Keeps the `.deb` lean and avoids re-vendoring third-party software.
+- **Token-aware embedded web UI.** The thick-client dashboard at `:9090/` (the same `web_ui.html` that's been there since v0.2.0) now picks up an API token from `localStorage`. On loopback no token is needed and the dashboard works exactly as before. Through a tunnel, the first `/api/*` fetch returns 401, an inline modal pops up asking for a token, the user pastes it once, the page reloads, and every subsequent fetch carries `Authorization: Bearer trls_…`. The token is stored in the browser's `localStorage` and never leaves the client. Wrong-prefix tokens get rejected client-side before round-tripping.
+- **`GET /` always allowed by the auth gate.** Pre-auth special case in `api.rs::handle_connection`. The HTML itself contains no secrets and no device data — every dynamic surface (`/api/*`) still goes through the v0.3.4 token gate and is unchanged. This is what makes the dashboard reachable through a tunnel without breaking the rest of the security model.
+- **Reachability probe.** New `probe_remote_url` Tauri command. The Settings panel includes a "Test reachability" widget that takes a public URL + a token and runs a single `GET /api/devices` from the desktop machine through the user's tunnel and back. Classifies the result into `success`, `auth_failed`, `not_trellis`, `tunnel_down`, `network_error`, `timeout`, or `unexpected`, and surfaces a human-friendly explanation. Lets users verify the setup before pulling out their phone — no copy-paste curl gymnastics. The token is held in component memory only; only the URL is persisted (as a convenience between probes).
+- **Safety check on the Settings panel.** If the user has zero API tokens minted and tries to set up remote access, the panel shows an amber warning card explaining that the tunnel would be reachable but completely unusable without a token. Points them at the API Tokens section above.
+- **`require_auth_localhost` interaction.** The strict-loopback opt-in from v0.3.4 still applies to `/api/*`, but the new `GET /` bypass is unconditional — the page itself is harmless static HTML. If you have strict-loopback on, the dashboard at `localhost:9090/` will still load, but its first API fetch will 401 and pop the auth modal locally. Same behaviour as the remote case, intentionally.
+- **`auth_required_html` removed.** The friendly HTML 401 page that v0.3.4 served at non-loopback `GET /` is gone — the dashboard itself now handles the "I need to authenticate" UX with the inline modal. Removing dead code.
+- **CHANGELOG explicitly out of scope:** WebSocket reverse-proxy through `:9090` (would let per-device `:8080` dashboards be remotely accessible too), multi-user RBAC, token expiry/TTL, rate limiting, ngrok support (free tier rotates URLs, paid is worse than the two options above).
+
+### Documentation
+
+- New §16 **Remote Access** in `docs/guide.md` walks through both transports end-to-end, the test-reachability widget, the "mint a token first" prerequisite, and a one-paragraph "why not ngrok" note. Subsequent sections renumbered.
+- §17 (Web Dashboard) updated to mention the inline auth modal as the new auth UX through tunnels.
+- FEATURES.md gains a Remote Access section.
+
+### Verified
+
+- `cargo build --release` clean (only the 2 pre-existing dead-code warnings from `connection.rs`).
+- `cargo test --lib` 6/6 auth tests pass (no regressions; v0.4.0 is a no-op on the auth boundary itself).
+- Frontend `tsc --noEmit` and `vite build` clean.
+- Library code is **byte-identical** to v0.3.4 except the version macro (3-line diff in `library.json`, `library.properties`, `Trellis.h`). Per the project's hardware-test rule, no ESP32 re-flash needed for this release — the `.bin` would be provably identical.
+- Embedded binary contains the new symbols (`authModal`, `TRELLIS_TOKEN_KEY`, `saveAuthToken`, `probe_remote_url`) — verified via `strings` against the release binary.
+
+### Out of scope (deliberately deferred)
+
+- **Per-device `:8080` dashboards via the tunnel.** Each ESP32 has its own embedded dashboard that uses its own WebSocket on `port+1`. Proxying just the HTML through `:9090` would give a static-looking page with dead controls — fixing it requires WebSocket-aware reverse-proxying through `:9090`, which the current hand-rolled HTTP server doesn't support. Punted to v0.5.0 if there's user demand. The central `:9090` web UI already aggregates every device, so for remote use it's strictly better anyway.
+- **Multi-user / RBAC.** Currently every token has full admin access. Tokens have names but no scopes.
+- **Token TTL / expiry.** Same model as v0.3.4: valid until revoked.
+- **Rate limiting + failed-auth backoff.** Separate hardening pass.
+- **Bundling `cloudflared` or `tailscale`.** Out of scope on principle — re-vendoring third-party agents grows the binary, complicates the supply chain, and adds an upgrade burden. Users install them via their distribution's package manager or the upstream installer.
+
 ## [0.3.4] — 2026-04-08
 
 A focused security release that finishes closing the LAN-exposure surface that v0.3.3 only partially addressed. The REST API on port 9090 is now token-gated for every non-loopback request.

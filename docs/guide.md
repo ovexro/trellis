@@ -21,12 +21,13 @@ A complete walkthrough of every feature. From installing the app to automating y
 13. [OTA Firmware Updates](#13-ota-firmware-updates)
 14. [Quick Flash (Compile & Upload)](#14-quick-flash)
 15. [REST API](#15-rest-api)
-16. [Web Dashboard](#16-web-dashboard)
-17. [Push Notifications (ntfy.sh)](#17-push-notifications)
-18. [Settings & Config Backup](#18-settings--config-backup)
-19. [System Tray](#19-system-tray)
-20. [Arduino Library Reference](#20-arduino-library-reference)
-21. [Troubleshooting](#21-troubleshooting)
+16. [Remote Access](#16-remote-access)
+17. [Web Dashboard](#17-web-dashboard)
+18. [Push Notifications (ntfy.sh)](#18-push-notifications)
+19. [Settings & Config Backup](#19-settings--config-backup)
+20. [System Tray](#20-system-tray)
+21. [Arduino Library Reference](#21-arduino-library-reference)
+22. [Troubleshooting](#22-troubleshooting)
 
 ---
 
@@ -427,11 +428,64 @@ Full CRUD is available for devices, groups, schedules, rules, webhooks, alerts, 
 
 ---
 
-## 16. Web Dashboard
+## 16. Remote Access
 
-A responsive web UI is served at `http://localhost:9090` — open it on your phone, tablet, or any browser on your network.
+Trellis listens on your LAN by default. To reach it from outside your home — flipping a switch from the bus, checking sensors on holiday — you run a tunnel that exposes port `9090` to the internet, then authenticate with the same Bearer tokens you mint for the REST API.
 
-> **Token-gated since v0.3.4.** The dashboard itself is a thick client that polls `/api/*` from the same origin, and there's no in-page login flow, so accessing it from a non-loopback IP returns a friendly "authentication required" page instead of the dashboard. Open it from `localhost:9090` on the machine running Trellis, or use the per-device dashboard at `http://<device-ip>:8080/` which is hosted on the device itself and unaffected by this change.
+The desktop app's **Settings → Remote Access** panel walks you through both supported transports and includes a **Test reachability** button that does a single round-trip from your machine to the tunnel and back. Use it to verify the setup before pulling out your phone.
+
+> **Pre-requisite — mint a token first.** Remote access is built on the v0.3.4 token gate. If you haven't created any API tokens, every request through the tunnel will hit a 401 and the dashboard will be reachable but unusable. Open **Settings → API Tokens** and create one named e.g. `phone` before setting up the tunnel. The Settings panel will warn you loudly if you skip this step.
+
+### Cloudflare Tunnel (recommended)
+
+Free, no inbound port, branded URL on your own domain. Composes with Cloudflare Access for free SSO if you want defense in depth on top of the token gate.
+
+1. Add a domain to your Cloudflare account (free plan is fine)
+2. Install [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+3. `cloudflared tunnel login`
+4. `cloudflared tunnel create trellis`
+5. `cloudflared tunnel route dns trellis trellis.<your-domain>`
+6. `cloudflared tunnel run --url http://localhost:9090 trellis`
+
+Then open `https://trellis.<your-domain>` on your phone. The dashboard's first `/api/*` call returns 401, an inline auth modal pops up asking for a token, you paste it once, and the browser remembers it in `localStorage`. Subsequent loads are seamless.
+
+To run `cloudflared` permanently, install it as a systemd service: `sudo cloudflared service install`.
+
+### Tailscale Funnel (no domain needed)
+
+Three commands. URL is `*.ts.net`. Personal use is free up to 100 devices.
+
+1. [Install Tailscale](https://tailscale.com/kb/1031/install-linux)
+2. `sudo tailscale up`
+3. `sudo tailscale funnel 9090 on`
+
+Tailscale prints your funnel URL on stdout. Open it on your phone and paste your token at the auth prompt.
+
+### Test reachability before relying on it
+
+The **Test reachability** widget in Settings → Remote Access asks for the public URL and one of your tokens, then runs a single `GET /api/devices` from this machine through the tunnel and back. It distinguishes between:
+
+- **Success**: tunnel + token both work end-to-end
+- **HTTP 401**: tunnel reached, token rejected — mint a fresh one
+- **HTTP 404**: reached an HTTP server but it's not Trellis (wrong host or port)
+- **HTTP 502/503/504**: tunnel up, but the desktop app isn't running on `:9090`
+- **DNS / connection / TLS errors**: the tunnel itself isn't reachable
+
+The token you paste into the test widget is held in component memory only — it is never persisted. Only the URL is remembered between probes (as a convenience so you don't retype the hostname).
+
+### Why not ngrok?
+
+The free tier rotates your subdomain on every restart, which doesn't work for "set it once, my phone uses this URL all year". Stable URLs cost $8+/mo per user. Both options above are strictly better and free.
+
+### What's NOT exposed by the tunnel
+
+The tunnel forwards `:9090` only. The per-device `:8080` dashboards (hosted on each ESP32) stay LAN-only — for remote use, the central dashboard at `:9090` already aggregates every device, so you don't need to reach individual devices. If you want per-device remote access, file an issue: it would require WebSocket-aware reverse proxying through `:9090`, which is on the v0.5.0 roadmap if there's demand.
+
+---
+
+## 17. Web Dashboard
+
+A responsive web UI is served at `http://localhost:9090` — open it on your phone, tablet, or any browser on your network. Through a remote-access tunnel (see §16) it's also reachable from outside your LAN, with an inline auth modal that prompts for your token on the first 401 and persists it in `localStorage`.
 
 Features:
 - Device cards with live status
@@ -445,7 +499,7 @@ The web dashboard is a single HTML file with zero external dependencies — no R
 
 ---
 
-## 17. Push Notifications
+## 18. Push Notifications
 
 Get alerts on your phone when a sensor threshold is crossed or a device goes offline.
 
@@ -465,7 +519,7 @@ Now you'll get push notifications for:
 
 ---
 
-## 18. Settings & Config Backup
+## 19. Settings & Config Backup
 
 ### Scan Interval
 
@@ -491,7 +545,7 @@ The Settings page shows warnings for any device with:
 
 ---
 
-## 19. System Tray
+## 20. System Tray
 
 Trellis runs in the system tray. When you close the window, the app keeps running in the background — devices stay connected, schedules keep firing, webhooks keep working.
 
@@ -500,7 +554,7 @@ Trellis runs in the system tray. When you close the window, the app keeps runnin
 
 ---
 
-## 20. Arduino Library Reference
+## 21. Arduino Library Reference
 
 ### Initialization
 
@@ -602,7 +656,7 @@ void loop() {
 
 ---
 
-## 21. Troubleshooting
+## 22. Troubleshooting
 
 ### Device doesn't appear in the app
 

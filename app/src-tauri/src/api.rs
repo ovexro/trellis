@@ -251,6 +251,25 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         return Ok(());
     }
 
+    // Embedded web UI: always allow `GET /`. The HTML itself is harmless
+    // static content (no secrets, no device data) and contains its own
+    // token-login flow that activates the moment its first `/api/*` fetch
+    // returns 401. This makes the dashboard reachable through a remote-
+    // access tunnel (Cloudflare Tunnel, Tailscale Funnel) where the request
+    // arrives from a non-loopback peer — without this special case the
+    // page would never load and the user would see a bare JSON 401.
+    //
+    // The dynamic surface stays gated: every `/api/*` call below still
+    // runs through `auth::check_auth`, so the page can't actually display
+    // any device data without a valid token. v0.4.0 ships this together
+    // with a token-aware `api()` helper inside web_ui.html that pops a
+    // login modal on the first 401 and persists the pasted token in
+    // localStorage.
+    if req.method == "GET" && req.path == "/" {
+        send_html(&mut stream, &get_web_ui());
+        return Ok(());
+    }
+
     // Auth gate. Runs on every non-OPTIONS request. Reads the
     // `require_auth_localhost` setting once per request — cheap (single
     // SQLite SELECT against the keyed `settings` row) and avoids the
@@ -293,26 +312,24 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
                 status,
                 msg
             );
-            // Special case: a non-loopback GET / from a browser should land
-            // on a friendly HTML page explaining how to authenticate, not a
-            // bare JSON 401. Everything else gets the standard JSON error.
-            if req.method == "GET" && req.path == "/" && !auth::is_loopback(&peer_addr) {
-                send_html_status(&mut stream, status, &auth_required_html());
-            } else {
-                let body = serde_json::json!({"error": msg}).to_string();
-                send_json(&mut stream, status, &body);
-            }
+            // The pre-auth special case for `GET /` upstream means a browser
+            // hitting the dashboard URL will never reach this branch — it
+            // gets the (token-aware) embedded web UI, which handles the
+            // 401-on-first-fetch flow itself. Everything else (bare API
+            // calls without a token) gets a standard JSON 401.
+            let body = serde_json::json!({"error": msg}).to_string();
+            send_json(&mut stream, status, &body);
             return Ok(());
         }
     }
 
     let (status, body) = route(&req, ctx);
 
-    if status == 0 {
-        // Special case: HTML response (web UI)
-        send_html(&mut stream, &body);
-    } else if status == 202 {
-        // Special case: CSV response
+    // Status 202 is used as an in-band signal that the body is CSV (the
+    // metrics export route). Everything else is JSON. The web UI HTML is
+    // served upstream of `route()` by the pre-auth `GET /` branch, so this
+    // dispatch only ever sees JSON or CSV.
+    if status == 202 {
         send_csv(&mut stream, &body);
     } else {
         send_json(&mut stream, status, &body);
@@ -321,108 +338,11 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
     Ok(())
 }
 
-/// Friendly HTML response for non-loopback `GET /` when the caller has no
-/// valid token. The dashboard at `:9090/` is a thick client that polls
-/// `/api/*` from the same origin — there's no in-page login flow, so the
-/// "right" answer for browser users is "use the desktop app, the per-device
-/// dashboard at <device>:8080, or mint a token and curl from your
-/// scripting environment". This page just makes that explicit instead of
-/// dumping a raw JSON 401 onto the user's screen.
-fn auth_required_html() -> String {
-    r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trellis — authentication required</title>
-<style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0; padding: 2rem 1rem;
-    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    background: #0a0a0b; color: #e4e4e7;
-    display: flex; align-items: flex-start; justify-content: center; min-height: 100vh;
-  }
-  main {
-    max-width: 560px; width: 100%;
-    background: #18181b; border: 1px solid #27272a; border-radius: 12px;
-    padding: 1.75rem 1.5rem;
-  }
-  h1 { font-size: 1.25rem; margin: 0 0 .5rem; color: #fafafa; }
-  p { margin: .5rem 0; color: #a1a1aa; }
-  ol { padding-left: 1.25rem; color: #d4d4d8; }
-  li { margin: .35rem 0; }
-  code {
-    background: #27272a; padding: .15em .4em; border-radius: 4px;
-    font: 13px ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    color: #fde68a;
-  }
-  .badge {
-    display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
-    text-transform: uppercase;
-    color: #fbbf24; background: rgba(251,191,36,.1); padding: .2rem .55rem;
-    border: 1px solid rgba(251,191,36,.25); border-radius: 999px;
-    margin-bottom: .9rem;
-  }
-  hr { border: 0; border-top: 1px solid #27272a; margin: 1.25rem 0 .9rem; }
-  small { color: #71717a; }
-</style>
-</head>
-<body>
-  <main>
-    <div class="badge">401 — Authentication required</div>
-    <h1>This Trellis dashboard requires a token</h1>
-    <p>Trellis v0.3.4 closed an LAN-exposure issue: the REST API on
-      port 9090 no longer serves requests from non-loopback addresses
-      without an API token.</p>
-    <hr>
-    <p><strong>How to get access:</strong></p>
-    <ol>
-      <li>Open the Trellis desktop app on the machine running the server.</li>
-      <li>Go to <strong>Settings → API Tokens</strong> and click <strong>Create token</strong>.</li>
-      <li>Copy the token (it's only shown once).</li>
-      <li>Use it from your scripts:
-        <br><code>curl -H "Authorization: Bearer trls_..." http://this-host:9090/api/devices</code></li>
-    </ol>
-    <p>To control devices from your phone without a token, open the
-      device's own dashboard at <code>http://&lt;device-ip&gt;:8080/</code> instead
-      — every Trellis device serves a self-contained control panel.</p>
-    <hr>
-    <small>If you're seeing this on the same machine that runs Trellis,
-      you've enabled the <em>require auth on localhost</em> setting.
-      Disable it in Settings or include a token in your request.</small>
-  </main>
-</body>
-</html>
-"#
-    .to_string()
-}
-
-fn send_html_status(stream: &mut TcpStream, status: u16, body: &str) {
-    let status_text = match status {
-        200 => "OK",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        500 => "Internal Server Error",
-        _ => "OK",
-    };
-    let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        status, status_text, body.len(), body
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
-}
-
 fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
     let path = req.path.as_str();
     let method = req.method.as_str();
 
     match (method, path) {
-        // ─── Web UI ──────────────────────────────────────────────────
-        ("GET", "/") => (0, get_web_ui()),
-
         // ─── Devices ─────────────────────────────────────────────────
         ("GET", "/api/devices") => {
             let devices = ctx.discovery.get_devices();

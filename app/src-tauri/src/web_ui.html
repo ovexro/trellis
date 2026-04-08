@@ -494,6 +494,32 @@
 
   </main>
 
+  <!-- Authentication Modal — only used when /api/* returns 401, which
+       happens when the page is loaded through a remote-access tunnel from a
+       non-loopback address (Cloudflare Tunnel, Tailscale Funnel, etc). On
+       loopback the v0.3.4 token gate's bypass means this modal never opens.
+       Token is persisted in localStorage so phones bookmarking the URL
+       authenticate seamlessly across reloads. -->
+  <div class="modal-overlay hidden" id="authModal">
+    <div class="modal">
+      <div class="modal-title">Authentication required</div>
+      <p id="authModalReason" style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1rem;">
+        Paste a Trellis API token below.
+      </p>
+      <input type="password" id="authTokenInput" placeholder="trls_..."
+        style="width: 100%; padding: 0.6rem 0.75rem; background: #0a0a0b; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem;"
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+        onkeydown="if (event.key === 'Enter') saveAuthToken();">
+      <p style="font-size: 0.75rem; color: var(--text-faint); margin-top: 0.6rem;">
+        Mint a token in the Trellis desktop app under <strong>Settings &rarr; API Tokens</strong>.
+        Tokens are stored in this browser's <code>localStorage</code> and never sent anywhere except this Trellis instance.
+      </p>
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="saveAuthToken()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Edit Group Modal -->
   <div class="modal-overlay hidden" id="editGroupModal">
     <div class="modal">
@@ -524,12 +550,78 @@
     let initialLoad = true;
 
     /* ────────────────────────── API Helpers ────────────────────────── */
+    /*
+     * Token-aware API helper.
+     *
+     * On loopback (the desktop app's embedded WebView, or `localhost:9090`
+     * from a curl on the same machine), the v0.3.4 token gate bypasses
+     * auth, so `getAuthToken()` returns null and no Authorization header is
+     * sent — everything just works.
+     *
+     * Through a remote-access tunnel (Cloudflare Tunnel, Tailscale Funnel),
+     * the request arrives at :9090 from a non-loopback address. The gate
+     * requires `Authorization: Bearer trls_...`. If we don't have a token
+     * stored we get 401, which fires the auth modal; the user pastes a
+     * token, we persist it in localStorage, and every subsequent fetch
+     * carries it.
+     */
+    const TRELLIS_TOKEN_KEY = 'trellis_api_token';
+    function getAuthToken() {
+      try { return localStorage.getItem(TRELLIS_TOKEN_KEY) || ''; } catch { return ''; }
+    }
+    function setAuthToken(t) {
+      try {
+        if (t) localStorage.setItem(TRELLIS_TOKEN_KEY, t);
+        else localStorage.removeItem(TRELLIS_TOKEN_KEY);
+      } catch {}
+    }
+    function showAuthModal(reason) {
+      const m = document.getElementById('authModal');
+      if (!m) return;
+      const r = document.getElementById('authModalReason');
+      if (r && reason) r.textContent = reason;
+      m.classList.remove('hidden');
+      setTimeout(() => document.getElementById('authTokenInput')?.focus(), 50);
+    }
+    function hideAuthModal() {
+      document.getElementById('authModal')?.classList.add('hidden');
+    }
+    function saveAuthToken() {
+      const inp = document.getElementById('authTokenInput');
+      const v = (inp?.value || '').trim();
+      if (!v) return;
+      // Cheap client-side sanity check — saves a round trip if the user
+      // pasted something obviously wrong (an OAuth token, an SSH key, etc).
+      // The real validation happens server-side on the next fetch.
+      if (!v.startsWith('trls_')) {
+        const r = document.getElementById('authModalReason');
+        if (r) r.textContent = 'Trellis tokens start with `trls_`. Mint one in the desktop app under Settings → API Tokens.';
+        return;
+      }
+      setAuthToken(v);
+      if (inp) inp.value = '';
+      hideAuthModal();
+      // Hard reload — re-runs every initial fetch with the new token in
+      // hand. Simpler and more reliable than threading "re-init this tab"
+      // logic through every tab's loader.
+      location.reload();
+    }
+
     async function api(path, opts = {}) {
+      const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+      const tok = getAuthToken();
+      if (tok) headers['Authorization'] = 'Bearer ' + tok;
       const res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json' },
         ...opts,
+        headers,
         body: opts.body ? JSON.stringify(opts.body) : undefined,
       });
+      if (res.status === 401) {
+        // Wipe whatever we had — it's either missing, expired, or revoked.
+        setAuthToken('');
+        showAuthModal('Authentication required. Paste a Trellis API token below — mint one in the desktop app under Settings → API Tokens.');
+        throw new Error('401 Unauthorized');
+      }
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const text = await res.text();
       return text ? JSON.parse(text) : null;
