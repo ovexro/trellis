@@ -16,6 +16,12 @@ type MqttConfig = {
   client_id: string;
 };
 
+// Network-safe view returned by get_mqtt_config — the password field is
+// omitted on the wire so it can't be leaked over the LAN-exposed REST API.
+// `has_password` tells the UI whether a password is currently stored so the
+// input placeholder can show "(unchanged — type to update)".
+type MqttConfigPublic = Omit<MqttConfig, "password"> & { has_password: boolean };
+
 type MqttStatus = {
   enabled: boolean;
   connected: boolean;
@@ -49,8 +55,14 @@ export default function Settings() {
   const [ntfySavedTopic, setNtfySavedTopic] = useState<string | null>(null);
   const [ntfyStatus, setNtfyStatus] = useState("");
 
-  // MQTT bridge state
+  // MQTT bridge state. `mqttConfig.password` is always empty on initial
+  // load — the backend redacts it from get_mqtt_config to avoid leaking it
+  // over the LAN-exposed REST API. `mqttHasPassword` reflects whether a
+  // password is currently stored server-side so the input placeholder and
+  // Clear button can render meaningfully. When the user saves without
+  // re-typing, the backend interprets empty `password` as "preserve existing".
   const [mqttConfig, setMqttConfig] = useState<MqttConfig>(DEFAULT_MQTT_CONFIG);
+  const [mqttHasPassword, setMqttHasPassword] = useState(false);
   const [mqttStatus, setMqttStatus] = useState<MqttStatus | null>(null);
   const [mqttFeedback, setMqttFeedback] = useState("");
   const [mqttBusy, setMqttBusy] = useState(false);
@@ -67,8 +79,14 @@ export default function Settings() {
       if (val) setScanInterval(val);
     }).catch(() => {});
 
-    invoke<MqttConfig>("get_mqtt_config")
-      .then((cfg) => setMqttConfig({ ...DEFAULT_MQTT_CONFIG, ...cfg }))
+    invoke<MqttConfigPublic>("get_mqtt_config")
+      .then((cfg) => {
+        // The wire shape has no `password` field; merge into local state with
+        // an empty password and remember whether one is stored.
+        const { has_password, ...rest } = cfg;
+        setMqttConfig({ ...DEFAULT_MQTT_CONFIG, ...rest, password: "" });
+        setMqttHasPassword(has_password);
+      })
       .catch(() => {});
 
     refreshMqttStatus();
@@ -89,8 +107,17 @@ export default function Settings() {
     setMqttBusy(true);
     setMqttFeedback("");
     try {
+      // Empty password in the request body means "preserve existing" on the
+      // backend. After save, refresh has_password from the new config so the
+      // placeholder reflects the post-save state.
       const newStatus = await invoke<MqttStatus>("set_mqtt_config", { config: mqttConfig });
       setMqttStatus(newStatus);
+      // If the user typed a new password, the backend now has it stored.
+      // If they didn't type anything, has_password is unchanged from before.
+      if (mqttConfig.password.length > 0) {
+        setMqttHasPassword(true);
+        setMqttConfig({ ...mqttConfig, password: "" });
+      }
       setMqttFeedback(
         mqttConfig.enabled
           ? "Settings saved — bridge starting"
@@ -113,6 +140,24 @@ export default function Settings() {
       setTimeout(() => setMqttFeedback(""), 4000);
     } catch (err) {
       setMqttFeedback(`Connection failed: ${err}`);
+    } finally {
+      setMqttBusy(false);
+    }
+  };
+
+  const clearMqttPassword = async () => {
+    if (!confirm("Clear the stored MQTT broker password? The bridge will restart with no auth.")) return;
+    setMqttBusy(true);
+    setMqttFeedback("");
+    try {
+      const newStatus = await invoke<MqttStatus>("clear_mqtt_password");
+      setMqttStatus(newStatus);
+      setMqttHasPassword(false);
+      setMqttConfig({ ...mqttConfig, password: "" });
+      setMqttFeedback("Password cleared");
+      setTimeout(() => setMqttFeedback(""), 4000);
+    } catch (err) {
+      setMqttFeedback(`Clear failed: ${err}`);
     } finally {
       setMqttBusy(false);
     }
@@ -555,14 +600,32 @@ export default function Settings() {
                 />
               </div>
               <div>
-                <label className="text-xs text-zinc-500 block mb-1">Password (optional)</label>
-                <input
-                  type="password"
-                  value={mqttConfig.password}
-                  onChange={(e) => setMqttConfig({ ...mqttConfig, password: e.target.value })}
-                  className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
-                  placeholder="(none)"
-                />
+                <label className="text-xs text-zinc-500 block mb-1">
+                  Password (optional)
+                  {mqttHasPassword && (
+                    <span className="ml-2 text-trellis-400">• stored</span>
+                  )}
+                </label>
+                <div className="flex gap-1">
+                  <input
+                    type="password"
+                    value={mqttConfig.password}
+                    onChange={(e) => setMqttConfig({ ...mqttConfig, password: e.target.value })}
+                    className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-200 focus:outline-none focus:border-trellis-500"
+                    placeholder={mqttHasPassword ? "(unchanged — type to update)" : "(none)"}
+                  />
+                  {mqttHasPassword && (
+                    <button
+                      type="button"
+                      onClick={clearMqttPassword}
+                      disabled={mqttBusy}
+                      className="px-2 py-2 bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40"
+                      title="Clear stored password"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="text-xs text-zinc-500 block mb-1">Base topic</label>

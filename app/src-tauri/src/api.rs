@@ -11,12 +11,26 @@ use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig};
+use crate::secret_store::{self, SecretStore};
 
 struct ApiContext {
     db: Database,
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
+    secret_store: Arc<SecretStore>,
+}
+
+/// Setting keys whose raw values must NEVER be returned by — or written
+/// through — the generic `/api/settings/<key>` GET/PUT endpoints. The REST
+/// API binds to 0.0.0.0:9090, so anything served via the generic key getter
+/// is visible to anyone on the LAN. These keys must be accessed via their
+/// dedicated typed endpoints (e.g. `GET /api/settings/mqtt`) which return a
+/// password-redacted view.
+const SENSITIVE_SETTING_KEYS: &[&str] = &["mqtt_config"];
+
+fn is_sensitive_key(key: &str) -> bool {
+    SENSITIVE_SETTING_KEYS.iter().any(|k| *k == key)
 }
 
 pub fn start_api_server(
@@ -24,6 +38,7 @@ pub fn start_api_server(
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
+    secret_store: Arc<SecretStore>,
 ) {
     std::thread::spawn(move || {
         let conn = match Connection::open(&db_path) {
@@ -38,6 +53,7 @@ pub fn start_api_server(
             discovery,
             connection_manager,
             mqtt_bridge,
+            secret_store,
         });
 
         let listener = match TcpListener::bind("0.0.0.0:9090") {
@@ -420,7 +436,9 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         // Defined BEFORE the generic /api/settings/ routes so /api/settings/mqtt
         // hits this typed handler instead of the raw key-value getter.
         ("GET", "/api/settings/mqtt") => {
-            json_ok(&ctx.mqtt_bridge.get_config())
+            // Returns the password-redacted public view. Safe to serve over
+            // the LAN-exposed REST API.
+            json_ok(&ctx.mqtt_bridge.get_config_public())
         }
 
         ("PUT", "/api/settings/mqtt") => {
@@ -428,17 +446,56 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
                 Ok(c) => c,
                 Err(e) => return json_error(400, &format!("Invalid MQTT config JSON: {}", e)),
             };
-            // Persist
-            if let Ok(json) = serde_json::to_string(&cfg) {
-                if let Err(e) = ctx.db.set_setting("mqtt_config", &json) {
-                    return json_error(500, &e);
+            // Apply via the user-facing path so an empty `password` in the
+            // request preserves the existing stored password rather than
+            // wiping it. To explicitly clear, callers must POST to
+            // /api/mqtt/clear-password.
+            if let Err(e) = ctx.mqtt_bridge.apply_config_from_user(cfg) {
+                return json_error(500, &e);
+            }
+            // Persist the *merged* config (post-preserve), encrypted, so a
+            // restart picks up the same auth state and the on-disk blob
+            // never holds plaintext.
+            let mut merged = ctx.mqtt_bridge.get_config();
+            if let Err(e) = secret_store::encrypt_mqtt_password(
+                ctx.secret_store.as_ref(),
+                &mut merged,
+            ) {
+                return json_error(500, &e);
+            }
+            match serde_json::to_string(&merged) {
+                Ok(json) => {
+                    if let Err(e) = ctx.db.set_setting("mqtt_config", &json) {
+                        return json_error(500, &e);
+                    }
                 }
+                Err(e) => return json_error(500, &e.to_string()),
             }
-            // Apply
-            match ctx.mqtt_bridge.apply_config(cfg) {
-                Ok(()) => json_ok(&ctx.mqtt_bridge.get_status()),
-                Err(e) => json_error(500, &e),
+            json_ok(&ctx.mqtt_bridge.get_status())
+        }
+
+        ("POST", "/api/mqtt/clear-password") => {
+            // Explicit password clear path. Distinct from PUT with empty
+            // password (which preserves the existing one).
+            if let Err(e) = ctx.mqtt_bridge.clear_password() {
+                return json_error(500, &e);
             }
+            let mut cleared = ctx.mqtt_bridge.get_config();
+            if let Err(e) = secret_store::encrypt_mqtt_password(
+                ctx.secret_store.as_ref(),
+                &mut cleared,
+            ) {
+                return json_error(500, &e);
+            }
+            match serde_json::to_string(&cleared) {
+                Ok(json) => {
+                    if let Err(e) = ctx.db.set_setting("mqtt_config", &json) {
+                        return json_error(500, &e);
+                    }
+                }
+                Err(e) => return json_error(500, &e.to_string()),
+            }
+            json_ok(&ctx.mqtt_bridge.get_status())
         }
 
         ("GET", "/api/mqtt/status") => {
@@ -448,6 +505,15 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         // ─── Settings ───────────────────────────────────────────────
         ("GET", p) if p.starts_with("/api/settings/") => {
             let key = &p["/api/settings/".len()..];
+            // Block any sensitive key from the generic key-value getter.
+            // Sensitive keys (e.g. mqtt_config) must be accessed via their
+            // dedicated typed endpoints which apply password redaction.
+            if is_sensitive_key(key) {
+                return json_error(
+                    403,
+                    "This setting key is restricted. Use its dedicated endpoint (e.g. /api/settings/mqtt for MQTT config).",
+                );
+            }
             match ctx.db.get_setting(key) {
                 Ok(Some(v)) => json_ok(&serde_json::json!({"key": key, "value": v})),
                 Ok(None) => json_error(404, "Setting not found"),
@@ -457,6 +523,15 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
 
         ("PUT", p) if p.starts_with("/api/settings/") => {
             let key = &p["/api/settings/".len()..];
+            // Block writing to sensitive keys via the generic setter so the
+            // typed endpoint's validation (and the merge_preserving_password
+            // logic for MQTT) can't be bypassed.
+            if is_sensitive_key(key) {
+                return json_error(
+                    403,
+                    "This setting key is restricted. Use its dedicated endpoint to update it.",
+                );
+            }
             handle_set_setting(ctx, key, &req.body)
         }
 

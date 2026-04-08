@@ -116,6 +116,42 @@ impl Default for MqttConfig {
     }
 }
 
+/// Public-facing view of `MqttConfig` returned by GET endpoints (Tauri
+/// command + REST API). The password is intentionally omitted from the wire
+/// shape to avoid leaking it over the LAN — the REST API binds to
+/// 0.0.0.0:9090, so anything serialized into a GET response is visible to
+/// anyone on the same network. The `has_password` flag tells the UI whether
+/// a password is currently stored, so it can show "(unchanged — type to
+/// update)" instead of "(none)".
+#[derive(Debug, Clone, Serialize)]
+pub struct MqttConfigPublic {
+    pub enabled: bool,
+    pub broker_host: String,
+    pub broker_port: u16,
+    pub username: String,
+    pub base_topic: String,
+    pub ha_discovery_prefix: String,
+    pub ha_discovery_enabled: bool,
+    pub client_id: String,
+    pub has_password: bool,
+}
+
+impl From<&MqttConfig> for MqttConfigPublic {
+    fn from(c: &MqttConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            broker_host: c.broker_host.clone(),
+            broker_port: c.broker_port,
+            username: c.username.clone(),
+            base_topic: c.base_topic.clone(),
+            ha_discovery_prefix: c.ha_discovery_prefix.clone(),
+            ha_discovery_enabled: c.ha_discovery_enabled,
+            client_id: c.client_id.clone(),
+            has_password: !c.password.is_empty(),
+        }
+    }
+}
+
 /// Live status of the bridge — used by the Settings UI to show whether the
 /// MQTT connection is healthy.
 #[derive(Debug, Clone, Serialize)]
@@ -178,13 +214,72 @@ impl MqttBridge {
     }
 
     /// Get the current configuration (clone — cheap).
+    /// **Internal use only.** Contains the plaintext password — never serialize
+    /// this directly to a network-facing endpoint. Use `get_config_public`
+    /// for anything user-visible.
     pub fn get_config(&self) -> MqttConfig {
         self.config.lock().unwrap().clone()
+    }
+
+    /// Get a network-safe view of the current configuration. The password is
+    /// stripped and replaced by a `has_password: bool` flag. Safe to return
+    /// from any GET endpoint, including the LAN-exposed REST API on
+    /// 0.0.0.0:9090.
+    pub fn get_config_public(&self) -> MqttConfigPublic {
+        MqttConfigPublic::from(&*self.config.lock().unwrap())
+    }
+
+    /// Merge an incoming config with the in-memory config such that an empty
+    /// `password` field in the incoming side means "preserve the existing
+    /// password" rather than "blank it out". This is the counterpart to the
+    /// password-redaction in GET responses: the UI loads the config without
+    /// the password, the user edits other fields, and a save round-trip would
+    /// otherwise wipe the stored password. Empty-means-preserve fixes that.
+    ///
+    /// To explicitly clear a password, callers must use `clear_password()`
+    /// rather than submitting an empty string here.
+    fn merge_preserving_password(&self, mut incoming: MqttConfig) -> MqttConfig {
+        if incoming.password.is_empty() {
+            let existing = self.config.lock().unwrap().password.clone();
+            if !existing.is_empty() {
+                incoming.password = existing;
+            }
+        }
+        incoming
+    }
+
+    /// Explicitly clear the stored MQTT broker password. Used by the
+    /// Settings UI's "Clear password" button. The bridge is restarted with
+    /// the cleared config so the new auth state takes effect immediately.
+    pub fn clear_password(&self) -> Result<(), String> {
+        let mut cfg = self.config.lock().unwrap().clone();
+        cfg.password = String::new();
+        self.apply_config(cfg)
     }
 
     /// Get the current live status.
     pub fn get_status(&self) -> MqttStatus {
         self.status.lock().unwrap().clone()
+    }
+
+    /// Apply a new configuration that came from a user-facing endpoint
+    /// (Tauri `set_mqtt_config` or REST `PUT /api/settings/mqtt`). An empty
+    /// `password` in the incoming config is interpreted as "keep the
+    /// existing stored password" rather than "clear it" — see
+    /// `merge_preserving_password` for the rationale. To explicitly clear,
+    /// the UI calls `clear_password()` instead.
+    pub fn apply_config_from_user(&self, new_config: MqttConfig) -> Result<(), String> {
+        let merged = self.merge_preserving_password(new_config);
+        self.apply_config(merged)
+    }
+
+    /// Test connectivity using a user-supplied config. Same preserve-blank
+    /// rule as `apply_config_from_user`: if the user didn't re-type the
+    /// password, fall back to the stored one so the test exercises the same
+    /// auth state the live bridge would use.
+    pub fn test_connection_from_user(&self, cfg: MqttConfig) -> Result<(), String> {
+        let merged = self.merge_preserving_password(cfg);
+        self.test_connection(&merged)
     }
 
     /// Apply a new configuration. If the bridge was previously running, it

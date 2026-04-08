@@ -32,3 +32,11 @@ cron = "0.13"
 log = "0.4"
 env_logger = "0.11"
 rumqttc = "0.24"
+# At-rest encryption for stored secrets (currently the MQTT broker password).
+# `age` is an audited file-encryption library; we use it with an x25519
+# identity stored in the OS keyring (with a 0600 file fallback for headless
+# Linux setups). See secret_store.rs for the bootstrap and key-management
+# flow.
+age = "0.10"
+base64 = "0.22"
+keyring = { version = "3", features = ["sync-secret-service", "vendored"] }

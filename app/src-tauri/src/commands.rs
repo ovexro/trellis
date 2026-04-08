@@ -2,8 +2,9 @@ use crate::connection::ConnectionManager;
 use crate::db::{AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
-use crate::mqtt::{MqttBridge, MqttConfig, MqttStatus};
+use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
+use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
 use serde_json::Value;
 use std::sync::Arc;
@@ -461,21 +462,51 @@ pub fn send_ntfy(topic: String, title: String, message: String, priority: u8) ->
 // ─── MQTT bridge ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_mqtt_config(state: State<'_, AppState>) -> Result<MqttConfig, String> {
-    Ok(state.mqtt_bridge.get_config())
+pub fn get_mqtt_config(state: State<'_, AppState>) -> Result<MqttConfigPublic, String> {
+    // Returns the network-safe view (no password). The Settings UI uses the
+    // `has_password` flag to render either "(none)" or "(unchanged — type to
+    // update)" placeholder text.
+    Ok(state.mqtt_bridge.get_config_public())
 }
 
 #[tauri::command]
 pub fn set_mqtt_config(
     state: State<'_, AppState>,
     db: State<'_, Database>,
+    secret_store: State<'_, Arc<SecretStore>>,
     config: MqttConfig,
 ) -> Result<MqttStatus, String> {
-    // Persist first so a restart picks up the new config
-    let json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    // Apply via the user-facing path so an empty password in the incoming
+    // request preserves the existing stored password instead of blanking it.
+    state.mqtt_bridge.apply_config_from_user(config)?;
+
+    // Persist the *merged* config (post-preserve) so a restart picks up the
+    // same auth state the live bridge is now using. Reading get_config back
+    // out of the bridge gives us the merged result. Encrypt the password
+    // field BEFORE serializing so the SQLite blob never holds plaintext.
+    let mut merged = state.mqtt_bridge.get_config();
+    secret_store::encrypt_mqtt_password(secret_store.inner().as_ref(), &mut merged)?;
+    let json = serde_json::to_string(&merged).map_err(|e| e.to_string())?;
     db.set_setting("mqtt_config", &json)?;
 
-    state.mqtt_bridge.apply_config(config)?;
+    Ok(state.mqtt_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn clear_mqtt_password(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    secret_store: State<'_, Arc<SecretStore>>,
+) -> Result<MqttStatus, String> {
+    // Explicit clear path — distinct from "save with empty password" which
+    // means preserve. After clearing, persist so the cleared state survives a
+    // restart. Encrypt the (now empty) password field — encrypt_mqtt_password
+    // is a no-op on empty so we just save the bare JSON.
+    state.mqtt_bridge.clear_password()?;
+    let mut cleared = state.mqtt_bridge.get_config();
+    secret_store::encrypt_mqtt_password(secret_store.inner().as_ref(), &mut cleared)?;
+    let json = serde_json::to_string(&cleared).map_err(|e| e.to_string())?;
+    db.set_setting("mqtt_config", &json)?;
     Ok(state.mqtt_bridge.get_status())
 }
 
@@ -489,7 +520,9 @@ pub fn test_mqtt_connection(
     state: State<'_, AppState>,
     config: MqttConfig,
 ) -> Result<(), String> {
-    state.mqtt_bridge.test_connection(&config)
+    // Same preserve-blank rule as set_mqtt_config: if the user didn't retype
+    // the password, exercise the test against the stored one.
+    state.mqtt_bridge.test_connection_from_user(config)
 }
 
 #[tauri::command]

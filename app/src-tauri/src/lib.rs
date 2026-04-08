@@ -7,12 +7,14 @@ mod discovery;
 mod mqtt;
 mod ota;
 mod scheduler;
+mod secret_store;
 mod serial;
 
 use commands::*;
 use connection::ConnectionManager;
 use discovery::Discovery;
 use mqtt::MqttBridge;
+use secret_store::SecretStore;
 use serial::SerialManager;
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
@@ -110,11 +112,30 @@ pub fn run() {
             flash_sketch,
             get_mqtt_config,
             set_mqtt_config,
+            clear_mqtt_password,
             get_mqtt_status,
             test_mqtt_connection,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
+
+            // Initialize the at-rest secret store. Bootstraps an x25519
+            // identity in the OS keyring (or a 0600 file fallback) and
+            // registers it as a Tauri-managed state so commands can encrypt
+            // and decrypt stored secrets without re-loading the key on every
+            // call. Fails fast if BOTH backends are unwritable — this is
+            // extremely rare (would require keyring + filesystem both
+            // broken) and continuing without encryption would leave the
+            // user with a half-broken app that can't decrypt previously-
+            // saved secrets. Better to surface the error.
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir");
+            let secret_store = SecretStore::load_or_create(&app_data_dir)
+                .map(Arc::new)
+                .expect("Failed to initialize SecretStore — both OS keyring and file fallback are unavailable");
+            app.manage(secret_store.clone());
 
             // Set app handle for connection manager
             connection_manager.set_app_handle(app.handle().clone());
@@ -241,14 +262,59 @@ pub fn run() {
             let db_path = app.path().app_data_dir()
                 .expect("failed to get app data dir")
                 .join("trellis.db");
-            api::start_api_server(db_path, discovery.clone(), connection_manager.clone(), mqtt_bridge.clone());
+            api::start_api_server(
+                db_path,
+                discovery.clone(),
+                connection_manager.clone(),
+                mqtt_bridge.clone(),
+                secret_store.clone(),
+            );
 
-            // Restore saved MQTT bridge config and start it if it was enabled
+            // Restore saved MQTT bridge config and start it if it was
+            // enabled. The on-disk password may be:
+            //   1. enc:v1: encrypted (current format) — decrypt then apply
+            //   2. plaintext (legacy from pre-encryption builds) — apply
+            //      as-is, then re-save so the next read is encrypted
+            //   3. empty (bridge runs without auth) — apply as-is
+            // Migration is lazy here: any plaintext password gets upgraded
+            // to enc:v1: on the very first launch of this build, no user
+            // action required.
             if let Some(db_state) = app.try_state::<db::Database>() {
                 if let Ok(Some(json)) = db_state.get_setting("mqtt_config") {
-                    if let Ok(cfg) = serde_json::from_str::<mqtt::MqttConfig>(&json) {
-                        if let Err(e) = mqtt_bridge.apply_config(cfg) {
-                            log::warn!("[MQTT] Failed to start bridge from saved config: {}", e);
+                    match serde_json::from_str::<mqtt::MqttConfig>(&json) {
+                        Ok(mut cfg) => {
+                            let was_legacy_plaintext = !cfg.password.is_empty()
+                                && !secret_store::is_encrypted(&cfg.password);
+                            if let Err(e) = secret_store::decrypt_mqtt_password(
+                                secret_store.as_ref(),
+                                &mut cfg,
+                            ) {
+                                log::warn!("[MQTT] Failed to decrypt stored password: {}", e);
+                            }
+                            if let Err(e) = mqtt_bridge.apply_config(cfg.clone()) {
+                                log::warn!("[MQTT] Failed to start bridge from saved config: {}", e);
+                            }
+                            // Lazy migration: re-save so the on-disk blob is
+                            // encrypted from now on. Only fires once per
+                            // legacy install.
+                            if was_legacy_plaintext {
+                                let mut to_save = cfg;
+                                if let Err(e) = secret_store::encrypt_mqtt_password(
+                                    secret_store.as_ref(),
+                                    &mut to_save,
+                                ) {
+                                    log::warn!("[MQTT] Migration encrypt failed: {}", e);
+                                } else if let Ok(json) = serde_json::to_string(&to_save) {
+                                    if let Err(e) = db_state.set_setting("mqtt_config", &json) {
+                                        log::warn!("[MQTT] Migration save failed: {}", e);
+                                    } else {
+                                        log::info!("[MQTT] Migrated legacy plaintext password to enc:v1");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[MQTT] Failed to parse saved config JSON: {}", e);
                         }
                     }
                 }
