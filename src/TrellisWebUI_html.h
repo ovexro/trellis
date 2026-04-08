@@ -400,5 +400,6 @@ maybeShowPwaHint();
 </script>
 </body>
 </html>)TWUI";
+static const char TRELLIS_WEB_UI_HTML_HASH[] = "c443bd0afb4c2bfd";
 
 #endif

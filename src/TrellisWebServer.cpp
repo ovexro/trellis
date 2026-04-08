@@ -14,6 +14,14 @@ void TrellisWebServer::begin(uint16_t port) {
   // enableWebUI(false) works after begin() too.
   _http->on("/", HTTP_GET, [this]() { handleWebUI(); });
 
+  // Register the request headers we want to read inside our handlers. The
+  // Arduino WebServer library doesn't capture headers by default — anything
+  // not in this list is silently dropped before the handler runs. Without
+  // this call, _http->header("If-None-Match") would always return "" and
+  // the conditional-GET path would never fire.
+  static const char* RECOGNIZED_HEADERS[] = {"If-None-Match"};
+  _http->collectHeaders(RECOGNIZED_HEADERS, sizeof(RECOGNIZED_HEADERS) / sizeof(RECOGNIZED_HEADERS[0]));
+
   _http->begin();
 
   _ws->begin();
@@ -40,9 +48,32 @@ void TrellisWebServer::handleWebUI() {
     _http->send(404, PSTR("text/plain"), PSTR("Web UI disabled"));
     return;
   }
+  // Build a content-tied ETag: <library version>-<sha256 prefix of HTML>.
+  // The version prefix is for human inspection ("which firmware are you
+  // running?"); the hash suffix is what makes the cache invalidate
+  // automatically whenever the embedded HTML actually changes, even on
+  // releases that forget to bump TRELLIS_VERSION.
+  String etag = String("\"") + TRELLIS_VERSION + "-" + TRELLIS_WEB_UI_HTML_HASH + "\"";
+
+  // RFC 7232 conditional GET: if the client's cached ETag matches what
+  // we'd send, return 304 with no body and let the browser reuse its
+  // cached copy. Saves ~25 KB per pageload over the lifetime of a firmware
+  // version while still pulling fresh HTML the moment the version (or
+  // content) changes.
+  if (_http->header("If-None-Match") == etag) {
+    _http->sendHeader("ETag", etag);
+    _http->send(304, "text/plain", "");
+    return;
+  }
+
+  // Cache-Control: no-cache forces the browser to revalidate every load
+  // (sending If-None-Match), but it can still reuse its cached body when
+  // we respond 304. This replaces the previous max-age=300 which made the
+  // browser silently serve stale HTML for 5 minutes after a firmware bump.
+  _http->sendHeader("Cache-Control", "no-cache, must-revalidate");
+  _http->sendHeader("ETag", etag);
   // Serve the embedded dashboard from PROGMEM. send_P streams directly from
   // flash so we don't pull the whole HTML into RAM.
-  _http->sendHeader("Cache-Control", "public, max-age=300");
   _http->send_P(200, PSTR("text/html; charset=utf-8"), TRELLIS_WEB_UI_HTML);
 }
 
