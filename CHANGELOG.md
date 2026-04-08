@@ -2,6 +2,23 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.2] — 2026-04-08
+
+A small patch release that ships two fixes both surfaced by an end-to-end OTA test on real ESP32 hardware: a clippy `never_loop` cleanup in the desktop OTA delivery code, and a previously-undiscovered library crash on the no-WiFi path that affected every example sketch in this repo.
+
+### Fixed
+
+- **Library: `Trellis::loop()` no longer crashes when WiFi never came up.** Devices that call `Trellis::begin(SSID, PASS)`, ignore its return value, and then call `trellis.loop()` from their main `loop()` — which is exactly what every example sketch in this repo does — would crash with `Guru Meditation: LoadProhibited (EXCVADDR=0x08)` within ~50ms of the `[Trellis] WiFi connection timeout` message any time WiFi was unreachable. Root cause: `Trellis::begin()` only allocates `_webServer = new TrellisWebServer(this)` *after* WiFi connects; on timeout it returns false and `_webServer` stays nullptr. The periodic broadcast block in `Trellis::loop()` then dereferenced the null `_webServer`, entered `TrellisWebServer::broadcastUpdate(const char*, bool)` with `this == nullptr`, and read `_ws` at offset 0x08 of the null struct. Fix is a single early-return guard at the top of `Trellis::loop()` if `_webServer == nullptr`. The two now-redundant inner `if (_webServer)` guards are removed. Validated on real hardware: a sketch with intentionally-bad credentials and a 5-second WiFi timeout now produces `[Trellis] WiFi connection timeout` followed by silence — no panic dump, no reboot loop. The `test/TestDevice/TestDevice.ino` sketch was already immune via its own `while (true) delay(1000);` halt-on-failure pattern.
+- **Desktop: cleared the `cargo clippy --lib` `never_loop` deny error in `app/src-tauri/src/ota.rs`.** The OTA HTTP server in `serve_firmware()` has always been a one-shot accept-then-stop, expressed as a `for stream in listener.incoming() { ... break; }` loop — clippy's `never_loop` lint is a deny-by-default error on this shape. Pure structural rewrite to `if let Some(stream) = listener.incoming().next()`, no behavior change. Validated end-to-end by an actual OTA push to a real ESP32: the device's panic-dump ELF SHA256 prefix exactly matched the locally-built `.elf`, proving the served bytes landed and the device booted the new image.
+
+### Why these landed together
+
+Both fixes came out of the same hardware test cycle. The desktop clippy fix was the original ~10-minute task; cutting a real OTA push to validate it surfaced the library crash, which is the more serious of the two — anyone running an example sketch with WiFi off (or wrong credentials, or out of range) would hit it. The library fix is the reason this is a patch release rather than waiting for the next minor.
+
+### Library
+
+- **Library code now contains a real behavior fix** (the `Trellis::loop()` early-return guard) on top of the v0.4.1 byte-identical-except-`TRELLIS_VERSION` baseline. Anyone consuming Trellis via Arduino Library Manager or PlatformIO Registry should upgrade — the v0.4.1 (and earlier) library will crash on the no-WiFi path; v0.4.2 will not.
+
 ## [0.4.1] — 2026-04-08
 
 A cosmetic patch release that fixes the version string in the desktop app's About dialog and Sidebar badge — and rewires the underlying mechanism so it can't drift again.
