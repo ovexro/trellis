@@ -10,6 +10,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device online/offline detection
 - [x] Manual IP entry fallback
 - [x] USB serial device detection (listing)
+- [x] **Saved devices auto-load on app restart (v0.3.3)** — `Discovery::hydrate_from_db` reads `SavedDevice` rows from SQLite into the in-memory map at startup as offline placeholders, so cross-subnet devices added by IP reappear instantly on every consumer (desktop UI, REST API, web dashboard, MQTT bridge). Health check loop restructured to "work, then sleep" so the first probe runs immediately and hydrated devices flip online within ~1 second instead of waiting a 30-second interval.
 
 ### Dashboard
 - [x] Device card grid layout
@@ -110,6 +111,9 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Add-to-home-screen hint — mobile-only, iOS/Android-aware wording, dismiss persisted in localStorage
 - [x] Apple touch icon (180×180) + theme-color + mobile-web-app-capable meta tags for proper PWA installation
 
+### Embedded Web Dashboard — Cache Invalidation (v0.3.3)
+- [x] **ETag-based conditional GET tied to library version + content hash** (`"<TRELLIS_VERSION>-<sha256-prefix>"`). Replaces the previous `Cache-Control: max-age=300` which caused browsers to serve stale UI for up to 5 minutes after a firmware push. The version part is for human inspection; the hash part is the actual cache key, so HTML changes invalidate even if a release forgets to bump the version macro. `scripts/build_web_ui_header.py` now emits `TRELLIS_WEB_UI_HTML_HASH` alongside the PROGMEM byte array. `_http->collectHeaders()` registers `If-None-Match` so the conditional GET path can fire. Verified end-to-end on real ESP32: 200 + ETag on first GET, 304 on matching `If-None-Match`, 200 on mismatch.
+
 ### OTA
 - [x] HTTP OTA update handler (ESP32)
 - [x] OTA progress reporting via WebSocket
@@ -175,8 +179,8 @@ Single source of truth for all features. Check items as they are implemented and
 
 - [x] In-app MQTT client (rumqttc), worker-thread design
 - [x] Settings UI: broker host/port/username/password, base topic, HA discovery prefix, enable + test connection
-- [x] Tauri commands: get_mqtt_config, set_mqtt_config, get_mqtt_status, test_mqtt_connection
-- [x] REST API: GET/PUT /api/settings/mqtt, GET /api/mqtt/status
+- [x] Tauri commands: get_mqtt_config, set_mqtt_config, clear_mqtt_password, get_mqtt_status, test_mqtt_connection
+- [x] REST API: GET/PUT /api/settings/mqtt, POST /api/mqtt/clear-password, GET /api/mqtt/status
 - [x] Last-will availability (`<base_topic>/bridge/availability` retained)
 - [x] Bidirectional state sync (Trellis → MQTT and MQTT → device commands)
 - [x] Home Assistant MQTT discovery — auto-creates entities for switch/slider/sensor/color/text
@@ -185,7 +189,10 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Republish discovery on broker reconnect (handles broker restart)
 - [x] Heartbeat → MQTT mirroring (device telemetry visible in HA without Trellis desktop app open)
 - [x] Multi-segment base topics (e.g. `home/iot/trellis`) supported via prefix-strip
-- [ ] TLS/encrypted broker connection (deferred — MVP scope)
+- [x] **TLS/encrypted broker connection (v0.3.3)** — `tls_enabled` + optional `tls_ca_cert_path` (PEM, custom CA or system trust roots), wired into both `start()` and `test_connection()`. Settings UI has a CA file picker and auto-bumps port to 8883 when TLS is enabled. Verified end-to-end on broker.emqx.io / broker.hivemq.com (system trust roots) and a local Mosquitto + self-signed CA pair.
+- [x] **Password redacted in GET endpoints + sensitive-key blocklist (v0.3.3)** — `MqttConfigPublic` strips `password` from the wire shape with a `has_password` flag for the UI; generic `/api/settings/<key>` returns 403 for `mqtt_config`. Stops the LAN-exposed REST API on `:9090` from leaking the broker password to anyone on the same network.
+- [x] **Encrypted password at rest with age (v0.3.3)** — `secret_store.rs` wraps an x25519 identity in the OS keyring (with 0600 file fallback). Wire format `enc:v1:<base64>` for stored passwords. Lazy migration of legacy plaintext blobs on first launch.
+- [x] **Empty-password-preserves on save + explicit Clear (v0.3.3)** — `merge_preserving_password()` so the form load+save round-trip doesn't blank the stored password; `clear_mqtt_password` Tauri/REST endpoint and a Clear button in the Settings UI for the explicit-clear UX.
 
 ## Automation
 
