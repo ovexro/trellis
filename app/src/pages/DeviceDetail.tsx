@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Wifi, Trash2 } from "lucide-react";
+import { ArrowLeft, Wifi, Trash2, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useDeviceStore } from "@/stores/deviceStore";
 import Switch from "@/components/controls/Switch";
@@ -137,6 +137,19 @@ export default function DeviceDetail() {
             )}
             {device.firmware && (
               <> &middot; FW {device.firmware}</>
+            )}
+            {device.online && (
+              <>
+                {" "}&middot;{" "}
+                <a
+                  href={`http://localhost:9090/proxy/${encodeURIComponent(device.id)}/`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-trellis-400 hover:text-trellis-300 inline-flex items-center gap-0.5 transition-colors"
+                >
+                  Device Dashboard <ExternalLink size={11} />
+                </a>
+              </>
             )}
           </p>
         </div>

@@ -169,6 +169,12 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] **Safety check** on the Settings panel: amber warning card if zero API tokens are minted ("the tunnel will be reachable but unusable").
 - [x] User guide §16 walks through both transports + the reachability probe, including the "mint a token first" prerequisite and a one-paragraph "why not ngrok" note.
 
+### Per-Device Dashboard Proxy
+- [x] **Reverse proxy at `/proxy/{device-id}/`** on :9090 — forwards HTTP requests to the device's embedded :8080 web server. Passes through the existing Bearer token auth gate so remote users (via Cloudflare Tunnel / Tailscale Funnel) can reach individual device dashboards without direct LAN access.
+- [x] **WebSocket bridge at `/proxy/{device-id}/ws`** — detects `Upgrade: websocket` and bridges raw TCP to the device's WS port (:8081). Two-thread copy loop, long-lived, auto-closes when either side drops.
+- [x] **HTML rewriting** — proxied root HTML is rewritten so `fetch("/api/info")` becomes relative (resolves through proxy) and the WebSocket URL routes through `/proxy/{id}/ws` instead of `host:port+1`. Protocol-aware (`ws://` or `wss://`) for tunnel compatibility.
+- [x] **"Device Dashboard" link** in the desktop app device detail page (online devices only) and in the :9090 web dashboard device cards.
+
 ### REST API
 - [x] HTTP API server on port 9090 (runs alongside desktop app)
 - [x] Full device CRUD (list, get, delete, send command, set nickname/group)

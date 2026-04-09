@@ -748,6 +748,7 @@
       if (rssi) metaHtml += `<span class="meta-item"><span class="meta-label">RSSI</span> ${rssi}</span>`;
       if (uptime) metaHtml += `<span class="meta-item"><span class="meta-label">Up</span> ${uptime}</span>`;
       if (chip) metaHtml += `<span class="meta-item"><span class="meta-label">Chip</span> ${esc(chip)}</span>`;
+      if (online && dev.id) metaHtml += `<a class="meta-item" href="/proxy/${encodeURIComponent(dev.id)}/" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;">Dashboard ↗</a>`;
 
       let controlsHtml = '';
       if (expanded && dev.capabilities && dev.capabilities.length) {

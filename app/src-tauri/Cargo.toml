@@ -48,3 +48,4 @@ sha2 = "0.10"
 # Cryptographically secure RNG for API token byte generation. We use 32
 # bytes from the OS RNG → base64url-encoded → prefixed `trls_`.
 rand = "0.8"
+urlencoding = "2"

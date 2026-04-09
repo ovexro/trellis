@@ -90,6 +90,9 @@ struct HttpRequest {
     /// Raw value of the `Authorization:` header, if present. The auth
     /// middleware extracts the Bearer token from this — see auth.rs.
     authorization: Option<String>,
+    /// WebSocket upgrade fields — captured for the device proxy.
+    is_websocket_upgrade: bool,
+    sec_websocket_key: Option<String>,
 }
 
 fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
@@ -116,12 +119,12 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         (full_path, HashMap::new())
     };
 
-    // Read headers. We capture two headers explicitly: Content-Length (so
-    // we know how many body bytes to read) and Authorization (so the auth
-    // middleware can validate the Bearer token). All other headers are
-    // dropped — Trellis doesn't use any of them.
+    // Read headers. We capture Content-Length, Authorization, and
+    // WebSocket upgrade fields. Other headers are dropped.
     let mut content_length: usize = 0;
     let mut authorization: Option<String> = None;
+    let mut is_websocket_upgrade = false;
+    let mut sec_websocket_key: Option<String> = None;
     loop {
         let mut line = String::new();
         reader.read_line(&mut line).map_err(|e| e.to_string())?;
@@ -142,6 +145,15 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
                     authorization = Some(val);
                 }
             }
+        } else if lower.starts_with("upgrade:") && lower.contains("websocket") {
+            is_websocket_upgrade = true;
+        } else if lower.starts_with("sec-websocket-key:") {
+            if let Some(idx) = trimmed.find(':') {
+                let val = trimmed[idx + 1..].trim().to_string();
+                if !val.is_empty() {
+                    sec_websocket_key = Some(val);
+                }
+            }
         }
     }
 
@@ -159,6 +171,8 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         query,
         body,
         authorization,
+        is_websocket_upgrade,
+        sec_websocket_key,
     })
 }
 
@@ -215,6 +229,22 @@ fn send_csv(stream: &mut TcpStream, body: &str) {
 fn send_cors_preflight(stream: &mut TcpStream) {
     let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+fn send_proxy_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) {
+    let status_text = match status {
+        200 => "OK",
+        304 => "Not Modified",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n",
+        status, status_text, content_type, body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body);
     let _ = stream.flush();
 }
 
@@ -323,6 +353,14 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         }
     }
 
+    // Device proxy: `/proxy/{device-id}/{path...}` forwards to the
+    // device's embedded HTTP server on :8080 (and WebSocket on :8081).
+    // This lets remote users (through a tunnel) reach individual device
+    // dashboards without direct LAN access.
+    if req.path.starts_with("/proxy/") {
+        return handle_proxy(ctx, &req, &mut stream);
+    }
+
     let (status, body) = route(&req, ctx);
 
     // Status 202 is used as an in-band signal that the body is CSV (the
@@ -335,6 +373,235 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         send_json(&mut stream, status, &body);
     }
 
+    Ok(())
+}
+
+// ─── Device proxy ──────────────────────────────────────────────────────────
+
+fn handle_proxy(ctx: &ApiContext, req: &HttpRequest, stream: &mut TcpStream) -> Result<(), String> {
+    let after_proxy = &req.path["/proxy/".len()..];
+
+    // Parse: /proxy/{device-id}/{rest...}
+    let (raw_id, device_path) = match after_proxy.find('/') {
+        Some(idx) => (&after_proxy[..idx], &after_proxy[idx..]),
+        None => {
+            // Redirect /proxy/{id} → /proxy/{id}/ so relative URLs in the
+            // proxied HTML resolve correctly.
+            let location = format!("{}/", req.path);
+            let resp = format!(
+                "HTTP/1.1 301 Moved Permanently\r\nLocation: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                location
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            return Ok(());
+        }
+    };
+
+    // URL-decode the device ID (ids may contain characters like `:`)
+    let device_id = urlencoding::decode(raw_id)
+        .unwrap_or_else(|_| raw_id.into());
+
+    // Look up device
+    let devices = ctx.discovery.get_devices();
+    let device = match devices.iter().find(|d| d.id == *device_id) {
+        Some(d) => d.clone(),
+        None => {
+            let body = serde_json::json!({"error": "Device not found"}).to_string();
+            send_json(stream, 404, &body);
+            return Ok(());
+        }
+    };
+
+    if !device.online {
+        let body = serde_json::json!({"error": "Device offline"}).to_string();
+        send_json(stream, 503, &body);
+        return Ok(());
+    }
+
+    // WebSocket upgrade → bridge to device WS port
+    if req.is_websocket_upgrade && device_path == "/ws" {
+        return handle_proxy_ws(stream, &device, req);
+    }
+
+    // HTTP proxy → forward to device HTTP port
+    handle_proxy_http(stream, &device, req, device_path)
+}
+
+fn handle_proxy_http(
+    stream: &mut TcpStream,
+    device: &crate::device::Device,
+    req: &HttpRequest,
+    device_path: &str,
+) -> Result<(), String> {
+    let url = format!("http://{}:{}{}", device.ip, device.port, device_path);
+
+    let upstream = match req.method.as_str() {
+        "GET" => ureq::get(&url).call(),
+        "POST" => ureq::post(&url)
+            .set("Content-Type", "application/json")
+            .send_string(&req.body),
+        "PUT" => ureq::put(&url)
+            .set("Content-Type", "application/json")
+            .send_string(&req.body),
+        "DELETE" => ureq::delete(&url).call(),
+        _ => {
+            let body = serde_json::json!({"error": "Method not allowed"}).to_string();
+            send_json(stream, 405, &body);
+            return Ok(());
+        }
+    };
+
+    match upstream {
+        Ok(resp) => {
+            let status = resp.status();
+            let content_type = resp.content_type().to_string();
+            let body = resp.into_string().unwrap_or_default();
+
+            // Rewrite the root HTML so fetch + WebSocket URLs route
+            // back through the proxy instead of hitting the device
+            // directly (which is unreachable through a remote tunnel).
+            if device_path == "/" && content_type.contains("text/html") {
+                let rewritten = rewrite_device_html(&body, &device.id);
+                send_proxy_response(stream, status, "text/html; charset=utf-8", rewritten.as_bytes());
+            } else {
+                send_proxy_response(stream, status, &content_type, body.as_bytes());
+            }
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            send_proxy_response(stream, code, "application/json", body.as_bytes());
+        }
+        Err(e) => {
+            let body = serde_json::json!({"error": format!("Device unreachable: {}", e)}).to_string();
+            send_json(stream, 502, &body);
+        }
+    }
+    Ok(())
+}
+
+/// Rewrite the device's embedded web dashboard HTML so that:
+/// 1. `fetch("/api/info")` becomes `fetch("api/info")` — a relative URL that
+///    resolves to `/proxy/{id}/api/info` when the page is served at `/proxy/{id}/`.
+/// 2. The WebSocket constructor uses the proxy path instead of `host:port+1`.
+fn rewrite_device_html(html: &str, device_id: &str) -> String {
+    let encoded_id = urlencoding::encode(device_id);
+
+    // fetch("/api/info") → fetch("api/info")  (relative — resolves via base URL)
+    let html = html.replace(
+        r#"fetch("/api/info")"#,
+        r#"fetch("api/info")"#,
+    );
+
+    // WebSocket: replace direct device connection with proxy path.
+    // Original: ws=new WebSocket("ws://"+host+":"+wsPort+"/")
+    // Rewritten: protocol-aware, routes through /proxy/{id}/ws
+    html.replace(
+        r#"ws=new WebSocket("ws://"+host+":"+wsPort+"/")"#,
+        &format!(
+            r#"ws=new WebSocket((location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+"/proxy/{}/ws")"#,
+            encoded_id
+        ),
+    )
+}
+
+fn handle_proxy_ws(
+    client_stream: &mut TcpStream,
+    device: &crate::device::Device,
+    req: &HttpRequest,
+) -> Result<(), String> {
+    let ws_port = device.port + 1;
+    let ws_addr = format!("{}:{}", device.ip, ws_port);
+
+    let addr: std::net::SocketAddr = ws_addr
+        .parse()
+        .map_err(|e| format!("Bad device WS addr: {}", e))?;
+
+    // Connect TCP to device WebSocket port
+    let device_stream = TcpStream::connect_timeout(
+        &addr,
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|e| format!("Device WS connect failed: {}", e))?;
+
+    // We need a write half for the device *before* wrapping in BufReader.
+    let mut device_wr = device_stream
+        .try_clone()
+        .map_err(|e| format!("clone: {}", e))?;
+
+    // Forward a WebSocket upgrade request to the device.
+    // Use the client's Sec-WebSocket-Key so the Accept hash matches
+    // what the client expects.
+    let ws_key = req
+        .sec_websocket_key
+        .as_deref()
+        .unwrap_or("dGhlIHNhbXBsZSBub25jZQ==");
+
+    let upgrade_req = format!(
+        "GET / HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {}\r\n\
+         Sec-WebSocket-Version: 13\r\n\
+         \r\n",
+        ws_addr, ws_key,
+    );
+    device_wr
+        .write_all(upgrade_req.as_bytes())
+        .map_err(|e| format!("WS upgrade write failed: {}", e))?;
+
+    // Wrap the device read side in a BufReader for header parsing.
+    // IMPORTANT: keep this BufReader alive through the bridge phase —
+    // dropping it would lose any bytes it buffered beyond the headers.
+    let mut device_reader = BufReader::new(device_stream);
+
+    // Read the device's 101 response and forward it verbatim to the client.
+    let mut response_header = String::new();
+    loop {
+        let mut line = String::new();
+        device_reader
+            .read_line(&mut line)
+            .map_err(|e| format!("WS upgrade read: {}", e))?;
+        if line.trim().is_empty() {
+            response_header.push_str("\r\n");
+            break;
+        }
+        response_header.push_str(&line);
+    }
+
+    client_stream
+        .write_all(response_header.as_bytes())
+        .map_err(|e| format!("WS upgrade reply: {}", e))?;
+    client_stream.flush().map_err(|e| e.to_string())?;
+
+    // Bridge raw bytes between client and device. Remove the read
+    // timeout set in handle_connection — WS connections are long-lived.
+    client_stream.set_read_timeout(None).ok();
+    device_wr.set_read_timeout(None).ok();
+
+    // client → device: read from client TCP, write to device TCP
+    let mut client_rd = client_stream
+        .try_clone()
+        .map_err(|e| format!("clone: {}", e))?;
+    let mut client_to_device = device_wr;
+
+    // device → client: read from device BufReader (preserves buffered
+    // bytes), write to client TCP
+    let mut device_to_client = client_stream
+        .try_clone()
+        .map_err(|e| format!("clone: {}", e))?;
+
+    let t1 = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut client_rd, &mut client_to_device);
+        let _ = client_to_device.shutdown(std::net::Shutdown::Both);
+    });
+    let t2 = std::thread::spawn(move || {
+        let _ = std::io::copy(&mut device_reader, &mut device_to_client);
+        let _ = device_to_client.shutdown(std::net::Shutdown::Both);
+    });
+
+    t1.join().ok();
+    t2.join().ok();
     Ok(())
 }
 
