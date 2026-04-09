@@ -356,7 +356,7 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let role = match auth::check_auth(
+    let (role, auth_token_id) = match auth::check_auth(
         &ctx.db,
         &peer_addr,
         req.authorization.as_deref(),
@@ -373,7 +373,7 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
             }
             // Successful auth — clear any failure state for this IP.
             ctx.rate_limiter.clear(&peer_addr);
-            role
+            (role, token_id)
         }
         AuthResult::Deny(status, msg) => {
             // Record the failure for rate limiting.
@@ -415,7 +415,7 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         return handle_proxy(ctx, &req, &mut stream);
     }
 
-    let (status, body) = route(&req, ctx, role);
+    let (status, body) = route(&req, ctx, role, auth_token_id);
 
     // Status 202 is used as an in-band signal that the body is CSV (the
     // metrics export route). Everything else is JSON. The web UI HTML is
@@ -669,11 +669,23 @@ fn require_admin(role: Role) -> Option<(u16, String)> {
     }
 }
 
-fn route(req: &HttpRequest, ctx: &ApiContext, role: Role) -> (u16, String) {
+fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>) -> (u16, String) {
     let path = req.path.as_str();
     let method = req.method.as_str();
 
     match (method, path) {
+        // ─── Auth info ──────────────────────────────────────────────
+        ("GET", "/api/auth/whoami") => {
+            let role_str = match role {
+                Role::Admin => "admin",
+                Role::Viewer => "viewer",
+            };
+            json_ok(&serde_json::json!({
+                "role": role_str,
+                "token_id": token_id,
+            }))
+        }
+
         // ─── Devices ─────────────────────────────────────────────────
         ("GET", "/api/devices") => {
             let devices = ctx.discovery.get_devices();

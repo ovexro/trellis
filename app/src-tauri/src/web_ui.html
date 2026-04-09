@@ -446,6 +446,7 @@
         <button class="tab-btn" data-tab="automation">Automation</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
       </nav>
+      <span id="viewerBadge" class="hidden" style="font-size:0.7rem;padding:0.2rem 0.6rem;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);border-radius:999px;white-space:nowrap;">Read-only</span>
     </div>
   </header>
 
@@ -548,6 +549,7 @@
     let currentTab = 'devices';
     let pollTimer = null;
     let initialLoad = true;
+    let isViewer = false;
 
     /* ────────────────────────── API Helpers ────────────────────────── */
     /*
@@ -790,7 +792,7 @@
           return `<div class="control-row">
             <span class="control-label">${label}</span>
             <div class="control-value">
-              <button class="toggle ${cap.value ? 'on' : ''}" onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}', ${!cap.value})"></button>
+              <button class="toggle ${cap.value ? 'on' : ''}" ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}', ${!cap.value})"`}></button>
             </div>
           </div>`;
 
@@ -803,8 +805,8 @@
             <div class="control-value">
               <div class="slider-wrap">
                 <input type="range" min="${min}" max="${max}" value="${val}"
-                  oninput="this.nextElementSibling.textContent=this.value"
-                  onchange="sendSlider(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)">
+                  ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `oninput="this.nextElementSibling.textContent=this.value"
+                  onchange="sendSlider(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)"`}>
                 <span class="slider-val">${val}</span>
               </div>
             </div>
@@ -827,7 +829,7 @@
             <span class="control-label">${label}</span>
             <div class="control-value">
               <input type="color" value="${esc(cap.value || '#000000')}"
-                onchange="sendColor(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)">
+                ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onchange="sendColor(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)"`}>
             </div>
           </div>`;
 
@@ -836,8 +838,8 @@
             <span class="control-label">${label}</span>
             <div class="control-value">
               <div class="text-input-wrap">
-                <input type="text" value="${esc(cap.value || '')}" id="txt-${esc(deviceId)}-${esc(cap.id)}">
-                <button class="btn btn-primary btn-sm" onclick="sendText(event, '${esc(deviceId)}', '${esc(cap.id)}')">Set</button>
+                <input type="text" value="${esc(cap.value || '')}" id="txt-${esc(deviceId)}-${esc(cap.id)}" ${isViewer ? 'disabled style="opacity:0.5"' : ''}>
+                ${isViewer ? '' : `<button class="btn btn-primary btn-sm" onclick="sendText(event, '${esc(deviceId)}', '${esc(cap.id)}')">Set</button>`}
               </div>
             </div>
           </div>`;
@@ -1022,8 +1024,8 @@
             </div>
           </div>
           <div class="input-row">
-            <input type="text" class="input-text" id="ntfyInput" value="${esc(ntfyTopic)}" placeholder="e.g. trellis-alerts">
-            <button class="btn btn-primary btn-sm" onclick="saveNtfy()">Save</button>
+            <input type="text" class="input-text" id="ntfyInput" value="${esc(ntfyTopic)}" placeholder="e.g. trellis-alerts" ${isViewer ? 'disabled style="opacity:0.5"' : ''}>
+            ${isViewer ? '' : '<button class="btn btn-primary btn-sm" onclick="saveNtfy()">Save</button>'}
           </div>
         </div>`;
 
@@ -1031,11 +1033,11 @@
         html += `<div class="settings-section">
           <div class="settings-title">Groups</div>
           <div id="groupsList">${renderGroupsList(groups)}</div>
-          <div class="new-group-row">
+          ${isViewer ? '' : `<div class="new-group-row">
             <input type="text" id="newGroupName" placeholder="New group name">
             <input type="color" id="newGroupColor" value="#6366f1">
             <button class="btn btn-primary btn-sm" onclick="createGroup()">Add</button>
-          </div>
+          </div>`}
         </div>`;
 
         // About
@@ -1064,10 +1066,10 @@
       return grps.map(g => `<div class="group-list-item">
         <div class="group-swatch" style="background:${esc(g.color || '#6366f1')}"></div>
         <span class="group-list-name">${esc(g.name)}</span>
-        <div class="group-list-actions">
+        ${isViewer ? '' : `<div class="group-list-actions">
           <button class="btn btn-ghost btn-sm" onclick="openEditGroup(${g.id}, '${esc(g.name)}', '${esc(g.color || '#6366f1')}')">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteGroup(${g.id})">Del</button>
-        </div>
+        </div>`}
       </div>`).join('');
     }
 
@@ -1190,7 +1192,20 @@
     }
 
     /* ────────────────────────── Init ────────────────────────── */
-    startPolling();
+    (async () => {
+      try {
+        const whoami = await api('/api/auth/whoami');
+        if (whoami && whoami.role === 'viewer') {
+          isViewer = true;
+          document.getElementById('viewerBadge')?.classList.remove('hidden');
+        }
+      } catch {
+        // 401 triggers auth modal via api() helper; other errors are
+        // non-fatal — default to admin (loopback case where whoami
+        // may not be needed).
+      }
+      startPolling();
+    })();
   </script>
 </body>
 </html>
