@@ -195,8 +195,10 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Interactive controls (switch, slider, sensor, color, text)
 - [x] Automation overview (schedules, rules, webhooks)
 - [x] Settings management (ntfy, groups)
-- [x] Auto-refresh (5s polling)
+- [x] Auto-refresh (5s polling, fallback only)
 - [x] Zero external dependencies (single embedded HTML file)
+- [x] **WebSocket push (post-v0.4.4)** — persistent `/ws` connection replaces polling with instant device event delivery. Device state changes, heartbeats, logs, and discovery events (online/offline) arrive in real time. `WsBroadcaster` fan-out in Rust feeds all connected browser clients. Query-param token auth (`/ws?token=trls_...`) for remote access since browser WebSocket API can't set custom headers. Loopback bypass applies. Polling auto-resumes as fallback on WS disconnect. Green/gray connection indicator dot in header.
+- [x] **PWA support (post-v0.4.4)** — web app manifest (`/manifest.json`) with standalone display mode, themed SVG icons, and dark background. Service worker (`/sw.js`) caches the HTML shell for offline display with network-first strategy. Mobile install prompt banner for "Add to Home Screen". Both routes served pre-auth (same as `GET /`).
 
 ## Scenes
 
