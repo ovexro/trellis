@@ -194,14 +194,25 @@ const TOKEN_BYTE_LEN: usize = 32;
 /// embedded WebView and any local CLI work with no setup.
 pub const REQUIRE_AUTH_LOCALHOST_KEY: &str = "require_auth_localhost";
 
+/// Role assigned to an API token (or implicitly to loopback requests).
+/// `Admin` has full access; `Viewer` can read devices, metrics, and status
+/// but cannot send commands, trigger OTA, manage tokens, or change settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Admin,
+    Viewer,
+}
+
 /// Outcome of an auth check. Either the request is authorized to proceed
-/// (with an optional token row id for `last_used_at` bookkeeping), or it
-/// must be rejected with the contained status + error body.
+/// (with an optional token row id for `last_used_at` bookkeeping and a
+/// role for permission enforcement), or it must be rejected with the
+/// contained status + error body.
 pub enum AuthResult {
-    /// Request may proceed. `Some(id)` means a token was used and its
-    /// last-used timestamp should be touched. `None` means the request
-    /// was bypassed (loopback default) and there's no token to update.
-    Allow(Option<i64>),
+    /// Request may proceed. `token_id: Some(id)` means a token was used
+    /// and its last-used timestamp should be touched. `None` means the
+    /// request was bypassed (loopback default) and there's no token to
+    /// update. `role` determines what the caller is allowed to do.
+    Allow { token_id: Option<i64>, role: Role },
     /// Request must be rejected. `(status_code, error_message_for_body)`.
     /// The middleware turns this into a JSON 401/403 response.
     Deny(u16, String),
@@ -268,9 +279,9 @@ pub fn check_auth(
 ) -> AuthResult {
     let loopback = is_loopback(peer_addr);
 
-    // Branch 1: loopback default-bypass
+    // Branch 1: loopback default-bypass — implicit admin
     if loopback && !require_auth_localhost {
-        return AuthResult::Allow(None);
+        return AuthResult::Allow { token_id: None, role: Role::Admin };
     }
 
     // Branch 2: token required (either remote, or loopback with strict mode)
@@ -302,7 +313,7 @@ pub fn check_auth(
 
     let hash = sha256_hex(&token);
     match db.find_api_token_by_hash(&hash) {
-        Ok(Some((id, expires_at))) => {
+        Ok(Some((id, expires_at, role_str))) => {
             if let Some(ref exp) = expires_at {
                 if is_expired(exp) {
                     return AuthResult::Deny(
@@ -311,7 +322,11 @@ pub fn check_auth(
                     );
                 }
             }
-            AuthResult::Allow(Some(id))
+            let role = match role_str.as_str() {
+                "viewer" => Role::Viewer,
+                _ => Role::Admin, // unknown roles default to admin (forward-compat)
+            };
+            AuthResult::Allow { token_id: Some(id), role }
         }
         Ok(None) => AuthResult::Deny(401, "Invalid or revoked API token.".to_string()),
         Err(e) => {
@@ -455,6 +470,24 @@ mod tests {
         assert!(is_loopback(&v4_high));
         assert!(is_loopback(&v6));
         assert!(!is_loopback(&lan));
+    }
+
+    #[test]
+    fn role_parsing() {
+        // Known roles
+        assert_eq!(
+            match "viewer" { "viewer" => Role::Viewer, _ => Role::Admin },
+            Role::Viewer
+        );
+        assert_eq!(
+            match "admin" { "viewer" => Role::Viewer, _ => Role::Admin },
+            Role::Admin
+        );
+        // Unknown roles default to admin (forward-compat)
+        assert_eq!(
+            match "superadmin" { "viewer" => Role::Viewer, _ => Role::Admin },
+            Role::Admin
+        );
     }
 
     #[test]

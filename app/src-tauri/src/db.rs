@@ -674,11 +674,11 @@ impl Database {
     /// plaintext token and computing its SHA-256 hex digest — this method
     /// only stores the digest. Returns the new row id so the caller can
     /// echo it back to the UI alongside the plaintext.
-    pub fn create_api_token(&self, name: &str, token_hash: &str, expires_at: Option<&str>) -> Result<i64, String> {
+    pub fn create_api_token(&self, name: &str, token_hash: &str, expires_at: Option<&str>, role: &str) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO api_tokens (name, token_hash, expires_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![name, token_hash, expires_at],
+            "INSERT INTO api_tokens (name, token_hash, expires_at, role) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![name, token_hash, expires_at, role],
         )
         .map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
@@ -690,7 +690,7 @@ impl Database {
     pub fn list_api_tokens(&self) -> Result<Vec<ApiToken>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, created_at, last_used_at, expires_at FROM api_tokens ORDER BY created_at DESC")
+            .prepare("SELECT id, name, created_at, last_used_at, expires_at, role FROM api_tokens ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -700,6 +700,7 @@ impl Database {
                     created_at: row.get(2)?,
                     last_used_at: row.get(3)?,
                     expires_at: row.get(4)?,
+                    role: row.get::<_, Option<String>>(5)?.unwrap_or_else(|| "admin".to_string()),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -707,21 +708,26 @@ impl Database {
             .map_err(|e| e.to_string())
     }
 
-    /// Look up a token by its SHA-256 hex digest. Returns `(row_id, expires_at)`
+    /// Look up a token by its SHA-256 hex digest. Returns `(row_id, expires_at, role)`
     /// if found. The auth gate uses `expires_at` to reject expired tokens with
-    /// a distinct error message. `None` means "no such token" (auth-failure path).
-    pub fn find_api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<String>)>, String> {
+    /// a distinct error message and `role` for permission enforcement.
+    /// `None` means "no such token" (auth-failure path).
+    pub fn find_api_token_by_hash(&self, token_hash: &str) -> Result<Option<(i64, Option<String>, String)>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, expires_at FROM api_tokens WHERE token_hash = ?1")
+            .prepare("SELECT id, expires_at, role FROM api_tokens WHERE token_hash = ?1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query_map(rusqlite::params![token_hash], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "admin".to_string()),
+                ))
             })
             .map_err(|e| e.to_string())?;
         match rows.next() {
-            Some(Ok(pair)) => Ok(Some(pair)),
+            Some(Ok(tuple)) => Ok(Some(tuple)),
             _ => Ok(None),
         }
     }
@@ -834,6 +840,7 @@ pub struct ApiToken {
     pub created_at: String,
     pub last_used_at: Option<String>,
     pub expires_at: Option<String>,
+    pub role: String,
 }
 
 pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -984,6 +991,11 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Add expires_at column to api_tokens if it doesn't exist (v0.4.4 — token TTL)
     let _ = conn.execute("ALTER TABLE api_tokens ADD COLUMN expires_at TEXT", []);
+
+    // Add role column to api_tokens if it doesn't exist (v0.5.0 — RBAC).
+    // Default 'admin' preserves existing behavior: pre-migration tokens get
+    // full access without requiring manual re-configuration.
+    let _ = conn.execute("ALTER TABLE api_tokens ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'", []);
 
     app.manage(Database {
         conn: Mutex::new(conn),

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Key, Copy, Trash2, AlertTriangle, Check, Clock } from "lucide-react";
+import { Key, Copy, Trash2, AlertTriangle, Check, Clock, Shield, Eye } from "lucide-react";
 import type { ApiToken, CreatedApiToken } from "./types";
 import { formatTimestamp } from "./types";
 
@@ -34,6 +34,7 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
   const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
   const [newTokenTtl, setNewTokenTtl] = useState("never");
+  const [newTokenRole, setNewTokenRole] = useState("admin");
   const [createdToken, setCreatedToken] = useState<CreatedApiToken | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [tokenFeedback, setTokenFeedback] = useState("");
@@ -70,10 +71,12 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
       const created = await invoke<CreatedApiToken>("create_api_token", {
         name,
         ttl: newTokenTtl === "never" ? null : newTokenTtl,
+        role: newTokenRole,
       });
       setCreatedToken(created);
       setNewTokenName("");
       setNewTokenTtl("never");
+      setNewTokenRole("admin");
       setTokenCopied(false);
       await refreshApiTokens();
     } catch (err) {
@@ -152,6 +155,7 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
                 <thead className="bg-zinc-900/40 text-zinc-500">
                   <tr>
                     <th className="text-left font-normal px-3 py-2">Name</th>
+                    <th className="text-left font-normal px-3 py-2">Role</th>
                     <th className="text-left font-normal px-3 py-2">Created</th>
                     <th className="text-left font-normal px-3 py-2">Expires</th>
                     <th className="text-left font-normal px-3 py-2">Last used</th>
@@ -164,6 +168,17 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
                     return (
                       <tr key={t.id} className={`border-t border-zinc-800 ${status === "expired" ? "opacity-50" : ""}`}>
                         <td className="px-3 py-2 text-zinc-200">{t.name}</td>
+                        <td className="px-3 py-2 text-xs">
+                          {t.role === "viewer" ? (
+                            <span className="inline-flex items-center gap-1 text-zinc-400">
+                              <Eye size={11} /> Viewer
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-trellis-400">
+                              <Shield size={11} /> Admin
+                            </span>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-zinc-500 text-xs">{formatTimestamp(t.created_at)}</td>
                         <td className="px-3 py-2 text-xs">
                           {status === "none" && <span className="text-zinc-600">Never</span>}
@@ -219,6 +234,15 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
               {TTL_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
+            </select>
+            <select
+              value={newTokenRole}
+              onChange={(e) => setNewTokenRole(e.target.value)}
+              className="px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-300 focus:outline-none focus:border-trellis-500"
+              disabled={tokenBusy}
+            >
+              <option value="admin">Admin</option>
+              <option value="viewer">Viewer (read-only)</option>
             </select>
             <button
               onClick={createApiToken}
@@ -285,7 +309,18 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
             </div>
 
             <div>
-              <label className="text-xs text-zinc-500 block mb-1">{createdToken.name}</label>
+              <div className="flex items-center gap-2 mb-1">
+                <label className="text-xs text-zinc-500">{createdToken.name}</label>
+                {createdToken.role === "viewer" ? (
+                  <span className="inline-flex items-center gap-1 text-xs text-zinc-400 bg-zinc-800 px-1.5 py-0.5 rounded">
+                    <Eye size={10} /> Viewer
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-xs text-trellis-400 bg-trellis-500/10 px-1.5 py-0.5 rounded">
+                    <Shield size={10} /> Admin
+                  </span>
+                )}
+              </div>
               <div className="flex gap-2">
                 <code className="flex-1 px-3 py-2 bg-zinc-950 border border-zinc-700 rounded-lg text-sm text-amber-300 font-mono break-all">
                   {createdToken.token}

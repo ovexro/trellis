@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::auth::{self, AuthResult, RateLimiter, REQUIRE_AUTH_LOCALHOST_KEY};
+use crate::auth::{self, AuthResult, RateLimiter, Role, REQUIRE_AUTH_LOCALHOST_KEY};
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::discovery::Discovery;
@@ -356,13 +356,13 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    match auth::check_auth(
+    let role = match auth::check_auth(
         &ctx.db,
         &peer_addr,
         req.authorization.as_deref(),
         require_strict,
     ) {
-        AuthResult::Allow(token_id) => {
+        AuthResult::Allow { token_id, role } => {
             // Bump last_used_at on the matched token. Best-effort — a
             // failure here just leaves the timestamp stale, the request
             // still proceeds.
@@ -373,6 +373,7 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
             }
             // Successful auth — clear any failure state for this IP.
             ctx.rate_limiter.clear(&peer_addr);
+            role
         }
         AuthResult::Deny(status, msg) => {
             // Record the failure for rate limiting.
@@ -398,17 +399,23 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
             send_json(&mut stream, status, &body);
             return Ok(());
         }
-    }
+    };
 
     // Device proxy: `/proxy/{device-id}/{path...}` forwards to the
     // device's embedded HTTP server on :8080 (and WebSocket on :8081).
     // This lets remote users (through a tunnel) reach individual device
-    // dashboards without direct LAN access.
+    // dashboards without direct LAN access. Viewers are blocked — the
+    // proxied dashboard includes command controls that would fail anyway.
     if req.path.starts_with("/proxy/") {
+        if role == Role::Viewer {
+            let body = serde_json::json!({"error": "This action requires an admin token. Your token has viewer-only access."}).to_string();
+            send_json(&mut stream, 403, &body);
+            return Ok(());
+        }
         return handle_proxy(ctx, &req, &mut stream);
     }
 
-    let (status, body) = route(&req, ctx);
+    let (status, body) = route(&req, ctx, role);
 
     // Status 202 is used as an in-band signal that the body is CSV (the
     // metrics export route). Everything else is JSON. The web UI HTML is
@@ -652,7 +659,17 @@ fn handle_proxy_ws(
     Ok(())
 }
 
-fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
+/// Check whether the caller has admin privileges. Returns `Some((403, ...))` if
+/// the token is viewer-only, which the caller can return early from the match arm.
+fn require_admin(role: Role) -> Option<(u16, String)> {
+    if role == Role::Viewer {
+        Some(json_error(403, "This action requires an admin token. Your token has viewer-only access."))
+    } else {
+        None
+    }
+}
+
+fn route(req: &HttpRequest, ctx: &ApiContext, role: Role) -> (u16, String) {
     let path = req.path.as_str();
     let method = req.method.as_str();
 
@@ -673,6 +690,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("POST", p) if p.ends_with("/command") && p.starts_with("/api/devices/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/command".len()];
             handle_send_command(ctx, id, &req.body)
         }
@@ -705,6 +723,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("POST", p) if p.starts_with("/api/devices/") && p.ends_with("/alerts") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/alerts".len()];
             handle_create_alert(ctx, id, &req.body)
         }
@@ -718,16 +737,19 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/group") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/group".len()];
             handle_set_device_group(ctx, id, &req.body)
         }
 
         ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/nickname") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/nickname".len()];
             handle_set_nickname(ctx, id, &req.body)
         }
 
         ("DELETE", p) if p.starts_with("/api/devices/") && !p["/api/devices/".len()..].contains('/') => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..];
             match ctx.db.delete_device(id) {
                 Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
@@ -743,9 +765,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
             }
         }
 
-        ("POST", "/api/groups") => handle_create_group(ctx, &req.body),
+        ("POST", "/api/groups") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_group(ctx, &req.body)
+        }
 
         ("PUT", p) if p.starts_with("/api/groups/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/groups/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid group ID"),
@@ -754,6 +780,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("DELETE", p) if p.starts_with("/api/groups/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/groups/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid group ID"),
@@ -772,9 +799,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
             }
         }
 
-        ("POST", "/api/schedules") => handle_create_schedule(ctx, &req.body),
+        ("POST", "/api/schedules") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_schedule(ctx, &req.body)
+        }
 
         ("DELETE", p) if p.starts_with("/api/schedules/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/schedules/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid schedule ID"),
@@ -793,9 +824,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
             }
         }
 
-        ("POST", "/api/rules") => handle_create_rule(ctx, &req.body),
+        ("POST", "/api/rules") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_rule(ctx, &req.body)
+        }
 
         ("DELETE", p) if p.starts_with("/api/rules/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/rules/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid rule ID"),
@@ -814,9 +849,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
             }
         }
 
-        ("POST", "/api/webhooks") => handle_create_webhook(ctx, &req.body),
+        ("POST", "/api/webhooks") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_webhook(ctx, &req.body)
+        }
 
         ("DELETE", p) if p.starts_with("/api/webhooks/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/webhooks/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid webhook ID"),
@@ -837,6 +876,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
 
         // ─── Alerts (global) ────────────────────────────────────────
         ("DELETE", p) if p.starts_with("/api/alerts/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/alerts/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid alert ID"),
@@ -857,6 +897,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("PUT", "/api/settings/mqtt") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let cfg: MqttConfig = match serde_json::from_str(&req.body) {
                 Ok(c) => c,
                 Err(e) => return json_error(400, &format!("Invalid MQTT config JSON: {}", e)),
@@ -890,6 +931,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("POST", "/api/mqtt/clear-password") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             // Explicit password clear path. Distinct from PUT with empty
             // password (which preserves the existing one).
             if let Err(e) = ctx.mqtt_bridge.clear_password() {
@@ -937,6 +979,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         ("PUT", p) if p.starts_with("/api/settings/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let key = &p["/api/settings/".len()..];
             // Block writing to sensitive keys via the generic setter so the
             // typed endpoint's validation (and the merge_preserving_password
@@ -973,17 +1016,21 @@ fn route(req: &HttpRequest, ctx: &ApiContext) -> (u16, String) {
         }
 
         // ─── API tokens ──────────────────────────────────────────────
-        // The auth gate has already cleared the request before reaching
-        // this point, so anyone who can hit these endpoints is already
-        // authorized to mint/revoke tokens.
+        // Viewers can list tokens (see names + timestamps) but cannot
+        // create or revoke — prevents privilege escalation where a viewer
+        // mints an admin token.
         ("GET", "/api/tokens") => match ctx.db.list_api_tokens() {
             Ok(tokens) => json_ok(&tokens),
             Err(e) => json_error(500, &e),
         },
 
-        ("POST", "/api/tokens") => handle_create_token(ctx, &req.body),
+        ("POST", "/api/tokens") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_token(ctx, &req.body)
+        }
 
         ("DELETE", p) if p.starts_with("/api/tokens/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/tokens/".len()..].parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid token ID"),
@@ -1174,9 +1221,13 @@ fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
         return json_error(400, "Token name is required");
     }
     let ttl = v["ttl"].as_str().unwrap_or("never");
+    let role = v["role"].as_str().unwrap_or("admin");
+    if role != "admin" && role != "viewer" {
+        return json_error(400, "Invalid role. Must be \"admin\" or \"viewer\".");
+    }
     let (plaintext, hash) = auth::generate_token();
     let expires_at = auth::compute_expires_at(ttl);
-    match ctx.db.create_api_token(name, &hash, expires_at.as_deref()) {
+    match ctx.db.create_api_token(name, &hash, expires_at.as_deref(), role) {
         Ok(id) => {
             // The plaintext is returned ONCE here and never persisted.
             // Once this response is on the wire, the only proof of the
@@ -1185,6 +1236,7 @@ fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
                 "id": id,
                 "name": name,
                 "token": plaintext,
+                "role": role,
                 "expires_at": expires_at,
                 "warning": "Store this token now — it will not be shown again."
             });

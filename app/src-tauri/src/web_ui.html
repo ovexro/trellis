@@ -622,6 +622,10 @@
         showAuthModal('Authentication required. Paste a Trellis API token below — mint one in the desktop app under Settings → API Tokens.');
         throw new Error('401 Unauthorized');
       }
+      if (res.status === 403) {
+        toast('Permission denied — this action requires an admin token', 'error');
+        throw new Error('403 Forbidden');
+      }
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const text = await res.text();
       return text ? JSON.parse(text) : null;

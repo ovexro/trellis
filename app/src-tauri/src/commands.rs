@@ -544,6 +544,7 @@ pub struct CreatedApiToken {
     pub id: i64,
     pub name: String,
     pub token: String,
+    pub role: String,
     pub expires_at: Option<String>,
 }
 
@@ -553,18 +554,23 @@ pub fn list_api_tokens(db: State<'_, Database>) -> Result<Vec<ApiToken>, String>
 }
 
 #[tauri::command]
-pub fn create_api_token(db: State<'_, Database>, name: String, ttl: Option<String>) -> Result<CreatedApiToken, String> {
+pub fn create_api_token(db: State<'_, Database>, name: String, ttl: Option<String>, role: Option<String>) -> Result<CreatedApiToken, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Token name is required".to_string());
     }
+    let role_str = role.as_deref().unwrap_or("admin");
+    if role_str != "admin" && role_str != "viewer" {
+        return Err("Invalid role. Must be \"admin\" or \"viewer\".".to_string());
+    }
     let (plaintext, hash) = auth::generate_token();
     let expires_at = ttl.as_deref().and_then(auth::compute_expires_at);
-    let id = db.create_api_token(trimmed, &hash, expires_at.as_deref())?;
+    let id = db.create_api_token(trimmed, &hash, expires_at.as_deref(), role_str)?;
     Ok(CreatedApiToken {
         id,
         name: trimmed.to_string(),
         token: plaintext,
+        role: role_str.to_string(),
         expires_at,
     })
 }

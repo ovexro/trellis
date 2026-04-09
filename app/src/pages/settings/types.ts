@@ -4,12 +4,14 @@ export type ApiToken = {
   created_at: string;
   last_used_at: string | null;
   expires_at: string | null;
+  role: string;
 };
 
 export type CreatedApiToken = {
   id: number;
   name: string;
   token: string;
+  role: string;
   expires_at: string | null;
 };
 
