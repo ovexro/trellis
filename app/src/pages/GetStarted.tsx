@@ -430,6 +430,15 @@ export default function GetStarted() {
           </div>
         )}
       </div>
+
+      {devices.length > 0 && (
+        <button
+          onClick={finishOnboarding}
+          className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+        >
+          Already have devices? Skip to dashboard &rarr;
+        </button>
+      )}
     </div>
   );
 

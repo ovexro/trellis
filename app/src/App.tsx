@@ -19,9 +19,20 @@ function FirstRunRedirect({ children }: { children: React.ReactNode }) {
   const location = useLocation();
 
   useEffect(() => {
-    invoke<string | null>("get_setting", { key: "onboarding_completed" })
-      .then((val) => {
-        setNeedsOnboarding(val !== "true");
+    Promise.all([
+      invoke<string | null>("get_setting", { key: "onboarding_completed" }),
+      invoke<unknown[]>("get_saved_devices"),
+    ])
+      .then(([val, saved]) => {
+        if (val === "true" || (saved && saved.length > 0)) {
+          // Already completed, or existing user who predates the wizard.
+          if (val !== "true") {
+            invoke("set_setting", { key: "onboarding_completed", value: "true" }).catch(() => {});
+          }
+          setNeedsOnboarding(false);
+        } else {
+          setNeedsOnboarding(true);
+        }
         setChecked(true);
       })
       .catch(() => setChecked(true));
