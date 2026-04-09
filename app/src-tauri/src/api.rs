@@ -31,6 +31,14 @@ struct ApiContext {
 /// password-redacted view.
 const SENSITIVE_SETTING_KEYS: &[&str] = &["mqtt_config"];
 
+/// Maximum allowed Content-Length for incoming requests (1 MB). The REST API
+/// only processes JSON payloads — the largest legitimate body is an MQTT config
+/// save or a bulk import, well under this limit. OTA firmware uploads go
+/// directly to the device's :8080 endpoint, not through :9090. Without this
+/// cap a malicious caller could force an unbounded heap allocation before the
+/// auth gate even runs.
+const MAX_BODY_SIZE: usize = 1_048_576;
+
 fn is_sensitive_key(key: &str) -> bool {
     SENSITIVE_SETTING_KEYS.iter().any(|k| *k == key)
 }
@@ -159,8 +167,14 @@ fn parse_request(stream: &TcpStream) -> Result<HttpRequest, String> {
         }
     }
 
-    // Read body
+    // Read body — reject before allocating if Content-Length exceeds the cap.
     let mut body = String::new();
+    if content_length > MAX_BODY_SIZE {
+        return Err(format!(
+            "Content-Length {} exceeds maximum allowed size of {} bytes",
+            content_length, MAX_BODY_SIZE
+        ));
+    }
     if content_length > 0 {
         let mut buf = vec![0u8; content_length];
         reader.read_exact(&mut buf).map_err(|e| e.to_string())?;
@@ -198,7 +212,11 @@ fn send_json(stream: &mut TcpStream, status: u16, body: &str) {
         201 => "Created",
         204 => "No Content",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
+        413 => "Content Too Large",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
         _ => "OK",
     };
@@ -273,7 +291,16 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         .peer_addr()
         .map_err(|e| format!("peer_addr unavailable: {}", e))?;
 
-    let req = parse_request(&stream)?;
+    let req = match parse_request(&stream) {
+        Ok(r) => r,
+        Err(e) if e.contains("exceeds maximum allowed size") => {
+            log::warn!("[API] Rejected oversized body from {}: {}", peer_addr, e);
+            let body = serde_json::json!({"error": e}).to_string();
+            send_json(&mut stream, 413, &body);
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
 
     // CORS preflight: always allow. Browsers send these without credentials
     // before any cross-origin call; the actual request that follows still
