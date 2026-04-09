@@ -52,13 +52,131 @@
 // only one source of truth for "how do we mint a token" and "how do we
 // hash one for storage".
 
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use base64::Engine;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 use crate::db::Database;
+
+// ─── Rate limiter ────────────────────────────────────────────────────────────
+
+/// Per-IP failure record for rate limiting.
+struct FailureRecord {
+    /// Number of consecutive auth failures.
+    count: u32,
+    /// When the most recent failure occurred (monotonic clock).
+    last_failure: Instant,
+}
+
+/// In-memory rate limiter that tracks failed auth attempts per IP.
+///
+/// After `GRACE_FAILURES` consecutive failures from a single IP, further
+/// requests are rejected with 429 before the auth check even runs. The
+/// backoff doubles each time (1s → 2s → 4s → ... capped at `MAX_BACKOFF_SECS`).
+/// A successful auth or `RESET_AFTER_SECS` of silence resets the counter.
+///
+/// Loopback IPs are never rate-limited (they bypass auth by default anyway).
+pub struct RateLimiter {
+    state: Mutex<HashMap<IpAddr, FailureRecord>>,
+}
+
+/// Number of failures before rate limiting kicks in.
+const GRACE_FAILURES: u32 = 3;
+
+/// Maximum backoff in seconds (cap for the exponential doubling).
+const MAX_BACKOFF_SECS: u64 = 60;
+
+/// Seconds of silence after which a failure record is auto-cleared.
+const RESET_AFTER_SECS: u64 = 15 * 60;
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Check whether a request from `addr` should be rate-limited.
+    /// Returns `Some((status, message))` if the request must be rejected,
+    /// or `None` if it may proceed to the auth check.
+    pub fn check(&self, addr: &SocketAddr) -> Option<(u16, String)> {
+        if addr.ip().is_loopback() {
+            return None;
+        }
+        let mut map = self.state.lock().unwrap();
+        let ip = addr.ip();
+        let rec = match map.get(&ip) {
+            Some(r) => r,
+            None => return None,
+        };
+
+        // Auto-reset after prolonged silence.
+        if rec.last_failure.elapsed().as_secs() >= RESET_AFTER_SECS {
+            map.remove(&ip);
+            return None;
+        }
+
+        if rec.count <= GRACE_FAILURES {
+            return None;
+        }
+
+        // Exponential backoff: 2^(count - GRACE_FAILURES - 1) seconds,
+        // capped at MAX_BACKOFF_SECS.
+        let exponent = (rec.count - GRACE_FAILURES - 1).min(6);
+        let backoff_secs = (1u64 << exponent).min(MAX_BACKOFF_SECS);
+        let elapsed = rec.last_failure.elapsed().as_secs();
+
+        if elapsed < backoff_secs {
+            let retry_after = backoff_secs - elapsed;
+            Some((
+                429,
+                format!(
+                    "Too many failed authentication attempts. Retry after {} second{}.",
+                    retry_after,
+                    if retry_after == 1 { "" } else { "s" }
+                ),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Record a failed auth attempt from `addr`.
+    pub fn record_failure(&self, addr: &SocketAddr) {
+        if addr.ip().is_loopback() {
+            return;
+        }
+        let mut map = self.state.lock().unwrap();
+        let rec = map.entry(addr.ip()).or_insert(FailureRecord {
+            count: 0,
+            last_failure: Instant::now(),
+        });
+        rec.count += 1;
+        rec.last_failure = Instant::now();
+
+        if rec.count == GRACE_FAILURES + 1 {
+            log::warn!(
+                "[Auth] Rate limiting {} after {} consecutive failures",
+                addr.ip(),
+                rec.count
+            );
+        }
+    }
+
+    /// Clear failure state for `addr` (called on successful auth).
+    pub fn clear(&self, addr: &SocketAddr) {
+        if addr.ip().is_loopback() {
+            return;
+        }
+        let mut map = self.state.lock().unwrap();
+        map.remove(&addr.ip());
+    }
+}
 
 /// Prefix for every Trellis API token. Used by humans (greppable, easy to
 /// spot in logs/config files) and by sanity checks in the auth middleware
@@ -337,5 +455,65 @@ mod tests {
         assert!(is_loopback(&v4_high));
         assert!(is_loopback(&v6));
         assert!(!is_loopback(&lan));
+    }
+
+    #[test]
+    fn rate_limiter_allows_within_grace() {
+        let rl = RateLimiter::new();
+        let addr: SocketAddr = "192.168.1.50:12345".parse().unwrap();
+        // First 3 failures should not trigger rate limiting.
+        for _ in 0..GRACE_FAILURES {
+            rl.record_failure(&addr);
+            assert!(rl.check(&addr).is_none());
+        }
+    }
+
+    #[test]
+    fn rate_limiter_blocks_after_grace() {
+        let rl = RateLimiter::new();
+        let addr: SocketAddr = "192.168.1.50:12345".parse().unwrap();
+        for _ in 0..=GRACE_FAILURES {
+            rl.record_failure(&addr);
+        }
+        // 4th failure just happened — should be rate-limited now.
+        let result = rl.check(&addr);
+        assert!(result.is_some());
+        let (status, _) = result.unwrap();
+        assert_eq!(status, 429);
+    }
+
+    #[test]
+    fn rate_limiter_clears_on_success() {
+        let rl = RateLimiter::new();
+        let addr: SocketAddr = "192.168.1.50:12345".parse().unwrap();
+        for _ in 0..=GRACE_FAILURES {
+            rl.record_failure(&addr);
+        }
+        assert!(rl.check(&addr).is_some());
+        rl.clear(&addr);
+        assert!(rl.check(&addr).is_none());
+    }
+
+    #[test]
+    fn rate_limiter_ignores_loopback() {
+        let rl = RateLimiter::new();
+        let addr: SocketAddr = "127.0.0.1:12345".parse().unwrap();
+        for _ in 0..10 {
+            rl.record_failure(&addr);
+        }
+        // Loopback is always exempt.
+        assert!(rl.check(&addr).is_none());
+    }
+
+    #[test]
+    fn rate_limiter_isolates_ips() {
+        let rl = RateLimiter::new();
+        let bad: SocketAddr = "192.168.1.50:12345".parse().unwrap();
+        let good: SocketAddr = "192.168.1.51:12345".parse().unwrap();
+        for _ in 0..=GRACE_FAILURES {
+            rl.record_failure(&bad);
+        }
+        assert!(rl.check(&bad).is_some());
+        assert!(rl.check(&good).is_none());
     }
 }

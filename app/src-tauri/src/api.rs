@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::auth::{self, AuthResult, REQUIRE_AUTH_LOCALHOST_KEY};
+use crate::auth::{self, AuthResult, RateLimiter, REQUIRE_AUTH_LOCALHOST_KEY};
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::discovery::Discovery;
@@ -20,6 +20,7 @@ struct ApiContext {
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
     secret_store: Arc<SecretStore>,
+    rate_limiter: RateLimiter,
 }
 
 /// Setting keys whose raw values must NEVER be returned by — or written
@@ -55,6 +56,7 @@ pub fn start_api_server(
             connection_manager,
             mqtt_bridge,
             secret_store,
+            rate_limiter: RateLimiter::new(),
         });
 
         let listener = match TcpListener::bind("0.0.0.0:9090") {
@@ -300,6 +302,20 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         return Ok(());
     }
 
+    // Rate limiter: reject early if this IP has too many recent failures.
+    if let Some((status, msg)) = ctx.rate_limiter.check(&peer_addr) {
+        log::warn!(
+            "[Auth] Rate-limited {} {} from {} -> {}",
+            req.method,
+            req.path,
+            peer_addr,
+            status
+        );
+        let body = serde_json::json!({"error": msg}).to_string();
+        send_json(&mut stream, status, &body);
+        return Ok(());
+    }
+
     // Auth gate. Runs on every non-OPTIONS request. Reads the
     // `require_auth_localhost` setting once per request — cheap (single
     // SQLite SELECT against the keyed `settings` row) and avoids the
@@ -328,8 +344,12 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
                     log::warn!("[Auth] Failed to touch token {}: {}", id, e);
                 }
             }
+            // Successful auth — clear any failure state for this IP.
+            ctx.rate_limiter.clear(&peer_addr);
         }
         AuthResult::Deny(status, msg) => {
+            // Record the failure for rate limiting.
+            ctx.rate_limiter.record_failure(&peer_addr);
             // Log every auth failure at WARN. Useful for spotting LAN
             // probing attempts and for debugging legitimate clients that
             // forgot to include the header. Includes peer addr + status +
