@@ -10,12 +10,14 @@ import {
   GitBranch,
   Settings,
   Radio,
+  Sparkles,
   X,
   ExternalLink,
 } from "lucide-react";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Devices" },
+  { to: "/get-started", icon: Sparkles, label: "Get Started" },
   { to: "/new-device", icon: Cpu, label: "New Device" },
   { to: "/scenes", icon: Zap, label: "Scenes" },
   { to: "/automation", icon: GitBranch, label: "Automation" },

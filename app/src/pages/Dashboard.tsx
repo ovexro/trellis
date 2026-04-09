@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil } from "lucide-react";
+import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil, Sparkles } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import DeviceCard from "@/components/DeviceCard";
 import type { Device, DeviceGroup } from "@/lib/types";
@@ -18,6 +19,7 @@ const GROUP_COLORS = [
 
 export default function Dashboard() {
   const { devices, initEventListeners, addDeviceByIp } = useDeviceStore();
+  const navigate = useNavigate();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [manualIp, setManualIp] = useState("");
   const [manualPort, setManualPort] = useState("8080");
@@ -144,13 +146,22 @@ export default function Dashboard() {
           <p className="text-xs text-zinc-600 mb-6">
             Make sure your devices are on the same network as this computer.
           </p>
-          <button
-            onClick={() => setShowAddDialog(true)}
-            className="flex items-center gap-2 px-5 py-2.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm font-medium transition-colors mx-auto"
-          >
-            <Plus size={14} />
-            Add device by IP
-          </button>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={() => navigate("/get-started")}
+              className="flex items-center gap-2 px-5 py-2.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <Sparkles size={14} />
+              Get Started
+            </button>
+            <button
+              onClick={() => setShowAddDialog(true)}
+              className="flex items-center gap-2 px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
+            >
+              <Plus size={14} />
+              Add by IP
+            </button>
+          </div>
         </div>
 
         {showAddDialog && (

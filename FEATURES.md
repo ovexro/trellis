@@ -59,6 +59,17 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Window state persistence (size, position)
 - [x] Minimize to system tray (close hides, tray restores, right-click quit)
 
+### Get Started Wizard (Onboarding)
+- [x] **First-run redirect** — new users auto-redirected to `/get-started` on first launch (persisted via `onboarding_completed` setting)
+- [x] **4-step guided wizard**: Welcome/Prerequisites → Pick Template → Configure & Flash → Device Appeared
+- [x] **5 bundled starter templates**: Blink (LED toggle), Sensor Monitor (analog + text), Smart Relay (switch + timer), Weather Station (temp/humidity/pressure), Greenhouse Controller (soil moisture + pump + grow light)
+- [x] **Prerequisite checks**: arduino-cli detection, board core + library dependency check, one-click install for missing deps
+- [x] **Template-to-flash pipeline**: select template → customize device name/board/capabilities → compile & flash via USB in one click
+- [x] **Device discovery confirmation**: step 4 watches mDNS for the new device, shows success with device info when found, or WiFi provisioning instructions if waiting
+- [x] **Dashboard empty state integration**: "Get Started" button alongside "Add by IP" when no devices found
+- [x] **Sidebar entry**: always accessible for re-running the wizard
+- [x] **Shared sketch generator**: `generateSketch()` extracted to `lib/sketchGenerator.ts`, used by both wizard and New Device page
+
 ### Quick Flash (arduino-cli integration)
 - [x] Detect arduino-cli installation (version check)
 - [x] Compile generated sketch (ESP32 + Pico W FQBN mapping)
