@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#6366f1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236366f1'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='20' font-weight='800' text-anchor='middle' fill='%23fff'%3ET%3C/text%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%236366f1'/%3E%3Ctext x='90' y='124' font-family='system-ui,sans-serif' font-size='112' font-weight='800' text-anchor='middle' fill='%23fff'%3ET%3C/text%3E%3C/svg%3E">
   <title>Trellis</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -433,6 +439,29 @@
     @media (min-width: 641px) and (max-width: 900px) {
       .grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
     }
+
+    /* ── WS Connection Indicator ── */
+    .ws-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+      margin-left: 0.5rem; display: inline-block; vertical-align: middle;
+    }
+    .ws-dot.connected { background: var(--green); box-shadow: 0 0 4px rgba(34,197,94,0.5); }
+    .ws-dot.disconnected { background: var(--text-faint); }
+
+    /* ── PWA Install Banner ── */
+    .install-banner {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 90;
+      background: var(--card); border-top: 1px solid var(--border);
+      padding: 0.75rem 1.25rem;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.75rem;
+      animation: slideUp 0.3s ease;
+      box-shadow: 0 -2px 12px rgba(0,0,0,0.3);
+    }
+    .install-banner.hidden { display: none; }
+    .install-text { font-size: 0.8rem; color: var(--text-dim); }
+    .install-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
   </style>
 </head>
 <body>
@@ -443,6 +472,7 @@
       <a class="logo" href="#">
         <div class="logo-icon">T</div>
         <span>Trellis</span>
+        <span class="ws-dot disconnected" id="wsDot" title="WebSocket disconnected"></span>
       </a>
       <nav class="tab-nav" id="desktopNav">
         <button class="tab-btn active" data-tab="devices">Devices</button>
@@ -1192,12 +1222,108 @@
       return `${Math.floor(diff / 86400)}d ago`;
     }
 
+    /* ────────────────────────── WebSocket Push ────────────────── */
+    let ws = null;
+    let wsReconnectTimer = null;
+    let wsConnected = false;
+
+    function connectWebSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      let url = proto + '//' + location.host + '/ws';
+      const tok = getAuthToken();
+      if (tok) url += '?token=' + encodeURIComponent(tok);
+
+      try { ws = new WebSocket(url); } catch (e) { scheduleWsReconnect(); return; }
+
+      ws.onopen = function() {
+        wsConnected = true;
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        updateWsDot(true);
+      };
+
+      ws.onclose = function() {
+        wsConnected = false;
+        updateWsDot(false);
+        scheduleWsReconnect();
+        if (!pollTimer) {
+          pollTimer = setInterval(function() {
+            if (currentTab === 'devices') loadDevices();
+          }, 5000);
+        }
+      };
+
+      ws.onerror = function() {};
+
+      ws.onmessage = function(ev) {
+        try { var msg = JSON.parse(ev.data); } catch (e) { return; }
+        if (msg.type === 'device_event') {
+          handleDeviceEvent(msg);
+        } else if (msg.type === 'device_discovery') {
+          handleDiscoveryEvent(msg);
+        }
+      };
+    }
+
+    function scheduleWsReconnect() {
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+    }
+
+    function updateWsDot(connected) {
+      var dot = document.getElementById('wsDot');
+      if (!dot) return;
+      dot.className = connected ? 'ws-dot connected' : 'ws-dot disconnected';
+      dot.title = connected ? 'Live updates active' : 'Reconnecting\u2026';
+    }
+
+    function handleDeviceEvent(msg) {
+      var dev = devices.find(function(d) { return d.id === msg.device_id; });
+      if (!dev) return;
+
+      if (msg.event_type === 'update') {
+        var payload = msg.payload;
+        if (payload.id && dev.capabilities) {
+          var cap = dev.capabilities.find(function(c) { return c.id === payload.id; });
+          if (cap && payload.value !== undefined) cap.value = payload.value;
+        }
+        if (currentTab === 'devices') renderDevices();
+      } else if (msg.event_type === 'heartbeat') {
+        if (msg.payload && msg.payload.system) dev.system = msg.payload.system;
+        dev.last_seen = new Date().toISOString();
+        if (currentTab === 'devices') renderDevices();
+      }
+    }
+
+    function handleDiscoveryEvent(msg) {
+      var ev = msg.event;
+      var d = msg.device;
+
+      if (ev === 'found' || ev === 'updated') {
+        var idx = devices.findIndex(function(x) { return x.id === d.id; });
+        if (idx !== -1) {
+          var sortOrder = devices[idx]._sort_order;
+          devices[idx] = d;
+          devices[idx]._sort_order = sortOrder;
+        } else {
+          d._sort_order = devices.length;
+          devices.push(d);
+        }
+      } else if (ev === 'lost') {
+        var existing = devices.find(function(x) { return x.id === d.id; });
+        if (existing) existing.online = false;
+      }
+      if (currentTab === 'devices') renderDevices();
+    }
+
     /* ────────────────────────── Polling ────────────────────────── */
     function startPolling() {
       loadDevices();
       pollTimer = setInterval(() => {
         if (currentTab === 'devices') loadDevices();
       }, 5000);
+      connectWebSocket();
     }
 
     /* ────────────────────────── Drag & Drop Reorder ────────── */
@@ -1277,6 +1403,47 @@
       }
       startPolling();
     })();
+
+    /* ────────────────────────── Service Worker ────────────────── */
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function() {});
+    }
+
+    /* ────────────────────────── PWA Install Prompt ────────────── */
+    var deferredInstallPrompt = null;
+
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      if (window.innerWidth <= 640) {
+        var banner = document.getElementById('installBanner');
+        if (banner) banner.classList.remove('hidden');
+      }
+    });
+
+    function promptInstall() {
+      if (!deferredInstallPrompt) return;
+      deferredInstallPrompt.prompt();
+      deferredInstallPrompt.userChoice.then(function() {
+        deferredInstallPrompt = null;
+        dismissInstall();
+      });
+    }
+
+    function dismissInstall() {
+      var banner = document.getElementById('installBanner');
+      if (banner) banner.classList.add('hidden');
+    }
+
+    window.addEventListener('appinstalled', function() { dismissInstall(); });
   </script>
+
+  <div class="install-banner hidden" id="installBanner">
+    <span class="install-text">Add Trellis to your home screen for quick access</span>
+    <div class="install-actions">
+      <button class="btn btn-ghost btn-sm" onclick="dismissInstall()">Later</button>
+      <button class="btn btn-primary btn-sm" onclick="promptInstall()">Install</button>
+    </div>
+  </div>
 </body>
 </html>

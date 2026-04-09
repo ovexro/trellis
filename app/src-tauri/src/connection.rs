@@ -8,6 +8,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tungstenite::{connect, Message};
 
+use crate::api::WsBroadcaster;
 use crate::mqtt::MqttBridge;
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +29,7 @@ pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<String, DeviceConnection>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
 }
 
 impl ConnectionManager {
@@ -36,6 +38,7 @@ impl ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
             mqtt_bridge: Arc::new(Mutex::new(None)),
+            ws_broadcaster: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -46,6 +49,10 @@ impl ConnectionManager {
 
     pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
         *self.mqtt_bridge.lock().unwrap() = Some(bridge);
+    }
+
+    pub fn set_ws_broadcaster(&self, broadcaster: Arc<WsBroadcaster>) {
+        *self.ws_broadcaster.lock().unwrap() = Some(broadcaster);
     }
 
     pub fn connect_device(&self, device_id: &str, ip: &str, ws_port: u16) {
@@ -60,12 +67,13 @@ impl ConnectionManager {
         let stop_clone = stop_flag.clone();
         let app_handle = self.app_handle.clone();
         let mqtt_bridge = self.mqtt_bridge.clone();
+        let ws_broadcaster = self.ws_broadcaster.clone();
         let id = device_id.to_string();
         let url = format!("ws://{}:{}", ip, ws_port);
         let (command_tx, command_rx) = mpsc::channel::<String>();
 
         let thread = thread::spawn(move || {
-            ws_reader_loop(&id, &url, stop_clone, app_handle, mqtt_bridge, command_rx);
+            ws_reader_loop(&id, &url, stop_clone, app_handle, mqtt_bridge, ws_broadcaster, command_rx);
         });
 
         conns.insert(
@@ -143,6 +151,7 @@ fn ws_reader_loop(
     stop_flag: Arc<Mutex<bool>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     command_rx: mpsc::Receiver<String>,
 ) {
     loop {
@@ -229,6 +238,17 @@ fn ws_reader_loop(
                                             bridge.publish_heartbeat(device_id, system);
                                         }
                                     }
+                                }
+
+                                // Push to :9090 WebSocket dashboard clients
+                                if let Some(broadcaster) = ws_broadcaster.lock().unwrap().as_ref() {
+                                    let ws_msg = serde_json::json!({
+                                        "type": "device_event",
+                                        "device_id": device_id,
+                                        "event_type": &event_type,
+                                        "payload": &json,
+                                    });
+                                    broadcaster.broadcast(ws_msg.to_string());
                                 }
 
                                 if let Some(handle) = app_handle.lock().unwrap().as_ref() {

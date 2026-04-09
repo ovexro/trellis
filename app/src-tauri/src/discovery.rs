@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::api::WsBroadcaster;
 use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::device::{Device, DeviceInfo, SystemInfo};
@@ -25,6 +26,7 @@ pub struct Discovery {
     devices: Arc<Mutex<HashMap<String, Device>>>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     stop_flag: Arc<Mutex<bool>>,
 }
 
@@ -34,12 +36,17 @@ impl Discovery {
             devices: Arc::new(Mutex::new(HashMap::new())),
             connection_manager,
             mqtt_bridge: Arc::new(Mutex::new(None)),
+            ws_broadcaster: Arc::new(Mutex::new(None)),
             stop_flag: Arc::new(Mutex::new(false)),
         }
     }
 
     pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
         *self.mqtt_bridge.lock().unwrap() = Some(bridge);
+    }
+
+    pub fn set_ws_broadcaster(&self, broadcaster: Arc<WsBroadcaster>) {
+        *self.ws_broadcaster.lock().unwrap() = Some(broadcaster);
     }
 
     /// Hydrate the in-memory device map from SQLite at startup so saved devices
@@ -102,23 +109,25 @@ impl Discovery {
         let devices = self.devices.clone();
         let conn_mgr = self.connection_manager.clone();
         let bridge = self.mqtt_bridge.clone();
+        let ws_bc = self.ws_broadcaster.clone();
         let stop_flag = self.stop_flag.clone();
         let handle = app_handle.clone();
 
         // mDNS continuous browsing thread
         thread::spawn(move || {
-            mdns_browse_loop(devices.clone(), conn_mgr.clone(), bridge.clone(), stop_flag.clone(), handle.clone());
+            mdns_browse_loop(devices.clone(), conn_mgr.clone(), bridge.clone(), ws_bc.clone(), stop_flag.clone(), handle.clone());
         });
 
         // Health check thread
         let devices2 = self.devices.clone();
         let conn_mgr2 = self.connection_manager.clone();
         let bridge2 = self.mqtt_bridge.clone();
+        let ws_bc2 = self.ws_broadcaster.clone();
         let stop_flag2 = self.stop_flag.clone();
         let handle2 = app_handle;
 
         thread::spawn(move || {
-            health_check_loop(devices2, conn_mgr2, bridge2, stop_flag2, handle2);
+            health_check_loop(devices2, conn_mgr2, bridge2, ws_bc2, stop_flag2, handle2);
         });
     }
 
@@ -161,6 +170,12 @@ impl Discovery {
             },
         );
 
+        // Push to :9090 WebSocket dashboard clients
+        if let Some(bc) = self.ws_broadcaster.lock().unwrap().as_ref() {
+            let msg = serde_json::json!({"type":"device_discovery","event":"found","device":&device});
+            bc.broadcast(msg.to_string());
+        }
+
         Ok(device)
     }
 
@@ -174,6 +189,7 @@ fn mdns_browse_loop(
     devices: Arc<Mutex<HashMap<String, Device>>>,
     conn_mgr: Arc<ConnectionManager>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: AppHandle,
 ) {
@@ -243,17 +259,20 @@ fn mdns_browse_loop(
                         }
 
                         // Notify frontend
+                        let discovery_event = if is_new { "found" } else { "updated" };
                         let _ = app_handle.emit(
                             "device-discovered",
                             DeviceDiscoveryEvent {
-                                device,
-                                event: if is_new {
-                                    "found".to_string()
-                                } else {
-                                    "updated".to_string()
-                                },
+                                device: device.clone(),
+                                event: discovery_event.to_string(),
                             },
                         );
+
+                        // Push to :9090 WebSocket dashboard clients
+                        if let Some(bc) = ws_broadcaster.lock().unwrap().as_ref() {
+                            let msg = serde_json::json!({"type":"device_discovery","event":discovery_event,"device":&device});
+                            bc.broadcast(msg.to_string());
+                        }
 
                         if is_new {
                             log::info!("[Discovery] Found device: {} at {}:{}", device_info.id, ip, port);
@@ -282,6 +301,10 @@ fn mdns_browse_loop(
                                 event: "lost".to_string(),
                             },
                         );
+                        if let Some(bc) = ws_broadcaster.lock().unwrap().as_ref() {
+                            let msg = serde_json::json!({"type":"device_discovery","event":"lost","device":&*device});
+                            bc.broadcast(msg.to_string());
+                        }
                     }
                     conn_mgr.disconnect_device(&id);
                     if let Some(bridge) = mqtt_bridge.lock().unwrap().as_ref() {
@@ -300,6 +323,7 @@ fn health_check_loop(
     devices: Arc<Mutex<HashMap<String, Device>>>,
     conn_mgr: Arc<ConnectionManager>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     stop_flag: Arc<Mutex<bool>>,
     app_handle: AppHandle,
 ) {
@@ -341,6 +365,10 @@ fn health_check_loop(
                                     event: "found".to_string(),
                                 },
                             );
+                            if let Some(bc) = ws_broadcaster.lock().unwrap().as_ref() {
+                                let msg = serde_json::json!({"type":"device_discovery","event":"found","device":&*device});
+                                bc.broadcast(msg.to_string());
+                            }
                             log::info!("[Health] Device {} came back online", id);
                         }
 
@@ -363,6 +391,10 @@ fn health_check_loop(
                                     event: "lost".to_string(),
                                 },
                             );
+                            if let Some(bc) = ws_broadcaster.lock().unwrap().as_ref() {
+                                let msg = serde_json::json!({"type":"device_discovery","event":"lost","device":&*device});
+                                bc.broadcast(msg.to_string());
+                            }
                             log::info!("[Health] Device {} went offline", id);
                         }
                     }

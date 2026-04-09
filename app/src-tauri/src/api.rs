@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -14,6 +15,40 @@ use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig};
 use crate::secret_store::{self, SecretStore};
 
+/// Fan-out broadcaster for :9090 WebSocket dashboard clients.
+/// Each connected browser gets a `mpsc::Sender`; dead senders are
+/// auto-pruned on the next `broadcast()` call.
+pub struct WsBroadcaster {
+    clients: Mutex<Vec<mpsc::Sender<String>>>,
+}
+
+impl WsBroadcaster {
+    pub fn new() -> Self {
+        Self {
+            clients: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a new WS client. Returns the receiver the client thread
+    /// reads from.
+    pub fn subscribe(&self) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        self.clients.lock().unwrap().push(tx);
+        rx
+    }
+
+    /// Send a message to all connected clients. Prunes disconnected senders.
+    pub fn broadcast(&self, msg: String) {
+        let mut clients = self.clients.lock().unwrap();
+        clients.retain(|tx| tx.send(msg.clone()).is_ok());
+    }
+
+    /// Current number of connected WS clients.
+    pub fn client_count(&self) -> usize {
+        self.clients.lock().unwrap().len()
+    }
+}
+
 struct ApiContext {
     db: Database,
     discovery: Arc<Discovery>,
@@ -21,6 +56,7 @@ struct ApiContext {
     mqtt_bridge: Arc<MqttBridge>,
     secret_store: Arc<SecretStore>,
     rate_limiter: RateLimiter,
+    ws_broadcaster: Arc<WsBroadcaster>,
 }
 
 /// Setting keys whose raw values must NEVER be returned by — or written
@@ -49,6 +85,7 @@ pub fn start_api_server(
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
     secret_store: Arc<SecretStore>,
+    ws_broadcaster: Arc<WsBroadcaster>,
 ) {
     std::thread::spawn(move || {
         let conn = match Connection::open(&db_path) {
@@ -65,6 +102,7 @@ pub fn start_api_server(
             mqtt_bridge,
             secret_store,
             rate_limiter: RateLimiter::new(),
+            ws_broadcaster,
         });
 
         let listener = match TcpListener::bind("0.0.0.0:9090") {
@@ -329,6 +367,46 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         return Ok(());
     }
 
+    // Service worker: must be served from root scope for SW to control `/`.
+    // Pre-auth like GET / — it's inert static JS.
+    if req.method == "GET" && req.path == "/sw.js" {
+        let body = include_str!("sw.js");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/javascript; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Cache-Control: no-cache\r\n\
+             Service-Worker-Allowed: /\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return Ok(());
+    }
+
+    // Web app manifest for PWA install prompt
+    if req.method == "GET" && req.path == "/manifest.json" {
+        let body = include_str!("manifest.json");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/manifest+json; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Cache-Control: no-cache\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return Ok(());
+    }
+
     // Rate limiter: reject early if this IP has too many recent failures.
     if let Some((status, msg)) = ctx.rate_limiter.check(&peer_addr) {
         log::warn!(
@@ -356,10 +434,23 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
+    // For WebSocket upgrades, the browser API cannot set custom headers.
+    // Accept the token as a query parameter (/ws?token=trls_...) instead.
+    // URL-decode the token since the browser sends encodeURIComponent().
+    let effective_auth: Option<String> = if req.path == "/ws" && req.is_websocket_upgrade {
+        req.query
+            .get("token")
+            .and_then(|t| urlencoding::decode(t).ok())
+            .map(|t| format!("Bearer {}", t))
+            .or_else(|| req.authorization.clone())
+    } else {
+        req.authorization.clone()
+    };
+
     let (role, auth_token_id) = match auth::check_auth(
         &ctx.db,
         &peer_addr,
-        req.authorization.as_deref(),
+        effective_auth.as_deref(),
         require_strict,
     ) {
         AuthResult::Allow { token_id, role } => {
@@ -400,6 +491,15 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
             return Ok(());
         }
     };
+
+    // Dashboard WebSocket push: /ws
+    // Viewers can connect (read-only push). Auth handled above via
+    // query-param or header token; loopback bypass applies.
+    if req.path == "/ws" && req.is_websocket_upgrade {
+        stream.set_read_timeout(None).ok();
+        let ws_key = req.sec_websocket_key.as_deref().unwrap_or("dGhlIHNhbXBsZSBub25jZQ==");
+        return handle_dashboard_ws(stream, ws_key, &ctx.ws_broadcaster);
+    }
 
     // Device proxy: `/proxy/{device-id}/{path...}` forwards to the
     // device's embedded HTTP server on :8080 (and WebSocket on :8081).
@@ -656,6 +756,91 @@ fn handle_proxy_ws(
 
     t1.join().ok();
     t2.join().ok();
+    Ok(())
+}
+
+// ─── Dashboard WebSocket push ──────────────────────────────────────────────
+
+fn handle_dashboard_ws(
+    mut stream: TcpStream,
+    ws_key: &str,
+    broadcaster: &WsBroadcaster,
+) -> Result<(), String> {
+    // The HTTP upgrade request was already consumed by parse_request.
+    // Manually send the 101 Switching Protocols response, then wrap
+    // the stream with tungstenite for framed WS I/O.
+    let accept_key = tungstenite::handshake::derive_accept_key(ws_key.as_bytes());
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\
+         \r\n",
+        accept_key
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|e| format!("WS upgrade write: {}", e))?;
+    stream.flush().map_err(|e| e.to_string())?;
+
+    // 50ms read timeout so we can interleave broadcast polling
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(50)));
+
+    // Wrap in tungstenite for framed WS read/write
+    let mut ws = tungstenite::WebSocket::from_raw_socket(
+        stream,
+        tungstenite::protocol::Role::Server,
+        None,
+    );
+
+    let rx = broadcaster.subscribe();
+
+    log::info!(
+        "[WS] Dashboard client connected ({} total)",
+        broadcaster.client_count()
+    );
+
+    loop {
+        // Drain broadcast messages → send to this client
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    if ws.send(tungstenite::Message::Text(msg)).is_err() {
+                        log::debug!("[WS] Dashboard client send failed, disconnecting");
+                        let _ = ws.close(None);
+                        return Ok(());
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let _ = ws.close(None);
+                    return Ok(());
+                }
+            }
+        }
+
+        // Read from WS: handle pings, detect disconnect
+        match ws.read() {
+            Ok(tungstenite::Message::Close(_)) => break,
+            Ok(tungstenite::Message::Ping(data)) => {
+                let _ = ws.send(tungstenite::Message::Pong(data));
+            }
+            Ok(_) => {} // Ignore text/binary from clients (read-only push)
+            Err(tungstenite::Error::Io(ref e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let _ = ws.close(None);
+    log::info!(
+        "[WS] Dashboard client disconnected ({} remaining)",
+        broadcaster.client_count()
+    );
     Ok(())
 }
 

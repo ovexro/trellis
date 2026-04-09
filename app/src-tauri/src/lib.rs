@@ -37,8 +37,12 @@ pub fn run() {
     // bridge a back-reference to Discovery so polish #1 (instant discovery
     // on enable) and polish #2 (republish on broker reconnect) can read the
     // current device list.
+    let ws_broadcaster = Arc::new(api::WsBroadcaster::new());
+
     connection_manager.set_mqtt_bridge(mqtt_bridge.clone());
+    connection_manager.set_ws_broadcaster(ws_broadcaster.clone());
     discovery.set_mqtt_bridge(mqtt_bridge.clone());
+    discovery.set_ws_broadcaster(ws_broadcaster.clone());
     mqtt_bridge.set_discovery(discovery.clone());
 
     let app_state = AppState {
@@ -274,6 +278,7 @@ pub fn run() {
                 connection_manager.clone(),
                 mqtt_bridge.clone(),
                 secret_store.clone(),
+                ws_broadcaster.clone(),
             );
 
             // Restore saved MQTT bridge config and start it if it was
