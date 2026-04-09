@@ -8,7 +8,7 @@ import FirmwareGenerator from "./pages/FirmwareGenerator";
 import Scenes from "./pages/Scenes";
 import Automation from "./pages/Automation";
 import TerminalPage from "./pages/TerminalPage";
-import Settings from "./pages/Settings";
+import Settings from "./pages/settings";
 
 function App() {
   return (
