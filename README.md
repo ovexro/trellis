@@ -39,6 +39,23 @@ void loop() {
 
 The desktop app discovers your device via mDNS, reads its capability declaration, and renders the right controls — toggle for the pump, gauge for temperature, slider for fan speed.
 
+## Dependencies
+
+The Trellis Arduino library requires two dependencies:
+
+| Library | Author | Purpose |
+|---------|--------|---------|
+| [ArduinoJson](https://github.com/bblanchon/ArduinoJson) | Benoit Blanchon | JSON parsing for the self-description protocol |
+| [WebSockets](https://github.com/Links2004/arduinoWebSockets) | Markus Sattler | Real-time communication with the desktop app |
+
+**PlatformIO** installs these automatically.
+
+**Arduino IDE** does not auto-install dependencies — you need to add them yourself:
+
+1. Open **Sketch → Include Library → Manage Libraries…**
+2. Search for **ArduinoJson** and click Install
+3. Search for **WebSockets** (by Markus Sattler) and click Install
+
 ## Install
 
 ### Linux (one command)
