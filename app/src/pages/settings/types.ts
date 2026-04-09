@@ -3,12 +3,14 @@ export type ApiToken = {
   name: string;
   created_at: string;
   last_used_at: string | null;
+  expires_at: string | null;
 };
 
 export type CreatedApiToken = {
   id: number;
   name: string;
   token: string;
+  expires_at: string | null;
 };
 
 // Result of a single reachability probe — mirrors the Rust struct in

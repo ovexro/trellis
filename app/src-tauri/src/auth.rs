@@ -184,13 +184,51 @@ pub fn check_auth(
 
     let hash = sha256_hex(&token);
     match db.find_api_token_by_hash(&hash) {
-        Ok(Some(id)) => AuthResult::Allow(Some(id)),
+        Ok(Some((id, expires_at))) => {
+            if let Some(ref exp) = expires_at {
+                if is_expired(exp) {
+                    return AuthResult::Deny(
+                        401,
+                        "API token has expired. Mint a new one in Settings → API Tokens.".to_string(),
+                    );
+                }
+            }
+            AuthResult::Allow(Some(id))
+        }
         Ok(None) => AuthResult::Deny(401, "Invalid or revoked API token.".to_string()),
         Err(e) => {
             log::error!("[Auth] Token lookup failed: {}", e);
             AuthResult::Deny(500, "Internal authentication error.".to_string())
         }
     }
+}
+
+/// Check whether an `expires_at` timestamp (SQLite datetime format,
+/// `"YYYY-MM-DD HH:MM:SS"` in UTC) is in the past.
+fn is_expired(expires_at: &str) -> bool {
+    use chrono::{NaiveDateTime, Utc};
+    match NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S") {
+        Ok(exp) => Utc::now().naive_utc() > exp,
+        Err(_) => false, // unparseable → treat as non-expired (fail open, not closed)
+    }
+}
+
+/// Compute an `expires_at` timestamp from a TTL string like `"1h"`, `"24h"`,
+/// `"7d"`, `"30d"`. Returns `None` for `"never"` or unrecognized input.
+/// The result is a UTC datetime string in SQLite format.
+pub fn compute_expires_at(ttl: &str) -> Option<String> {
+    use chrono::{Duration, Utc};
+    let duration = match ttl.trim() {
+        "1h" => Duration::hours(1),
+        "24h" => Duration::hours(24),
+        "7d" => Duration::days(7),
+        "30d" => Duration::days(30),
+        "90d" => Duration::days(90),
+        "never" | "" => return None,
+        _ => return None,
+    };
+    let exp = Utc::now() + duration;
+    Some(exp.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 /// Pull the token out of an `Authorization: Bearer <token>` header value.
@@ -264,6 +302,29 @@ mod tests {
         assert_eq!(extract_bearer(None), None);
         assert_eq!(extract_bearer(Some("")), None);
         assert_eq!(extract_bearer(Some("Bearer ")), None);
+    }
+
+    #[test]
+    fn is_expired_checks() {
+        use chrono::{Duration, Utc};
+        let past = (Utc::now() - Duration::hours(1)).format("%Y-%m-%d %H:%M:%S").to_string();
+        let future = (Utc::now() + Duration::hours(1)).format("%Y-%m-%d %H:%M:%S").to_string();
+        assert!(is_expired(&past));
+        assert!(!is_expired(&future));
+        // Unparseable → not expired (fail open)
+        assert!(!is_expired("garbage"));
+    }
+
+    #[test]
+    fn compute_expires_at_values() {
+        assert!(compute_expires_at("1h").is_some());
+        assert!(compute_expires_at("24h").is_some());
+        assert!(compute_expires_at("7d").is_some());
+        assert!(compute_expires_at("30d").is_some());
+        assert!(compute_expires_at("90d").is_some());
+        assert!(compute_expires_at("never").is_none());
+        assert!(compute_expires_at("").is_none());
+        assert!(compute_expires_at("bogus").is_none());
     }
 
     #[test]

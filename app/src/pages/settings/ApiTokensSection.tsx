@@ -1,8 +1,30 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Key, Copy, Trash2, AlertTriangle, Check } from "lucide-react";
+import { Key, Copy, Trash2, AlertTriangle, Check, Clock } from "lucide-react";
 import type { ApiToken, CreatedApiToken } from "./types";
 import { formatTimestamp } from "./types";
+
+const TTL_OPTIONS = [
+  { value: "never", label: "Never expires" },
+  { value: "1h", label: "1 hour" },
+  { value: "24h", label: "24 hours" },
+  { value: "7d", label: "7 days" },
+  { value: "30d", label: "30 days" },
+  { value: "90d", label: "90 days" },
+] as const;
+
+function expiryStatus(expiresAt: string | null): "none" | "expired" | "soon" | "ok" {
+  if (!expiresAt) return "none";
+  try {
+    const exp = new Date(expiresAt.replace(" ", "T") + "Z").getTime();
+    const now = Date.now();
+    if (exp <= now) return "expired";
+    if (exp - now < 24 * 60 * 60 * 1000) return "soon";
+    return "ok";
+  } catch {
+    return "none";
+  }
+}
 
 type Props = {
   onTokenCountChange: (count: number) => void;
@@ -11,6 +33,7 @@ type Props = {
 export default function ApiTokensSection({ onTokenCountChange }: Props) {
   const [apiTokens, setApiTokens] = useState<ApiToken[]>([]);
   const [newTokenName, setNewTokenName] = useState("");
+  const [newTokenTtl, setNewTokenTtl] = useState("never");
   const [createdToken, setCreatedToken] = useState<CreatedApiToken | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [tokenFeedback, setTokenFeedback] = useState("");
@@ -44,9 +67,13 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
     setTokenBusy(true);
     setTokenFeedback("");
     try {
-      const created = await invoke<CreatedApiToken>("create_api_token", { name });
+      const created = await invoke<CreatedApiToken>("create_api_token", {
+        name,
+        ttl: newTokenTtl === "never" ? null : newTokenTtl,
+      });
       setCreatedToken(created);
       setNewTokenName("");
+      setNewTokenTtl("never");
       setTokenCopied(false);
       await refreshApiTokens();
     } catch (err) {
@@ -126,27 +153,47 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
                   <tr>
                     <th className="text-left font-normal px-3 py-2">Name</th>
                     <th className="text-left font-normal px-3 py-2">Created</th>
+                    <th className="text-left font-normal px-3 py-2">Expires</th>
                     <th className="text-left font-normal px-3 py-2">Last used</th>
                     <th className="px-3 py-2"></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {apiTokens.map((t) => (
-                    <tr key={t.id} className="border-t border-zinc-800">
-                      <td className="px-3 py-2 text-zinc-200">{t.name}</td>
-                      <td className="px-3 py-2 text-zinc-500 text-xs">{formatTimestamp(t.created_at)}</td>
-                      <td className="px-3 py-2 text-zinc-500 text-xs">{formatTimestamp(t.last_used_at)}</td>
-                      <td className="px-3 py-2 text-right">
-                        <button
-                          onClick={() => revokeApiToken(t.id, t.name)}
-                          className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
-                          title="Revoke token"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {apiTokens.map((t) => {
+                    const status = expiryStatus(t.expires_at);
+                    return (
+                      <tr key={t.id} className={`border-t border-zinc-800 ${status === "expired" ? "opacity-50" : ""}`}>
+                        <td className="px-3 py-2 text-zinc-200">{t.name}</td>
+                        <td className="px-3 py-2 text-zinc-500 text-xs">{formatTimestamp(t.created_at)}</td>
+                        <td className="px-3 py-2 text-xs">
+                          {status === "none" && <span className="text-zinc-600">Never</span>}
+                          {status === "expired" && (
+                            <span className="text-red-400 flex items-center gap-1">
+                              <Clock size={11} /> Expired
+                            </span>
+                          )}
+                          {status === "soon" && (
+                            <span className="text-amber-400 flex items-center gap-1">
+                              <Clock size={11} /> {formatTimestamp(t.expires_at)}
+                            </span>
+                          )}
+                          {status === "ok" && (
+                            <span className="text-zinc-500">{formatTimestamp(t.expires_at)}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-zinc-500 text-xs">{formatTimestamp(t.last_used_at)}</td>
+                        <td className="px-3 py-2 text-right">
+                          <button
+                            onClick={() => revokeApiToken(t.id, t.name)}
+                            className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors"
+                            title="Revoke token"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -163,6 +210,16 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
               onKeyDown={(e) => { if (e.key === "Enter") createApiToken(); }}
               disabled={tokenBusy}
             />
+            <select
+              value={newTokenTtl}
+              onChange={(e) => setNewTokenTtl(e.target.value)}
+              className="px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-300 focus:outline-none focus:border-trellis-500"
+              disabled={tokenBusy}
+            >
+              {TTL_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
             <button
               onClick={createApiToken}
               disabled={tokenBusy || !newTokenName.trim()}
@@ -242,6 +299,13 @@ export default function ApiTokensSection({ onTokenCountChange }: Props) {
                 </button>
               </div>
             </div>
+
+            {createdToken.expires_at && (
+              <div className="flex items-center gap-2 text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/20 rounded-lg p-2.5">
+                <Clock size={12} />
+                Expires {formatTimestamp(createdToken.expires_at)}
+              </div>
+            )}
 
             <div className="text-xs text-zinc-500 bg-zinc-800/40 border border-zinc-800 rounded-lg p-3 font-mono break-all">
               curl -H "Authorization: Bearer {createdToken.token}" \<br/>

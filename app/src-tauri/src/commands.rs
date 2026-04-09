@@ -544,6 +544,7 @@ pub struct CreatedApiToken {
     pub id: i64,
     pub name: String,
     pub token: String,
+    pub expires_at: Option<String>,
 }
 
 #[tauri::command]
@@ -552,17 +553,19 @@ pub fn list_api_tokens(db: State<'_, Database>) -> Result<Vec<ApiToken>, String>
 }
 
 #[tauri::command]
-pub fn create_api_token(db: State<'_, Database>, name: String) -> Result<CreatedApiToken, String> {
+pub fn create_api_token(db: State<'_, Database>, name: String, ttl: Option<String>) -> Result<CreatedApiToken, String> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err("Token name is required".to_string());
     }
     let (plaintext, hash) = auth::generate_token();
-    let id = db.create_api_token(trimmed, &hash)?;
+    let expires_at = ttl.as_deref().and_then(auth::compute_expires_at);
+    let id = db.create_api_token(trimmed, &hash, expires_at.as_deref())?;
     Ok(CreatedApiToken {
         id,
         name: trimmed.to_string(),
         token: plaintext,
+        expires_at,
     })
 }
 

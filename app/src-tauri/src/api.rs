@@ -1126,8 +1126,10 @@ fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
     if name.is_empty() {
         return json_error(400, "Token name is required");
     }
+    let ttl = v["ttl"].as_str().unwrap_or("never");
     let (plaintext, hash) = auth::generate_token();
-    match ctx.db.create_api_token(name, &hash) {
+    let expires_at = auth::compute_expires_at(ttl);
+    match ctx.db.create_api_token(name, &hash, expires_at.as_deref()) {
         Ok(id) => {
             // The plaintext is returned ONCE here and never persisted.
             // Once this response is on the wire, the only proof of the
@@ -1136,6 +1138,7 @@ fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
                 "id": id,
                 "name": name,
                 "token": plaintext,
+                "expires_at": expires_at,
                 "warning": "Store this token now — it will not be shown again."
             });
             (201, resp.to_string())
