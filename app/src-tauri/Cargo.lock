@@ -5634,6 +5634,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-shell",
  "tokio",
+ "tokio-rustls",
  "tungstenite",
  "ureq",
  "urlencoding",

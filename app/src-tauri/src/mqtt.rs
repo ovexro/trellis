@@ -97,6 +97,15 @@ pub struct MqttConfig {
     /// to a trusted anchor.
     #[serde(default)]
     pub tls_ca_cert_path: Option<String>,
+    /// When true, TLS certificate verification is completely disabled:
+    /// expired certs, wrong hostnames, self-signed certs, and even invalid
+    /// chains are all accepted. This is deliberately insecure — it's the
+    /// MQTT equivalent of `curl -k`. Use it only when you control the
+    /// network path to the broker and can't be bothered to supply a CA file
+    /// (e.g. a self-signed Mosquitto on your own LAN). Ignored when
+    /// `tls_enabled` is false.
+    #[serde(default)]
+    pub tls_skip_verify: bool,
 }
 
 fn default_broker_host() -> String {
@@ -132,6 +141,7 @@ impl Default for MqttConfig {
             client_id: default_client_id(),
             tls_enabled: false,
             tls_ca_cert_path: None,
+            tls_skip_verify: false,
         }
     }
 }
@@ -160,6 +170,7 @@ pub struct MqttConfigPublic {
     pub has_password: bool,
     pub tls_enabled: bool,
     pub tls_ca_cert_path: Option<String>,
+    pub tls_skip_verify: bool,
 }
 
 impl From<&MqttConfig> for MqttConfigPublic {
@@ -176,6 +187,7 @@ impl From<&MqttConfig> for MqttConfigPublic {
             has_password: !c.password.is_empty(),
             tls_enabled: c.tls_enabled,
             tls_ca_cert_path: c.tls_ca_cert_path.clone(),
+            tls_skip_verify: c.tls_skip_verify,
         }
     }
 }
@@ -639,6 +651,17 @@ impl MqttBridge {
 /// Returns Err if `tls_enabled` is true but the CA file path is set and
 /// the file can't be read or parsed.
 fn build_tls_transport(cfg: &MqttConfig) -> Result<Transport, String> {
+    if cfg.tls_skip_verify {
+        log::warn!("[MQTT] TLS certificate verification DISABLED — connection is encrypted but NOT authenticated");
+        let tls_config = tokio_rustls::rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(NoVerifier))
+            .with_no_client_auth();
+        return Ok(Transport::tls_with_config(
+            rumqttc::TlsConfiguration::Rustls(std::sync::Arc::new(tls_config)),
+        ));
+    }
+
     match &cfg.tls_ca_cert_path {
         None => {
             // System trust roots — what test.mosquitto.org and any public
@@ -659,6 +682,68 @@ fn build_tls_transport(cfg: &MqttConfig) -> Result<Transport, String> {
             // TlsConfiguration::Simple that rustls will parse as PEM.
             Ok(Transport::tls(ca_pem, None, None))
         }
+    }
+}
+
+/// A rustls ServerCertVerifier that accepts any certificate without validation.
+/// Used when `tls_skip_verify` is true — the connection is still encrypted
+/// (TLS handshake completes normally) but the broker's identity is not verified.
+/// This is the equivalent of `curl --insecure` / Go's `InsecureSkipVerify`.
+#[derive(Debug)]
+struct NoVerifier;
+
+impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::ServerCertVerified,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        use tokio_rustls::rustls::SignatureScheme;
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+        ]
     }
 }
 

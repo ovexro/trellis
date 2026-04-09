@@ -291,6 +291,26 @@ export default function MqttSection() {
               </p>
             </div>
           )}
+          {mqttConfig.tls_enabled && (
+            <div>
+              <label className="flex items-center gap-2 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={mqttConfig.tls_skip_verify}
+                  onChange={(e) => setMqttConfig({ ...mqttConfig, tls_skip_verify: e.target.checked })}
+                  className="rounded border-zinc-700 bg-zinc-800"
+                />
+                Skip certificate verification
+              </label>
+              {mqttConfig.tls_skip_verify && (
+                <div className="mt-2 px-3 py-2 bg-amber-900/30 border border-amber-700/50 rounded-lg">
+                  <p className="text-xs text-amber-300">
+                    Certificate verification is disabled. The connection is encrypted but the broker's identity is not checked — expired, self-signed, and wrong-hostname certificates will all be accepted. Only use this on a trusted network.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <label className="flex items-center gap-2 text-sm text-zinc-300">

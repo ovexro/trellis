@@ -36,6 +36,7 @@ export type MqttConfig = {
   client_id: string;
   tls_enabled: boolean;
   tls_ca_cert_path: string | null;
+  tls_skip_verify: boolean;
 };
 
 // Network-safe view returned by get_mqtt_config — the password field is
@@ -64,6 +65,7 @@ export const DEFAULT_MQTT_CONFIG: MqttConfig = {
   client_id: "trellis-bridge",
   tls_enabled: false,
   tls_ca_cert_path: null,
+  tls_skip_verify: false,
 };
 
 export function formatTimestamp(ts: string | null): string {

@@ -32,6 +32,9 @@ cron = "0.13"
 log = "0.4"
 env_logger = "0.11"
 rumqttc = "0.24"
+# Re-export the same rustls version that rumqttc uses internally so we can
+# build a custom ClientConfig with `dangerous()` for tls_skip_verify.
+tokio-rustls = "0.25"
 # At-rest encryption for stored secrets (currently the MQTT broker password).
 # `age` is an audited file-encryption library; we use it with an x25519
 # identity stored in the OS keyring (with a 0600 file fallback for headless
