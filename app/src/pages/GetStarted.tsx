@@ -62,6 +62,7 @@ export default function GetStarted() {
   const [cliVersion, setCliVersion] = useState<string | null>(null);
   const [cliChecked, setCliChecked] = useState(false);
   const [depsChecked, setDepsChecked] = useState(false);
+  const [depsError, setDepsError] = useState(false);
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [installingDeps, setInstallingDeps] = useState(false);
   const [installOutput, setInstallOutput] = useState("");
@@ -85,11 +86,14 @@ export default function GetStarted() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
-  // Step 4: Device discovery watch
-  const [initialDeviceIds] = useState(() => new Set(devices.map((d) => d.id)));
-  const newDevice = devices.find(
-    (d) => d.online && !initialDeviceIds.has(d.id),
-  );
+  // Step 4: Device discovery watch — snapshot captured when entering Done step
+  const [deviceSnapshot, setDeviceSnapshot] = useState<Set<string>>(new Set());
+  const newDevice =
+    step === 3
+      ? devices.find(
+          (d) => d.online && !deviceSnapshot.has(d.id),
+        )
+      : undefined;
 
   // Check arduino-cli on mount
   useEffect(() => {
@@ -134,6 +138,7 @@ export default function GetStarted() {
   }, []);
 
   const checkDeps = async (boardType: string) => {
+    setDepsError(false);
     try {
       const result = await invoke<{
         core_installed: boolean;
@@ -151,6 +156,7 @@ export default function GetStarted() {
       setMissingDeps(missing);
       setDepsChecked(true);
     } catch {
+      setDepsError(true);
       setDepsChecked(true);
     }
   };
@@ -200,6 +206,10 @@ export default function GetStarted() {
     setDeviceName(t.name);
     setBoard(t.board);
     setCapabilities([...t.capabilities]);
+    // Clear stale build state from a previous attempt
+    setBuildOutput("");
+    setBuildError(false);
+    setFlashSuccess(false);
   };
 
   const handleCompileAndFlash = async () => {
@@ -236,7 +246,7 @@ export default function GetStarted() {
     }
   };
 
-  const finishOnboarding = async () => {
+  const markOnboardingDone = async () => {
     try {
       await invoke("set_setting", {
         key: "onboarding_completed",
@@ -245,6 +255,10 @@ export default function GetStarted() {
     } catch {
       // non-critical
     }
+  };
+
+  const finishOnboarding = async () => {
+    await markOnboardingDone();
     navigate("/");
   };
 
@@ -264,7 +278,7 @@ export default function GetStarted() {
     setCapabilities(capabilities.filter((_, i) => i !== index));
   };
 
-  const prereqsReady = cliChecked && cliVersion && depsChecked && missingDeps.length === 0;
+  const prereqsReady = cliChecked && cliVersion && depsChecked && !depsError && missingDeps.length === 0;
 
   // ── Step renderers ──
 
@@ -334,13 +348,17 @@ export default function GetStarted() {
               className={`w-7 h-7 rounded-lg flex items-center justify-center ${
                 !depsChecked
                   ? "bg-zinc-800"
-                  : missingDeps.length === 0
-                    ? "bg-emerald-500/15"
-                    : "bg-amber-500/15"
+                  : depsError
+                    ? "bg-red-500/15"
+                    : missingDeps.length === 0
+                      ? "bg-emerald-500/15"
+                      : "bg-amber-500/15"
               }`}
             >
               {!depsChecked ? (
                 <Loader2 size={14} className="text-zinc-500 animate-spin" />
+              ) : depsError ? (
+                <AlertTriangle size={14} className="text-red-400" />
               ) : missingDeps.length === 0 ? (
                 <Check size={14} className="text-emerald-400" />
               ) : (
@@ -349,16 +367,30 @@ export default function GetStarted() {
             </div>
             <div className="flex-1">
               <p className="text-sm text-zinc-300">Board core & libraries</p>
-              {depsChecked && missingDeps.length === 0 && (
+              {depsChecked && depsError && (
+                <p className="text-xs text-red-400/80">
+                  Could not check dependencies
+                </p>
+              )}
+              {depsChecked && !depsError && missingDeps.length === 0 && (
                 <p className="text-xs text-zinc-500">All installed</p>
               )}
-              {depsChecked && missingDeps.length > 0 && (
+              {depsChecked && !depsError && missingDeps.length > 0 && (
                 <p className="text-xs text-amber-400/80">
                   Missing: {missingDeps.join(", ")}
                 </p>
               )}
             </div>
-            {depsChecked && missingDeps.length > 0 && (
+            {depsChecked && depsError && (
+              <button
+                onClick={() => checkDeps(board)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-700/50 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs transition-colors"
+              >
+                <RefreshCw size={12} />
+                Retry
+              </button>
+            )}
+            {depsChecked && !depsError && missingDeps.length > 0 && (
               <button
                 onClick={handleInstallDeps}
                 disabled={installingDeps}
@@ -480,7 +512,7 @@ export default function GetStarted() {
           Customize your device, then compile and flash to your board.
         </p>
 
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Left: Configuration */}
           <div className="space-y-4">
             <div>
@@ -626,9 +658,16 @@ export default function GetStarted() {
             {buildError && (
               <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
                 <AlertTriangle size={14} className="text-red-400 flex-shrink-0" />
-                <p className="text-xs text-red-400/80">
+                <p className="flex-1 text-xs text-red-400/80">
                   Build failed. Check the output below for details.
                 </p>
+                <button
+                  onClick={handleCompileAndFlash}
+                  className="flex items-center gap-1 px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-xs transition-colors flex-shrink-0"
+                >
+                  <RefreshCw size={11} />
+                  Retry
+                </button>
               </div>
             )}
 
@@ -694,9 +733,10 @@ export default function GetStarted() {
               Open Dashboard
             </button>
             <button
-              onClick={() =>
-                navigate(`/device/${encodeURIComponent(newDevice.id)}`)
-              }
+              onClick={async () => {
+                await markOnboardingDone();
+                navigate(`/device/${encodeURIComponent(newDevice.id)}`);
+              }}
               className="flex items-center gap-2 px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
             >
               View Device
@@ -804,7 +844,12 @@ export default function GetStarted() {
 
         {step < STEPS.length - 1 && (
           <button
-            onClick={() => setStep(step + 1)}
+            onClick={() => {
+              if (step === 2) {
+                setDeviceSnapshot(new Set(devices.map((d) => d.id)));
+              }
+              setStep(step + 1);
+            }}
             disabled={!canAdvance}
             className="flex items-center gap-1.5 px-5 py-2 bg-trellis-500 hover:bg-trellis-600 disabled:bg-zinc-800 disabled:text-zinc-600 text-white rounded-lg text-sm font-medium transition-colors disabled:cursor-not-allowed"
           >
