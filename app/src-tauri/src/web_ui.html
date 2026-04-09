@@ -447,6 +447,21 @@
     }
     .ws-dot.connected { background: var(--green); box-shadow: 0 0 4px rgba(34,197,94,0.5); }
     .ws-dot.disconnected { background: var(--text-faint); }
+    .ws-dot.reconnecting { background: var(--text-faint); animation: wsPulse 1.5s ease-in-out infinite; }
+    @keyframes wsPulse { 0%,100%{opacity:0.4} 50%{opacity:1} }
+
+    /* ── Card WS Flash ── */
+    @keyframes wsFlash { 0%{box-shadow:0 0 0 2px rgba(99,102,241,0.5)} 100%{box-shadow:none} }
+    .device-card.ws-flash { animation: wsFlash 0.6s ease-out; }
+
+    /* ── Offline Banner ── */
+    .offline-banner {
+      position: fixed; top: 56px; left: 0; right: 0; z-index: 80;
+      background: rgba(234,179,8,0.15); border-bottom: 1px solid rgba(234,179,8,0.3);
+      color: #eab308; font-size: 0.8rem; text-align: center;
+      padding: 0.4rem 1rem;
+    }
+    .offline-banner.hidden { display: none; }
 
     /* ── PWA Install Banner ── */
     .install-banner {
@@ -482,6 +497,8 @@
       <span id="viewerBadge" class="hidden" style="font-size:0.7rem;padding:0.2rem 0.6rem;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);border-radius:999px;white-space:nowrap;">Read-only</span>
     </div>
   </header>
+
+  <div class="offline-banner hidden" id="offlineBanner">You are offline — showing last known state</div>
 
   <!-- Bottom Nav (mobile) -->
   <nav class="bottom-nav" id="bottomNav">
@@ -1240,12 +1257,16 @@
       ws.onopen = function() {
         wsConnected = true;
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        updateWsDot(true);
+        updateWsDot('connected');
+        // Request notification permission on first WS connect
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission();
+        }
       };
 
       ws.onclose = function() {
         wsConnected = false;
-        updateWsDot(false);
+        updateWsDot('reconnecting');
         scheduleWsReconnect();
         if (!pollTimer) {
           pollTimer = setInterval(function() {
@@ -1271,11 +1292,23 @@
       wsReconnectTimer = setTimeout(connectWebSocket, 3000);
     }
 
-    function updateWsDot(connected) {
+    function updateWsDot(state) {
+      // state: 'connected', 'reconnecting', or 'disconnected'
       var dot = document.getElementById('wsDot');
       if (!dot) return;
-      dot.className = connected ? 'ws-dot connected' : 'ws-dot disconnected';
-      dot.title = connected ? 'Live updates active' : 'Reconnecting\u2026';
+      dot.className = 'ws-dot ' + state;
+      dot.title = state === 'connected' ? 'Live updates active'
+                : state === 'reconnecting' ? 'Reconnecting\u2026'
+                : 'Disconnected';
+    }
+
+    function flashCard(deviceId) {
+      var card = document.querySelector('.device-card[data-device-id="' + deviceId + '"]');
+      if (!card) return;
+      card.classList.remove('ws-flash');
+      void card.offsetWidth; // reflow to restart animation
+      card.classList.add('ws-flash');
+      card.addEventListener('animationend', function() { card.classList.remove('ws-flash'); }, {once: true});
     }
 
     function handleDeviceEvent(msg) {
@@ -1288,11 +1321,15 @@
           var cap = dev.capabilities.find(function(c) { return c.id === payload.id; });
           if (cap && payload.value !== undefined) cap.value = payload.value;
         }
-        if (currentTab === 'devices') renderDevices();
+        if (currentTab === 'devices') {
+          renderDevices();
+          flashCard(msg.device_id);
+        }
       } else if (msg.event_type === 'heartbeat') {
         if (msg.payload && msg.payload.system) dev.system = msg.payload.system;
         dev.last_seen = new Date().toISOString();
         if (currentTab === 'devices') renderDevices();
+        // No flash for heartbeats — too frequent
       }
     }
 
@@ -1313,8 +1350,15 @@
       } else if (ev === 'lost') {
         var existing = devices.find(function(x) { return x.id === d.id; });
         if (existing) existing.online = false;
+        // Browser notification when device goes offline and tab is backgrounded
+        if ('Notification' in window && Notification.permission === 'granted' && !document.hasFocus()) {
+          new Notification('Device offline', { body: (d.name || d.id) + ' is no longer reachable', tag: 'offline-' + d.id });
+        }
       }
-      if (currentTab === 'devices') renderDevices();
+      if (currentTab === 'devices') {
+        renderDevices();
+        flashCard(d.id);
+      }
     }
 
     /* ────────────────────────── Polling ────────────────────────── */
@@ -1409,12 +1453,27 @@
       navigator.serviceWorker.register('/sw.js').catch(function() {});
     }
 
+    /* ────────────────────────── Offline Banner ─────────────────── */
+    function updateOfflineBanner() {
+      var banner = document.getElementById('offlineBanner');
+      if (!banner) return;
+      if (navigator.onLine) {
+        banner.classList.add('hidden');
+      } else {
+        banner.classList.remove('hidden');
+      }
+    }
+    window.addEventListener('online', updateOfflineBanner);
+    window.addEventListener('offline', updateOfflineBanner);
+    updateOfflineBanner();
+
     /* ────────────────────────── PWA Install Prompt ────────────── */
     var deferredInstallPrompt = null;
 
     window.addEventListener('beforeinstallprompt', function(e) {
       e.preventDefault();
       deferredInstallPrompt = e;
+      if (localStorage.getItem('trellis_install_dismissed')) return;
       if (window.innerWidth <= 640) {
         var banner = document.getElementById('installBanner');
         if (banner) banner.classList.remove('hidden');
@@ -1431,6 +1490,7 @@
     }
 
     function dismissInstall() {
+      localStorage.setItem('trellis_install_dismissed', '1');
       var banner = document.getElementById('installBanner');
       if (banner) banner.classList.add('hidden');
     }
