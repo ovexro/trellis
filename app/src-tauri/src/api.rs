@@ -760,6 +760,11 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_nickname(ctx, id, &req.body)
         }
 
+        ("PUT", "/api/devices/reorder") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_reorder_devices(ctx, &req.body)
+        }
+
         ("DELETE", p) if p.starts_with("/api/devices/") && !p["/api/devices/".len()..].contains('/') => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..];
@@ -1080,6 +1085,33 @@ fn handle_send_command(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, S
 
     match ctx.connection_manager.send_to_device(&device.id, &device.ip, ws_port, &msg) {
         Ok(()) => json_ok(&serde_json::json!({"sent": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_reorder_devices(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return json_error(400, "Expected a JSON array of {id, sort_order} objects"),
+    };
+    let mut order = Vec::new();
+    for item in arr {
+        let id = match item["id"].as_str() {
+            Some(s) => s.to_string(),
+            None => return json_error(400, "Each item must have a string 'id' field"),
+        };
+        let sort_order = match item["sort_order"].as_i64() {
+            Some(n) => n,
+            None => return json_error(400, "Each item must have a numeric 'sort_order' field"),
+        };
+        order.push((id, sort_order));
+    }
+    match ctx.db.reorder_devices(&order) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
 }

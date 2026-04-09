@@ -533,6 +533,13 @@ pub fn test_mqtt_connection(
     state.mqtt_bridge.test_connection_from_user(config)
 }
 
+// ─── Device ordering ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn reorder_devices(db: State<'_, Database>, order: Vec<(String, i64)>) -> Result<(), String> {
+    db.reorder_devices(&order)
+}
+
 // ─── API tokens ─────────────────────────────────────────────────────────────
 
 /// Response shape for `create_api_token`. The plaintext `token` field is

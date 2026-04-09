@@ -29,6 +29,7 @@ export interface Device {
   nickname?: string;
   tags?: string;
   group_id?: number | null;
+  sort_order?: number;
 }
 
 export interface DeviceGroup {

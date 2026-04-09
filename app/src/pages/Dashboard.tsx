@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil, Sparkles } from "lucide-react";
+import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil, Sparkles, GripVertical } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import DeviceCard from "@/components/DeviceCard";
@@ -26,6 +26,7 @@ export default function Dashboard() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
 
   // Group state
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
@@ -101,20 +102,53 @@ export default function Dashboard() {
     }
   };
 
-  // Filter devices by search
-  const filteredDevices = devices.filter((d) => {
-    if (!searchQuery) return true;
-    const q = searchQuery.toLowerCase();
-    return (
-      d.name.toLowerCase().includes(q) ||
-      (d.nickname || "").toLowerCase().includes(q) ||
-      d.id.toLowerCase().includes(q) ||
-      d.ip.includes(q) ||
-      d.platform.toLowerCase().includes(q) ||
-      d.system.chip.toLowerCase().includes(q) ||
-      (d.tags || "").toLowerCase().includes(q)
-    );
-  });
+  // Filter and sort devices
+  const filteredDevices = devices
+    .filter((d) => {
+      if (!searchQuery) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        d.name.toLowerCase().includes(q) ||
+        (d.nickname || "").toLowerCase().includes(q) ||
+        d.id.toLowerCase().includes(q) ||
+        d.ip.includes(q) ||
+        d.platform.toLowerCase().includes(q) ||
+        d.system.chip.toLowerCase().includes(q) ||
+        (d.tags || "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+  const persistOrder = useCallback(async (ordered: Device[]) => {
+    const order: [string, number][] = ordered.map((d, i) => [d.id, i]);
+    try {
+      await invoke("reorder_devices", { order });
+    } catch (err) {
+      console.error("Failed to persist device order:", err);
+    }
+  }, []);
+
+  const handleDrop = useCallback((targetId: string) => {
+    if (!dragId || dragId === targetId) return;
+    const fromIdx = filteredDevices.findIndex((d) => d.id === dragId);
+    const toIdx = filteredDevices.findIndex((d) => d.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const reordered = [...filteredDevices];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+
+    // Update store with new sort_order values
+    const updated = reordered.map((d, i) => ({ ...d, sort_order: i }));
+    useDeviceStore.setState((state) => ({
+      devices: state.devices.map((d) => {
+        const u = updated.find((x) => x.id === d.id);
+        return u ? { ...d, sort_order: u.sort_order } : d;
+      }),
+    }));
+    persistOrder(reordered);
+    setDragId(null);
+  }, [dragId, filteredDevices, persistOrder]);
 
   // Organize devices by group
   const devicesByGroup = new Map<number | "ungrouped", Device[]>();
@@ -270,9 +304,12 @@ export default function Dashboard() {
                 onToggle={() => toggleCollapsed(group.id)}
               >
                 {groupDevices.map((device) => (
-                  <DeviceWithGroupAssign
+                  <DraggableCard
                     key={device.id}
                     device={device}
+                    dragId={dragId}
+                    onDragStart={setDragId}
+                    onDrop={handleDrop}
                     groups={groups}
                     onSetGroup={handleSetDeviceGroup}
                   />
@@ -295,9 +332,12 @@ export default function Dashboard() {
                 onToggle={() => toggleCollapsed("ungrouped")}
               >
                 {ungrouped.map((device) => (
-                  <DeviceWithGroupAssign
+                  <DraggableCard
                     key={device.id}
                     device={device}
+                    dragId={dragId}
+                    onDragStart={setDragId}
+                    onDrop={handleDrop}
                     groups={groups}
                     onSetGroup={handleSetDeviceGroup}
                   />
@@ -309,10 +349,73 @@ export default function Dashboard() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredDevices.map((device) => (
-            <DeviceCard key={device.id} device={device} />
+            <DraggableCard
+              key={device.id}
+              device={device}
+              dragId={dragId}
+              onDragStart={setDragId}
+              onDrop={handleDrop}
+            />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Draggable Device Card ────────────────────────────────────────────
+
+function DraggableCard({
+  device,
+  dragId,
+  onDragStart,
+  onDrop,
+  groups,
+  onSetGroup,
+}: {
+  device: Device;
+  dragId: string | null;
+  onDragStart: (id: string) => void;
+  onDrop: (targetId: string) => void;
+  groups?: DeviceGroup[];
+  onSetGroup?: (deviceId: string, groupId: number | null) => void;
+}) {
+  const isDragging = dragId === device.id;
+  const [isOver, setIsOver] = useState(false);
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => {
+        onDragStart(device.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        setIsOver(true);
+      }}
+      onDragLeave={() => setIsOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsOver(false);
+        onDrop(device.id);
+      }}
+      onDragEnd={() => onDragStart("")}
+      className={`relative transition-all ${
+        isDragging ? "opacity-40 scale-95" : ""
+      } ${isOver && dragId && dragId !== device.id ? "ring-2 ring-trellis-500/50 rounded-xl" : ""}`}
+      style={{ cursor: "grab" }}
+    >
+      {groups && onSetGroup ? (
+        <DeviceWithGroupAssign device={device} groups={groups} onSetGroup={onSetGroup} />
+      ) : (
+        <DeviceCard device={device} />
+      )}
+      <div className="absolute top-3 right-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing"
+        title="Drag to reorder">
+        <GripVertical size={14} />
+      </div>
     </div>
   );
 }

@@ -120,6 +120,7 @@ pub fn run() {
             create_api_token,
             revoke_api_token,
             probe_remote_url,
+            reorder_devices,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

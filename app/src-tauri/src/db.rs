@@ -27,6 +27,7 @@ pub struct SavedDevice {
     pub first_seen: String,
     pub last_seen: String,
     pub group_id: Option<i64>,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,7 +102,7 @@ impl Database {
     pub fn get_saved_device(&self, device_id: &str) -> Result<Option<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id FROM devices WHERE id = ?1")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order FROM devices WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query_map(rusqlite::params![device_id], |row| {
@@ -117,6 +118,7 @@ impl Database {
                     first_seen: row.get(8)?,
                     last_seen: row.get(9)?,
                     group_id: row.get(10)?,
+                    sort_order: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -129,7 +131,7 @@ impl Database {
     pub fn get_all_saved_devices(&self) -> Result<Vec<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id FROM devices ORDER BY last_seen DESC")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order FROM devices ORDER BY sort_order ASC, last_seen DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -145,6 +147,7 @@ impl Database {
                     first_seen: row.get(8)?,
                     last_seen: row.get(9)?,
                     group_id: row.get(10)?,
+                    sort_order: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -153,6 +156,18 @@ impl Database {
             devices.push(row.map_err(|e| e.to_string())?);
         }
         Ok(devices)
+    }
+
+    pub fn reorder_devices(&self, order: &[(String, i64)]) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        for (id, sort_order) in order {
+            conn.execute(
+                "UPDATE devices SET sort_order = ?1 WHERE id = ?2",
+                rusqlite::params![sort_order, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     pub fn delete_device(&self, device_id: &str) -> Result<(), String> {
@@ -991,6 +1006,9 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Add expires_at column to api_tokens if it doesn't exist (v0.4.4 — token TTL)
     let _ = conn.execute("ALTER TABLE api_tokens ADD COLUMN expires_at TEXT", []);
+
+    // Add sort_order column to devices if it doesn't exist (dashboard card ordering)
+    let _ = conn.execute("ALTER TABLE devices ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0", []);
 
     // Add role column to api_tokens if it doesn't exist (v0.5.0 — RBAC).
     // Default 'admin' preserves existing behavior: pre-migration tokens get

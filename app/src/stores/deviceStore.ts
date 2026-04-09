@@ -236,7 +236,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
 
       // Load saved nickname/tags from SQLite
       try {
-        const saved = await invoke<{ nickname: string | null; tags: string; group_id: number | null } | null>(
+        const saved = await invoke<{ nickname: string | null; tags: string; group_id: number | null; sort_order: number } | null>(
           "get_saved_device",
           { deviceId: device.id },
         );
@@ -244,6 +244,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
           device.nickname = saved.nickname || undefined;
           device.tags = saved.tags || undefined;
           device.group_id = saved.group_id ?? undefined;
+          device.sort_order = saved.sort_order ?? 0;
         }
       } catch (err) {
         console.error("Failed to load saved device:", err);
@@ -354,7 +355,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     (async () => {
       await get().refreshDevices();
       try {
-        const saved = await invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null }>>(
+        const saved = await invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null; sort_order: number }>>(
           "get_saved_devices",
         );
         if (saved.length === 0) return;
@@ -368,6 +369,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
               nickname: s.nickname || d.nickname,
               tags: s.tags || d.tags,
               group_id: s.group_id ?? d.group_id,
+              sort_order: s.sort_order ?? 0,
             };
           }),
         }));

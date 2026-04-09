@@ -14,6 +14,7 @@ Single source of truth for all features. Check items as they are implemented and
 
 ### Dashboard
 - [x] Device card grid layout
+- [x] **Drag-and-drop card reordering (post-v0.4.4)** — device cards can be reordered via drag-and-drop in both the desktop app and the `:9090` web dashboard. Order persists in SQLite (`sort_order` column on `devices` table). `PUT /api/devices/reorder` REST endpoint (admin-only). Viewers see cards in the same order but cannot drag. HTML5 DnD with visual feedback (opacity on drag, accent ring on drop target, grip handle icon).
 - [x] Device card: name, status indicator, RSSI, uptime, firmware version, chip type
 - [x] Click card → device detail view
 - [x] Device grouping / tagging (nicknames, tags, pills on cards)

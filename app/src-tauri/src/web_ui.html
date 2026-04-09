@@ -125,6 +125,9 @@
       cursor: pointer;
     }
     .device-card:hover { border-color: #3f3f46; }
+    .device-card[draggable="true"] { cursor: grab; }
+    .device-card[draggable="true"]:active { cursor: grabbing; }
+    .device-card.drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(99,102,241,0.3); }
     .device-card.expanded { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); cursor: default; }
 
     .card-header {
@@ -667,6 +670,10 @@
         devices = devs || [];
         groups = grps || [];
         savedDevices = saved || [];
+        // Enrich devices with persisted sort order
+        const orderById = {};
+        (savedDevices || []).forEach(s => { orderById[s.id] = s.sort_order || 0; });
+        devices.forEach(d => { d._sort_order = orderById[d.id] || 0; });
         renderDevices();
         initialLoad = false;
       } catch (e) {
@@ -693,10 +700,11 @@
         return;
       }
 
-      // Sort by group
+      // Sort by user-defined order, then by group
+      const sorted = [...devices].sort((a, b) => (a._sort_order || 0) - (b._sort_order || 0));
       const grouped = {};
       const ungrouped = [];
-      devices.forEach(dev => {
+      sorted.forEach(dev => {
         const gid = getDeviceGroup(dev);
         if (gid !== null && gid !== undefined) {
           if (!grouped[gid]) grouped[gid] = [];
@@ -771,7 +779,8 @@
         controlsHtml = `<div class="controls-inner"><div style="font-size:0.8rem;color:var(--text-faint);padding:0.5rem 0;">No capabilities reported</div></div>`;
       }
 
-      return `<div class="device-card${expanded ? ' expanded' : ''}" onclick="toggleDevice(event, '${esc(dev.id)}')" data-device-id="${esc(dev.id)}">
+      const dndAttrs = isViewer ? '' : ` draggable="true" ondragstart="onCardDragStart(event, '${esc(dev.id)}')" ondragover="onCardDragOver(event)" ondragleave="onCardDragLeave(event)" ondrop="onCardDrop(event, '${esc(dev.id)}')" ondragend="onCardDragEnd(event)"`;
+      return `<div class="device-card${expanded ? ' expanded' : ''}" onclick="toggleDevice(event, '${esc(dev.id)}')" data-device-id="${esc(dev.id)}"${dndAttrs}>
         <div class="card-header">
           <span class="status-dot ${online ? 'online' : 'offline'}"></span>
           <div class="card-title-block">
@@ -1189,6 +1198,68 @@
       pollTimer = setInterval(() => {
         if (currentTab === 'devices') loadDevices();
       }, 5000);
+    }
+
+    /* ────────────────────────── Drag & Drop Reorder ────────── */
+    let dragDeviceId = null;
+
+    function onCardDragStart(e, id) {
+      e.stopPropagation();
+      dragDeviceId = id;
+      e.dataTransfer.effectAllowed = 'move';
+      const card = e.currentTarget;
+      requestAnimationFrame(() => card.style.opacity = '0.4');
+    }
+
+    function onCardDragOver(e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const card = e.currentTarget.closest('.device-card');
+      if (card) card.classList.add('drag-over');
+    }
+
+    function onCardDragLeave(e) {
+      const card = e.currentTarget.closest('.device-card');
+      if (card) card.classList.remove('drag-over');
+    }
+
+    function onCardDragEnd(e) {
+      e.currentTarget.style.opacity = '';
+      dragDeviceId = null;
+      document.querySelectorAll('.device-card.drag-over').forEach(el => el.classList.remove('drag-over'));
+    }
+
+    async function onCardDrop(e, targetId) {
+      e.preventDefault();
+      const card = e.currentTarget.closest('.device-card');
+      if (card) card.classList.remove('drag-over');
+      if (!dragDeviceId || dragDeviceId === targetId) return;
+
+      // Compute current visual order from DOM
+      const cards = Array.from(document.querySelectorAll('.device-card[data-device-id]'));
+      const ids = cards.map(c => c.dataset.deviceId);
+      const fromIdx = ids.indexOf(dragDeviceId);
+      const toIdx = ids.indexOf(targetId);
+      if (fromIdx === -1 || toIdx === -1) return;
+
+      ids.splice(fromIdx, 1);
+      ids.splice(toIdx, 0, dragDeviceId);
+
+      // Update local sort order and re-render
+      ids.forEach((id, i) => {
+        const dev = devices.find(d => d.id === id);
+        if (dev) dev._sort_order = i;
+      });
+      renderDevices();
+
+      // Persist to backend
+      const order = ids.map((id, i) => ({ id, sort_order: i }));
+      try {
+        await api('/api/devices/reorder', { method: 'PUT', body: order });
+      } catch (err) {
+        console.error('Failed to persist device order:', err);
+      }
+      dragDeviceId = null;
     }
 
     /* ────────────────────────── Init ────────────────────────── */
