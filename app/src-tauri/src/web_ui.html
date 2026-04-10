@@ -519,6 +519,24 @@
     .detail-sparkline { display: block; margin-top: 0.25rem; }
     .detail-sparkline polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
     .detail-sparkline .spark-fill { fill: var(--accent); opacity: 0.08; stroke: none; }
+    /* Metric Charts */
+    .chart-container { margin-bottom: 1rem; }
+    .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; }
+    .chart-title { font-size: 0.8rem; font-weight: 500; color: var(--text-dim); }
+    .chart-range-btns { display: flex; gap: 0.25rem; }
+    .chart-range-btn {
+      background: none; border: 1px solid var(--border); color: var(--text-faint);
+      font-size: 0.65rem; padding: 0.2rem 0.5rem; border-radius: var(--radius-sm);
+      cursor: pointer; transition: var(--transition);
+    }
+    .chart-range-btn:hover { color: var(--text-dim); border-color: var(--text-faint); }
+    .chart-range-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+    .chart-svg { display: block; width: 100%; }
+    .chart-tooltip {
+      position: absolute; background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-size: 0.7rem;
+      pointer-events: none; z-index: 10; box-shadow: var(--shadow); white-space: nowrap;
+    }
 
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
@@ -533,6 +551,8 @@
       .detail-grid { grid-template-columns: 1fr; }
       .detail-log-list { max-height: 200px; }
       .detail-stat-value { font-size: 0.8rem; }
+      .chart-range-btns { gap: 0.15rem; }
+      .chart-range-btn { padding: 0.15rem 0.35rem; font-size: 0.6rem; }
     }
 
     @media (min-width: 641px) and (max-width: 900px) {
@@ -1095,6 +1115,223 @@
         + '<polyline points="' + line + '"/></svg>';
     }
 
+    /* ── Metric Chart Renderer ── */
+    var detailChartRange = 24;
+    var detailChartDeviceId = null;
+    var detailChartCaps = [];
+
+    function downsampleMetrics(points, maxPts) {
+      if (points.length <= maxPts) return points;
+      var step = points.length / maxPts;
+      var result = [];
+      for (var i = 0; i < maxPts; i++) {
+        var start = Math.floor(i * step);
+        var end = Math.floor((i + 1) * step);
+        var sum = 0;
+        for (var j = start; j < end; j++) sum += points[j].value;
+        var mid = Math.floor((start + end) / 2);
+        result.push({ value: sum / (end - start), timestamp: points[mid].timestamp });
+      }
+      return result;
+    }
+
+    function fmtChartVal(v) {
+      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+      if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+      if (v === Math.floor(v)) return String(v);
+      return v.toFixed(1);
+    }
+
+    function fmtChartTime(ts, hours) {
+      var d = new Date(ts.replace(' ', 'T'));
+      if (isNaN(d.getTime())) return ts;
+      var hh = String(d.getHours()).padStart(2, '0');
+      var mm = String(d.getMinutes()).padStart(2, '0');
+      if (hours <= 24) return hh + ':' + mm;
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[d.getMonth()] + ' ' + d.getDate() + ' ' + hh + ':' + mm;
+    }
+
+    function fmtTooltipTime(ts) {
+      var d = new Date(ts.replace(' ', 'T'));
+      if (isNaN(d.getTime())) return ts;
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return months[d.getMonth()] + ' ' + d.getDate() + ' '
+        + String(d.getHours()).padStart(2, '0') + ':'
+        + String(d.getMinutes()).padStart(2, '0') + ':'
+        + String(d.getSeconds()).padStart(2, '0');
+    }
+
+    function renderChart(container, points, opts) {
+      points = downsampleMetrics(points, 200);
+      if (!points || points.length < 2) {
+        container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);padding:0.5rem 0;">No data</div>';
+        return;
+      }
+
+      var W = 400, H = 150;
+      var pad = { top: 8, right: 10, bottom: 22, left: 42 };
+      var pw = W - pad.left - pad.right;
+      var ph = H - pad.top - pad.bottom;
+
+      var vals = points.map(function(p) { return p.value; });
+      var rawMin = Math.min.apply(null, vals);
+      var rawMax = Math.max.apply(null, vals);
+      var margin = (rawMax - rawMin) * 0.1 || 1;
+      var yMin = rawMin - margin;
+      var yMax = rawMax + margin;
+      var yRange = yMax - yMin;
+
+      var coords = points.map(function(p, i) {
+        var x = pad.left + (i / (points.length - 1)) * pw;
+        var y = pad.top + ph - ((p.value - yMin) / yRange) * ph;
+        return { x: x, y: y, value: p.value, ts: p.timestamp };
+      });
+
+      var lineStr = coords.map(function(c) { return c.x.toFixed(1) + ',' + c.y.toFixed(1); }).join(' ');
+      var fillStr = coords[0].x.toFixed(1) + ',' + (pad.top + ph)
+        + ' ' + lineStr + ' '
+        + coords[coords.length - 1].x.toFixed(1) + ',' + (pad.top + ph);
+
+      // Y-axis grid + labels (4 lines)
+      var yParts = '';
+      for (var i = 0; i <= 3; i++) {
+        var val = yMin + (yRange * i / 3);
+        var y = pad.top + ph - (i / 3) * ph;
+        yParts += '<line x1="' + pad.left + '" y1="' + y.toFixed(1) + '" x2="' + (W - pad.right) + '" y2="' + y.toFixed(1) + '" stroke="var(--border)" stroke-width="0.5"/>';
+        yParts += '<text x="' + (pad.left - 5) + '" y="' + (y + 3).toFixed(1) + '" text-anchor="end" fill="var(--text-faint)" font-size="8" font-family="system-ui,sans-serif">' + fmtChartVal(val) + '</text>';
+      }
+
+      // X-axis labels (5 ticks)
+      var xParts = '';
+      var xStep = Math.max(1, Math.floor((points.length - 1) / 4));
+      for (var i = 0; i <= 4; i++) {
+        var idx = Math.min(i * xStep, points.length - 1);
+        var x = pad.left + (idx / (points.length - 1)) * pw;
+        xParts += '<text x="' + x.toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle" fill="var(--text-faint)" font-size="8" font-family="system-ui,sans-serif">' + fmtChartTime(points[idx].timestamp, opts.hours) + '</text>';
+      }
+
+      var color = opts.color || 'var(--accent)';
+      var uid = 'ch' + Math.random().toString(36).substr(2, 6);
+
+      var svg = '<svg id="' + uid + '" class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">'
+        + yParts + xParts
+        + '<polyline points="' + fillStr + '" fill="' + color + '" opacity="0.1" stroke="none"/>'
+        + '<polyline points="' + lineStr + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        + '<line id="' + uid + 'c" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + ph) + '" stroke="var(--text-faint)" stroke-width="0.5" stroke-dasharray="3,3" opacity="0"/>'
+        + '<circle id="' + uid + 'd" cx="0" cy="0" r="3" fill="' + color + '" opacity="0"/>'
+        + '<rect x="' + pad.left + '" y="' + pad.top + '" width="' + pw + '" height="' + ph + '" fill="transparent" style="cursor:crosshair;"/>'
+        + '</svg>';
+
+      var wrapper = document.createElement('div');
+      wrapper.style.position = 'relative';
+      wrapper.innerHTML = svg + '<div id="' + uid + 't" class="chart-tooltip" style="display:none;"></div>';
+      container.innerHTML = '';
+      container.appendChild(wrapper);
+
+      // Hover interaction
+      var svgEl = document.getElementById(uid);
+      var cursorEl = document.getElementById(uid + 'c');
+      var dotEl = document.getElementById(uid + 'd');
+      var tipEl = document.getElementById(uid + 't');
+      var hoverRect = svgEl.querySelector('rect');
+
+      function onMove(e) {
+        var rect = svgEl.getBoundingClientRect();
+        var scaleX = W / rect.width;
+        var localX = (e.clientX - rect.left) * scaleX;
+        var nearest = 0, minDist = Infinity;
+        for (var i = 0; i < coords.length; i++) {
+          var dist = Math.abs(coords[i].x - localX);
+          if (dist < minDist) { minDist = dist; nearest = i; }
+        }
+        var c = coords[nearest];
+        cursorEl.setAttribute('x1', c.x.toFixed(1));
+        cursorEl.setAttribute('x2', c.x.toFixed(1));
+        cursorEl.setAttribute('opacity', '1');
+        dotEl.setAttribute('cx', c.x.toFixed(1));
+        dotEl.setAttribute('cy', c.y.toFixed(1));
+        dotEl.setAttribute('opacity', '1');
+        var unit = opts.unit ? ' ' + opts.unit : '';
+        tipEl.innerHTML = '<div style="font-weight:500;">' + fmtChartVal(c.value) + unit + '</div>'
+          + '<div style="color:var(--text-faint);">' + fmtTooltipTime(c.ts) + '</div>';
+        tipEl.style.display = '';
+        var tipX = (c.x / W) * rect.width;
+        var tipY = (c.y / H) * rect.height;
+        tipEl.style.left = Math.min(tipX + 8, rect.width - 110) + 'px';
+        tipEl.style.top = Math.max(0, tipY - 44) + 'px';
+      }
+
+      function onLeave() {
+        cursorEl.setAttribute('opacity', '0');
+        dotEl.setAttribute('opacity', '0');
+        tipEl.style.display = 'none';
+      }
+
+      hoverRect.addEventListener('mousemove', onMove);
+      hoverRect.addEventListener('mouseleave', onLeave);
+      // Touch support
+      hoverRect.addEventListener('touchmove', function(e) {
+        e.preventDefault();
+        var touch = e.touches[0];
+        onMove({ clientX: touch.clientX, clientY: touch.clientY });
+      });
+      hoverRect.addEventListener('touchend', onLeave);
+    }
+
+    async function loadDetailCharts(id, caps) {
+      detailChartDeviceId = id;
+      detailChartCaps = caps || [];
+      var container = document.getElementById('detailCharts');
+      if (!container) return;
+
+      var hours = detailChartRange;
+      var metrics = [
+        { id: '_rssi', label: 'WiFi Signal', unit: 'dBm', color: '#f59e0b' },
+        { id: '_heap', label: 'Free Heap', unit: 'bytes', color: '#3b82f6' },
+      ];
+      if (caps) {
+        caps.filter(function(c) { return c.type === 'sensor'; }).forEach(function(c) {
+          metrics.push({ id: c.id, label: c.label || c.id, unit: c.unit || '', color: '#22c55e' });
+        });
+      }
+
+      var fetches = metrics.map(function(m) {
+        return api('/api/devices/' + encodeURIComponent(id) + '/metrics?metric=' + encodeURIComponent(m.id) + '&hours=' + hours).catch(function() { return null; });
+      });
+      var results = await Promise.all(fetches);
+
+      container.innerHTML = '';
+      var hasData = false;
+      results.forEach(function(pts, i) {
+        if (!pts || pts.length < 2) return;
+        hasData = true;
+        var m = metrics[i];
+        var wrap = document.createElement('div');
+        wrap.className = 'chart-container';
+        var header = document.createElement('div');
+        header.className = 'chart-header';
+        header.innerHTML = '<span class="chart-title">' + esc(m.label) + (m.unit ? ' <span style="color:var(--text-faint);">(' + esc(m.unit) + ')</span>' : '') + '</span>';
+        wrap.appendChild(header);
+        var chartDiv = document.createElement('div');
+        wrap.appendChild(chartDiv);
+        container.appendChild(wrap);
+        renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours });
+      });
+
+      if (!hasData) {
+        container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);">No metric data for this period</div>';
+      }
+    }
+
+    function setChartRange(hours) {
+      detailChartRange = hours;
+      document.querySelectorAll('.chart-range-btn').forEach(function(b) {
+        b.classList.toggle('active', parseInt(b.dataset.hours) === hours);
+      });
+      if (detailChartDeviceId) loadDetailCharts(detailChartDeviceId, detailChartCaps);
+    }
+
     async function openDeviceDetail(id) {
       const dev = devices.find(d => d.id === id);
       if (!dev) return;
@@ -1181,6 +1418,18 @@
         </div>`;
       }
 
+      // Metric charts
+      const chartRanges = [{l:'1h',h:1},{l:'6h',h:6},{l:'24h',h:24},{l:'7d',h:168}];
+      html += `<div class="detail-section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">
+          <div class="detail-section-title" style="margin-bottom:0;">Metrics</div>
+          <div class="chart-range-btns">
+            ${chartRanges.map(function(r) { return '<button class="chart-range-btn ' + (r.h === detailChartRange ? 'active' : '') + '" data-hours="' + r.h + '" onclick="setChartRange(' + r.h + ')">' + r.l + '</button>'; }).join('')}
+          </div>
+        </div>
+        <div id="detailCharts" style="font-size:0.75rem;color:var(--text-faint);">Loading...</div>
+      </div>`;
+
       // Firmware history placeholder
       html += `<div class="detail-section" id="detailFwSection" style="display:none;">
         <div class="detail-section-title">Firmware History</div>
@@ -1244,6 +1493,9 @@
       if (rssiEl && rssiPts && rssiPts.length >= 2) rssiEl.innerHTML = buildSparkline(rssiPts, 120, 24);
       const heapEl = document.getElementById('detailSparkHeap');
       if (heapEl && heapPts && heapPts.length >= 2) heapEl.innerHTML = buildSparkline(heapPts, 120, 24);
+
+      // Load metric charts
+      loadDetailCharts(id, dev.capabilities);
     }
 
     function closeDeviceDetail() {
