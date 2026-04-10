@@ -50,7 +50,9 @@ The Trellis Arduino library requires two dependencies:
 
 **PlatformIO** installs these automatically.
 
-**Arduino IDE** does not auto-install dependencies — you need to add them yourself:
+**Arduino IDE Library Manager** will offer to install these when you install Trellis — click **"INSTALL ALL"** in the dependency dialog.
+
+If you installed Trellis manually (e.g. via "Add .ZIP Library…"), you need to install the dependencies yourself:
 
 1. Open **Sketch → Include Library → Manage Libraries…**
 2. Search for **ArduinoJson** and click Install

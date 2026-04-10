@@ -683,6 +683,25 @@
       return text ? JSON.parse(text) : null;
     }
 
+    /* ────────────────────── Notification Preferences ────────────────────── */
+    const NOTIF_PREFS_KEY = 'trellis_notif_prefs';
+    const NOTIF_DEFAULTS = { device_offline: true, device_online: false, log_error: false };
+    function getNotifPrefs() {
+      try {
+        const stored = localStorage.getItem(NOTIF_PREFS_KEY);
+        return stored ? Object.assign({}, NOTIF_DEFAULTS, JSON.parse(stored)) : Object.assign({}, NOTIF_DEFAULTS);
+      } catch { return Object.assign({}, NOTIF_DEFAULTS); }
+    }
+    function setNotifPref(key, value) {
+      const prefs = getNotifPrefs();
+      prefs[key] = value;
+      try { localStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify(prefs)); } catch {}
+    }
+    function maybeNotify(title, body, tag) {
+      if (!('Notification' in window) || Notification.permission !== 'granted' || document.hasFocus()) return;
+      new Notification(title, { body: body, tag: tag });
+    }
+
     function toast(msg, type = 'success') {
       const el = document.createElement('div');
       el.className = `toast ${type}`;
@@ -1085,6 +1104,43 @@
           </div>
         </div>`;
 
+        // Browser Notifications
+        const notifPrefs = getNotifPrefs();
+        const notifSupported = 'Notification' in window;
+        const notifPerm = notifSupported ? Notification.permission : 'unsupported';
+        const permLabel = notifPerm === 'granted' ? 'Allowed'
+                        : notifPerm === 'denied' ? 'Blocked'
+                        : notifPerm === 'default' ? 'Not yet requested'
+                        : 'Not supported';
+        const permColor = notifPerm === 'granted' ? 'var(--green)'
+                        : notifPerm === 'denied' ? 'var(--red)'
+                        : 'var(--text-faint)';
+
+        function notifToggle(key, label, desc) {
+          const on = notifPrefs[key];
+          const dis = isViewer || !notifSupported;
+          return `<div class="setting-row">
+            <div class="setting-label-block">
+              <div class="setting-label">${label}</div>
+              <div class="setting-desc">${desc}</div>
+            </div>
+            <button class="toggle ${on ? 'on' : ''}" ${dis ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}
+              onclick="toggleNotifPref(this, '${key}')"></button>
+          </div>`;
+        }
+
+        html += `<div class="settings-section">
+          <div class="settings-title">Browser Notifications
+            <span style="font-size:0.7rem;font-weight:400;color:${permColor};margin-left:0.5rem;">${permLabel}</span>
+          </div>
+          <div class="setting-row" style="padding-top:0;">
+            <div class="setting-desc">Notifications appear when the tab is in the background. ${notifPerm === 'default' ? 'Permission will be requested when you enable live updates.' : ''}</div>
+          </div>
+          ${notifToggle('device_offline', 'Device offline', 'When a device becomes unreachable')}
+          ${notifToggle('device_online', 'Device online', 'When a device appears on the network')}
+          ${notifToggle('log_error', 'Error logs', 'When a device reports a log with severity "error"')}
+        </div>`;
+
         // Groups
         html += `<div class="settings-section">
           <div class="settings-title">Groups</div>
@@ -1136,6 +1192,16 @@
         toast('ntfy topic saved');
       } catch (e) {
         toast('Failed to save', 'error');
+      }
+    }
+
+    function toggleNotifPref(btn, key) {
+      const on = !btn.classList.contains('on');
+      btn.classList.toggle('on', on);
+      setNotifPref(key, on);
+      // Request permission on first toggle-on if not yet granted
+      if (on && 'Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().then(function() { loadSettings(); });
       }
     }
 
@@ -1258,9 +1324,12 @@
         wsConnected = true;
         if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
         updateWsDot('connected');
-        // Request notification permission on first WS connect
+        // Request notification permission if any notification pref is enabled
         if ('Notification' in window && Notification.permission === 'default') {
-          Notification.requestPermission();
+          var prefs = getNotifPrefs();
+          if (prefs.device_offline || prefs.device_online || prefs.log_error) {
+            Notification.requestPermission();
+          }
         }
       };
 
@@ -1330,6 +1399,11 @@
         dev.last_seen = new Date().toISOString();
         if (currentTab === 'devices') renderDevices();
         // No flash for heartbeats — too frequent
+      } else if (msg.event_type === 'log') {
+        var p = msg.payload || {};
+        if (p.severity === 'error' && getNotifPrefs().log_error) {
+          maybeNotify('Error from ' + (dev.name || dev.id), p.message || 'Device reported an error', 'log-error-' + dev.id);
+        }
       }
     }
 
@@ -1339,6 +1413,7 @@
 
       if (ev === 'found' || ev === 'updated') {
         var idx = devices.findIndex(function(x) { return x.id === d.id; });
+        var wasOffline = idx !== -1 && !devices[idx].online;
         if (idx !== -1) {
           var sortOrder = devices[idx]._sort_order;
           devices[idx] = d;
@@ -1347,12 +1422,14 @@
           d._sort_order = devices.length;
           devices.push(d);
         }
+        if (ev === 'found' && wasOffline && d.online && getNotifPrefs().device_online) {
+          maybeNotify('Device online', (d.name || d.id) + ' is back on the network', 'online-' + d.id);
+        }
       } else if (ev === 'lost') {
         var existing = devices.find(function(x) { return x.id === d.id; });
         if (existing) existing.online = false;
-        // Browser notification when device goes offline and tab is backgrounded
-        if ('Notification' in window && Notification.permission === 'granted' && !document.hasFocus()) {
-          new Notification('Device offline', { body: (d.name || d.id) + ' is no longer reachable', tag: 'offline-' + d.id });
+        if (getNotifPrefs().device_offline) {
+          maybeNotify('Device offline', (d.name || d.id) + ' is no longer reachable', 'offline-' + d.id);
         }
       }
       if (currentTab === 'devices') {
