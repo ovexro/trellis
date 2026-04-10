@@ -161,14 +161,22 @@ pub fn run() {
             // Start continuous background discovery
             discovery.start_background(app.handle().clone());
 
-            // Schedule periodic metrics cleanup (delete data older than 30 days)
+            // Schedule periodic metrics cleanup (configurable retention period)
             let cleanup_handle = app.handle().clone();
             std::thread::spawn(move || {
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(3600));
                     if let Some(db) = cleanup_handle.try_state::<db::Database>() {
-                        let _ = db.cleanup_old_metrics(30);
-                        let _ = db.cleanup_old_logs(30);
+                        let days = db
+                            .get_setting("data_retention_days")
+                            .ok()
+                            .flatten()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(30);
+                        if days > 0 {
+                            let _ = db.cleanup_old_metrics(days);
+                            let _ = db.cleanup_old_logs(days);
+                        }
                     }
                 }
             });

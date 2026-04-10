@@ -1501,6 +1501,32 @@
           html += `</div>`;
         }
 
+        // Data Retention
+        const retRes = await api('/api/settings/data_retention_days').catch(() => ({ value: '' }));
+        const retVal = retRes && retRes.value ? retRes.value : '30';
+        html += `<div class="settings-section">
+          <div class="settings-title">Data Management</div>
+          <div class="setting-row">
+            <div class="setting-label-block">
+              <div class="setting-label">Data retention</div>
+              <div class="setting-desc">Metrics and logs older than this are automatically deleted</div>
+            </div>
+          </div>
+          <div class="input-row">
+            <select id="retentionSelect" class="input-text" style="max-width:200px;${isViewer ? 'opacity:0.5;' : ''}"
+              ${isViewer ? 'disabled' : ''} onchange="saveRetention(this.value)">
+              <option value="7" ${retVal==='7'?'selected':''}>7 days</option>
+              <option value="30" ${retVal==='30'?'selected':''}>30 days (default)</option>
+              <option value="90" ${retVal==='90'?'selected':''}>90 days</option>
+              <option value="365" ${retVal==='365'?'selected':''}>1 year</option>
+              <option value="0" ${retVal==='0'?'selected':''}>Forever</option>
+            </select>
+          </div>
+          <div class="setting-row" style="padding-top:0.25rem;">
+            <div class="setting-desc">Choosing &ldquo;Forever&rdquo; disables cleanup but the database will grow over time.</div>
+          </div>
+        </div>`;
+
         // Groups
         html += `<div class="settings-section">
           <div class="settings-title">Groups</div>
@@ -1576,6 +1602,15 @@
       btn.className = 'dev-notif-btn ' + (next === null ? 'inherit' : (next ? 'on' : 'off'));
       const labels = { device_offline: 'Offline', device_online: 'Online', log_error: 'Errors' };
       btn.title = (labels[key] || key) + ': ' + (next === null ? 'Follow global' : (next ? 'On' : 'Off'));
+    }
+
+    async function saveRetention(val) {
+      try {
+        await api('/api/settings/data_retention_days', { method: 'PUT', body: { value: val } });
+        toast('Data retention updated');
+      } catch (e) {
+        toast('Failed to save', 'error');
+      }
     }
 
     async function createGroup() {

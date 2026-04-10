@@ -9,10 +9,14 @@ export default function ConfigSection() {
   const [exportStatus, setExportStatus] = useState("");
   const [importStatus, setImportStatus] = useState("");
   const [scanInterval, setScanInterval] = useState("30");
+  const [dataRetention, setDataRetention] = useState("30");
 
   useEffect(() => {
     invoke<string | null>("get_setting", { key: "scan_interval" }).then((val) => {
       if (val) setScanInterval(val);
+    }).catch(() => {});
+    invoke<string | null>("get_setting", { key: "data_retention_days" }).then((val) => {
+      if (val) setDataRetention(val);
     }).catch(() => {});
   }, []);
 
@@ -272,6 +276,38 @@ export default function ConfigSection() {
         </div>
         <p className="text-xs text-zinc-600 mt-2">
           How often Trellis checks if devices are still online. Lower values detect changes faster but use more network traffic.
+        </p>
+      </div>
+
+      {/* Data Retention */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+          Data Retention
+        </h2>
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-zinc-300">Keep metrics &amp; logs for</label>
+          <select
+            value={dataRetention}
+            onChange={async (e) => {
+              const val = e.target.value;
+              setDataRetention(val);
+              try {
+                await invoke("set_setting", { key: "data_retention_days", value: val });
+              } catch (err) {
+                console.error("Failed to save data retention:", err);
+              }
+            }}
+            className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300"
+          >
+            <option value="7">7 days</option>
+            <option value="30">30 days (default)</option>
+            <option value="90">90 days</option>
+            <option value="365">1 year</option>
+            <option value="0">Forever</option>
+          </select>
+        </div>
+        <p className="text-xs text-zinc-600 mt-2">
+          Metrics and device logs older than this are automatically deleted. Choosing &ldquo;Forever&rdquo; disables cleanup but the database will grow over time.
         </p>
       </div>
     </>
