@@ -246,7 +246,7 @@ Single source of truth for all features. Check items as they are implemented and
 ## Data Management
 
 - [x] Config import/export (full backup of devices, scenes, schedules, rules, webhooks, alerts, templates, groups)
-- [x] Automatic data retention cleanup (metrics + logs older than 30 days)
+- [x] **Configurable data retention (post-v0.4.5)** — metrics and device logs cleanup period selectable from Settings: 7 days, 30 days (default, backward-compatible), 90 days, 1 year, or forever (disables cleanup). Cleanup thread reads the setting each hourly cycle. Dropdown in both the desktop Settings page and the `:9090` web dashboard. Viewers can see but not change the setting.
 - [x] Device health diagnostics (RSSI warnings, heap warnings)
 
 ## Microcontroller Library — Additional API
