@@ -537,6 +537,22 @@
       border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-size: 0.7rem;
       pointer-events: none; z-index: 10; box-shadow: var(--shadow); white-space: nowrap;
     }
+    /* Metrics tab */
+    .metrics-device-section {
+      margin-bottom: 1.25rem; padding: 1rem; background: var(--card);
+      border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .metrics-device-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 0.75rem; cursor: pointer;
+    }
+    .metrics-device-header:hover .metrics-detail-link { color: var(--accent); }
+    .metrics-device-name { font-size: 0.9rem; font-weight: 500; display: flex; align-items: center; gap: 0.4rem; }
+    .metrics-detail-link { font-size: 0.7rem; color: var(--text-faint); transition: var(--transition); }
+    .metrics-status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .metrics-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
@@ -553,6 +569,8 @@
       .detail-stat-value { font-size: 0.8rem; }
       .chart-range-btns { gap: 0.15rem; }
       .chart-range-btn { padding: 0.15rem 0.35rem; font-size: 0.6rem; }
+      .metrics-chart-grid { grid-template-columns: 1fr; }
+      .metrics-device-section { padding: 0.75rem; }
     }
 
     @media (min-width: 641px) and (max-width: 900px) {
@@ -610,6 +628,7 @@
       </a>
       <nav class="tab-nav" id="desktopNav">
         <button class="tab-btn active" data-tab="devices">Devices</button>
+        <button class="tab-btn" data-tab="metrics">Metrics</button>
         <button class="tab-btn" data-tab="automation">Automation</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
       </nav>
@@ -624,6 +643,9 @@
     <div class="tab-nav">
       <button class="tab-btn active" data-tab="devices">
         <span class="tab-icon">&#9632;</span>Devices
+      </button>
+      <button class="tab-btn" data-tab="metrics">
+        <span class="tab-icon">&#9650;</span>Metrics
       </button>
       <button class="tab-btn" data-tab="automation">
         <span class="tab-icon">&#9881;</span>Automation
@@ -647,6 +669,11 @@
         <div class="skeleton skel-card"></div>
         <div class="skeleton skel-card"></div>
       </div>
+    </div>
+
+    <!-- Metrics Tab -->
+    <div class="tab-panel" id="panel-metrics">
+      <div id="metricsContent"></div>
     </div>
 
     <!-- Automation Tab -->
@@ -881,6 +908,7 @@
         document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
         document.getElementById(`panel-${tab}`).classList.add('active');
 
+        if (tab === 'metrics') loadMetrics();
         if (tab === 'automation') loadAutomation();
         if (tab === 'settings') loadSettings();
       });
@@ -1214,27 +1242,27 @@
       var color = opts.color || 'var(--accent)';
       var uid = 'ch' + Math.random().toString(36).substr(2, 6);
 
-      var svg = '<svg id="' + uid + '" class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">'
+      var svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">'
         + yParts + xParts
         + '<polyline points="' + fillStr + '" fill="' + color + '" opacity="0.1" stroke="none"/>'
         + '<polyline points="' + lineStr + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
-        + '<line id="' + uid + 'c" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + ph) + '" stroke="var(--text-faint)" stroke-width="0.5" stroke-dasharray="3,3" opacity="0"/>'
-        + '<circle id="' + uid + 'd" cx="0" cy="0" r="3" fill="' + color + '" opacity="0"/>'
-        + '<rect x="' + pad.left + '" y="' + pad.top + '" width="' + pw + '" height="' + ph + '" fill="transparent" style="cursor:crosshair;"/>'
+        + '<line class="chart-cursor" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + ph) + '" stroke="var(--text-faint)" stroke-width="0.5" stroke-dasharray="3,3" opacity="0"/>'
+        + '<circle class="chart-dot" cx="0" cy="0" r="3" fill="' + color + '" opacity="0"/>'
+        + '<rect class="chart-hover" x="' + pad.left + '" y="' + pad.top + '" width="' + pw + '" height="' + ph + '" fill="transparent" style="cursor:crosshair;"/>'
         + '</svg>';
 
       var wrapper = document.createElement('div');
       wrapper.style.position = 'relative';
-      wrapper.innerHTML = svg + '<div id="' + uid + 't" class="chart-tooltip" style="display:none;"></div>';
+      wrapper.innerHTML = svg + '<div class="chart-tooltip" style="display:none;"></div>';
       container.innerHTML = '';
       container.appendChild(wrapper);
 
-      // Hover interaction
-      var svgEl = document.getElementById(uid);
-      var cursorEl = document.getElementById(uid + 'c');
-      var dotEl = document.getElementById(uid + 'd');
-      var tipEl = document.getElementById(uid + 't');
-      var hoverRect = svgEl.querySelector('rect');
+      // Hover interaction — query within wrapper, no global IDs needed
+      var svgEl = wrapper.querySelector('svg');
+      var cursorEl = svgEl.querySelector('.chart-cursor');
+      var dotEl = svgEl.querySelector('.chart-dot');
+      var tipEl = wrapper.querySelector('.chart-tooltip');
+      var hoverRect = svgEl.querySelector('.chart-hover');
 
       function onMove(e) {
         var rect = svgEl.getBoundingClientRect();
@@ -1650,6 +1678,114 @@
       if (r.target_capability_id) parts.push(r.target_capability_id);
       if (r.target_value != null) parts.push(`= ${r.target_value}`);
       return parts.join(' ') || 'No condition';
+    }
+
+    /* ────────────────────────── Metrics Tab ────────────────────────── */
+    var metricsTabRange = 24;
+
+    async function loadMetrics() {
+      var container = document.getElementById('metricsContent');
+      if (!container) return;
+      container.innerHTML = '<div style="font-size:0.8rem;color:var(--text-faint);">Loading metrics...</div>';
+
+      try {
+        var devs = devices.length ? devices : await api('/api/devices').catch(function() { return []; });
+        if (!devs || !devs.length) {
+          container.innerHTML = renderEmpty('No devices found', 'Devices will appear here once discovered on your network.');
+          return;
+        }
+
+        var hours = metricsTabRange;
+        var ranges = [{l:'1h',h:1},{l:'6h',h:6},{l:'24h',h:24},{l:'7d',h:168}];
+
+        // Global header with device count + range picker
+        var header = document.createElement('div');
+        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;';
+        header.innerHTML = '<div style="font-size:0.85rem;color:var(--text-dim);">' + devs.length + ' device' + (devs.length !== 1 ? 's' : '') + '</div>'
+          + '<div class="chart-range-btns">'
+          + ranges.map(function(r) { return '<button class="chart-range-btn ' + (r.h === hours ? 'active' : '') + '" data-hours="' + r.h + '" onclick="setMetricsTabRange(' + r.h + ')">' + r.l + '</button>'; }).join('')
+          + '</div>';
+
+        container.innerHTML = '';
+        container.appendChild(header);
+
+        // Create device sections
+        for (var di = 0; di < devs.length; di++) {
+          var dev = devs[di];
+          var section = document.createElement('div');
+          section.className = 'metrics-device-section';
+
+          var name = getNickname(dev);
+          var online = dev.online !== false;
+          var dotColor = online ? 'var(--green)' : 'var(--red)';
+          var safeId = dev.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+          section.innerHTML = '<div class="metrics-device-header" onclick="openDeviceDetail(\'' + esc(dev.id) + '\')">'
+            + '<div class="metrics-device-name"><span class="metrics-status-dot" style="background:' + dotColor + ';"></span>' + esc(name) + '</div>'
+            + '<span class="metrics-detail-link">Details &#8594;</span>'
+            + '</div>'
+            + '<div id="metricsCharts_' + safeId + '" style="font-size:0.75rem;color:var(--text-faint);">Loading...</div>';
+          container.appendChild(section);
+        }
+
+        // Fetch charts for all devices in parallel
+        await Promise.all(devs.map(function(dev) {
+          var safeId = dev.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+          var chartsEl = document.getElementById('metricsCharts_' + safeId);
+          if (!chartsEl) return Promise.resolve();
+
+          var metrics = [
+            { id: '_rssi', label: 'WiFi Signal', unit: 'dBm', color: '#f59e0b' },
+            { id: '_heap', label: 'Free Heap', unit: 'bytes', color: '#3b82f6' },
+          ];
+          if (dev.capabilities) {
+            dev.capabilities.filter(function(c) { return c.type === 'sensor'; }).forEach(function(c) {
+              metrics.push({ id: c.id, label: c.label || c.id, unit: c.unit || '', color: '#22c55e' });
+            });
+          }
+
+          var fetches = metrics.map(function(m) {
+            return api('/api/devices/' + encodeURIComponent(dev.id) + '/metrics?metric=' + encodeURIComponent(m.id) + '&hours=' + hours).catch(function() { return null; });
+          });
+
+          return Promise.all(fetches).then(function(results) {
+            chartsEl.innerHTML = '';
+            var hasData = false;
+            var grid = document.createElement('div');
+            grid.className = 'metrics-chart-grid';
+
+            results.forEach(function(pts, i) {
+              if (!pts || pts.length < 2) return;
+              hasData = true;
+              var m = metrics[i];
+              var wrap = document.createElement('div');
+              wrap.className = 'chart-container';
+              var hdr = document.createElement('div');
+              hdr.className = 'chart-header';
+              hdr.innerHTML = '<span class="chart-title">' + esc(m.label) + (m.unit ? ' <span style="color:var(--text-faint);">(' + esc(m.unit) + ')</span>' : '') + '</span>';
+              wrap.appendChild(hdr);
+              var chartDiv = document.createElement('div');
+              wrap.appendChild(chartDiv);
+              grid.appendChild(wrap);
+              renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours });
+            });
+
+            if (hasData) {
+              chartsEl.appendChild(grid);
+            } else {
+              chartsEl.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);">No metric data for this period</div>';
+            }
+          });
+        }));
+
+      } catch (e) {
+        container.innerHTML = renderEmpty('Could not load metrics', e.message);
+      }
+    }
+
+    function setMetricsTabRange(hours) {
+      metricsTabRange = hours;
+      loadMetrics();
     }
 
     /* ────────────────────────── Settings ────────────────────────── */
