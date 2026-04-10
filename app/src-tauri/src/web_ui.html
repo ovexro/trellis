@@ -207,6 +207,17 @@
     }
     .toggle.on::after { transform: translateX(20px); }
 
+    /* ── Per-device notification buttons ── */
+    .dev-notif-btn {
+      font-size: 0.65rem; padding: 0.2rem 0.45rem; border-radius: 4px;
+      border: 1px solid #3f3f46; background: transparent; color: var(--text-faint);
+      cursor: pointer; transition: all var(--transition); white-space: nowrap;
+    }
+    .dev-notif-btn.inherit { border-style: dashed; color: var(--text-faint); background: transparent; }
+    .dev-notif-btn.on { border-color: var(--green); color: var(--green); background: rgba(34,197,94,0.1); }
+    .dev-notif-btn.off { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+    .dev-notif-btn:hover:not(:disabled) { filter: brightness(1.3); }
+
     /* ── Slider ── */
     .slider-wrap { display: flex; align-items: center; gap: 0.6rem; flex: 1; max-width: 220px; }
     .slider-val { font-size: 0.8rem; color: var(--text); min-width: 2rem; text-align: right; font-variant-numeric: tabular-nums; }
@@ -685,6 +696,7 @@
 
     /* ────────────────────── Notification Preferences ────────────────────── */
     const NOTIF_PREFS_KEY = 'trellis_notif_prefs';
+    const NOTIF_DEVICE_PREFS_KEY = 'trellis_notif_device_prefs';
     const NOTIF_DEFAULTS = { device_offline: true, device_online: false, log_error: false };
     function getNotifPrefs() {
       try {
@@ -697,7 +709,31 @@
       prefs[key] = value;
       try { localStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify(prefs)); } catch {}
     }
-    function maybeNotify(title, body, tag) {
+    function getDeviceNotifPrefs() {
+      try {
+        const stored = localStorage.getItem(NOTIF_DEVICE_PREFS_KEY);
+        return stored ? JSON.parse(stored) : {};
+      } catch { return {}; }
+    }
+    function setDeviceNotifPref(deviceId, key, value) {
+      const all = getDeviceNotifPrefs();
+      if (!all[deviceId]) all[deviceId] = {};
+      if (value === null) {
+        delete all[deviceId][key];
+        if (Object.keys(all[deviceId]).length === 0) delete all[deviceId];
+      } else {
+        all[deviceId][key] = value;
+      }
+      try { localStorage.setItem(NOTIF_DEVICE_PREFS_KEY, JSON.stringify(all)); } catch {}
+    }
+    function shouldNotify(key, deviceId) {
+      if (deviceId) {
+        const devPrefs = getDeviceNotifPrefs()[deviceId];
+        if (devPrefs && key in devPrefs) return devPrefs[key];
+      }
+      return getNotifPrefs()[key];
+    }
+    function maybeNotify(title, body, tag, deviceId) {
       if (!('Notification' in window) || Notification.permission !== 'granted' || document.hasFocus()) return;
       new Notification(title, { body: body, tag: tag });
     }
@@ -1141,6 +1177,38 @@
           ${notifToggle('log_error', 'Error logs', 'When a device reports a log with severity "error"')}
         </div>`;
 
+        // Per-device notification overrides
+        if (devices.length > 0) {
+          const devPrefs = getDeviceNotifPrefs();
+          const notifKeys = [
+            { key: 'device_offline', short: 'Offline' },
+            { key: 'device_online', short: 'Online' },
+            { key: 'log_error', short: 'Errors' },
+          ];
+          const dis = isViewer || !notifSupported;
+          html += `<div class="settings-section">
+            <div class="settings-title">Per-Device Overrides</div>
+            <div class="setting-row" style="padding-top:0;">
+              <div class="setting-desc">Override global notification settings for individual devices. Gray = follow global setting.</div>
+            </div>`;
+          for (const dev of devices) {
+            const dp = devPrefs[dev.id] || {};
+            const devName = esc(dev.nickname || dev.name || dev.id);
+            html += `<div class="setting-row" style="align-items:center;">
+              <div class="setting-label" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${devName}">${devName}</div>
+              <div style="display:flex;gap:0.5rem;align-items:center;">`;
+            for (const nk of notifKeys) {
+              const val = nk.key in dp ? dp[nk.key] : null;
+              const stateClass = val === null ? 'inherit' : (val ? 'on' : 'off');
+              html += `<button class="dev-notif-btn ${stateClass}" title="${nk.short}: ${val === null ? 'Follow global' : (val ? 'On' : 'Off')}"
+                ${dis ? 'disabled style="opacity:0.5;cursor:not-allowed"' : ''}
+                onclick="cycleDeviceNotif(this,'${esc(dev.id)}','${nk.key}')">${nk.short}</button>`;
+            }
+            html += `</div></div>`;
+          }
+          html += `</div>`;
+        }
+
         // Groups
         html += `<div class="settings-section">
           <div class="settings-title">Groups</div>
@@ -1203,6 +1271,19 @@
       if (on && 'Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission().then(function() { loadSettings(); });
       }
+    }
+
+    function cycleDeviceNotif(btn, deviceId, key) {
+      // Cycle: inherit → on → off → inherit
+      const cur = btn.classList.contains('inherit') ? null : btn.classList.contains('on');
+      let next;
+      if (cur === null) next = true;
+      else if (cur === true) next = false;
+      else next = null;
+      setDeviceNotifPref(deviceId, key, next);
+      btn.className = 'dev-notif-btn ' + (next === null ? 'inherit' : (next ? 'on' : 'off'));
+      const labels = { device_offline: 'Offline', device_online: 'Online', log_error: 'Errors' };
+      btn.title = (labels[key] || key) + ': ' + (next === null ? 'Follow global' : (next ? 'On' : 'Off'));
     }
 
     async function createGroup() {
@@ -1401,8 +1482,8 @@
         // No flash for heartbeats — too frequent
       } else if (msg.event_type === 'log') {
         var p = msg.payload || {};
-        if (p.severity === 'error' && getNotifPrefs().log_error) {
-          maybeNotify('Error from ' + (dev.name || dev.id), p.message || 'Device reported an error', 'log-error-' + dev.id);
+        if (p.severity === 'error' && shouldNotify('log_error', dev.id)) {
+          maybeNotify('Error from ' + (dev.name || dev.id), p.message || 'Device reported an error', 'log-error-' + dev.id, dev.id);
         }
       }
     }
@@ -1422,14 +1503,14 @@
           d._sort_order = devices.length;
           devices.push(d);
         }
-        if (ev === 'found' && wasOffline && d.online && getNotifPrefs().device_online) {
-          maybeNotify('Device online', (d.name || d.id) + ' is back on the network', 'online-' + d.id);
+        if (ev === 'found' && wasOffline && d.online && shouldNotify('device_online', d.id)) {
+          maybeNotify('Device online', (d.name || d.id) + ' is back on the network', 'online-' + d.id, d.id);
         }
       } else if (ev === 'lost') {
         var existing = devices.find(function(x) { return x.id === d.id; });
         if (existing) existing.online = false;
-        if (getNotifPrefs().device_offline) {
-          maybeNotify('Device offline', (d.name || d.id) + ' is no longer reachable', 'offline-' + d.id);
+        if (shouldNotify('device_offline', d.id)) {
+          maybeNotify('Device offline', (d.name || d.id) + ' is no longer reachable', 'offline-' + d.id, d.id);
         }
       }
       if (currentTab === 'devices') {
