@@ -438,6 +438,66 @@
     .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
 
     /* ── Responsive ── */
+    /* ── Device Detail Panel ── */
+    .detail-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,0.4); backdrop-filter: blur(2px);
+      animation: fadeIn 0.15s ease;
+    }
+    .detail-overlay.hidden { display: none; }
+    .detail-panel {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 201;
+      width: min(440px, 92vw); background: var(--card);
+      border-left: 1px solid var(--border); box-shadow: var(--shadow-lg);
+      overflow-y: auto; animation: slideIn 0.2s ease;
+      display: flex; flex-direction: column;
+    }
+    @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+    .detail-header {
+      position: sticky; top: 0; z-index: 1;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 1.25rem; background: var(--card);
+      border-bottom: 1px solid var(--border);
+    }
+    .detail-header h2 { font-size: 1rem; font-weight: 600; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-close {
+      background: none; border: none; color: var(--text-dim);
+      font-size: 1.3rem; cursor: pointer; padding: 0.25rem; line-height: 1;
+      border-radius: var(--radius-sm); flex-shrink: 0;
+    }
+    .detail-close:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+    .detail-body { padding: 1.25rem; flex: 1; }
+    .detail-section { margin-bottom: 1.25rem; }
+    .detail-section-title {
+      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 0.6rem;
+    }
+    .detail-grid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+    .detail-stat {
+      background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 0.6rem 0.75rem;
+    }
+    .detail-stat-label { font-size: 0.7rem; color: var(--text-faint); margin-bottom: 0.15rem; }
+    .detail-stat-value { font-size: 0.9rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+    .detail-log-list { max-height: 280px; overflow-y: auto; }
+    .detail-log {
+      display: flex; gap: 0.5rem; padding: 0.4rem 0;
+      font-size: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.03);
+    }
+    .detail-log:last-child { border-bottom: none; }
+    .detail-log-sev {
+      flex-shrink: 0; font-weight: 600; font-size: 0.65rem;
+      text-transform: uppercase; min-width: 2.5rem;
+    }
+    .detail-log-sev.info { color: var(--accent); }
+    .detail-log-sev.warn { color: var(--yellow); }
+    .detail-log-sev.error { color: var(--red); }
+    .detail-log-msg { color: var(--text-dim); word-break: break-word; flex: 1; }
+    .detail-log-time { color: var(--text-faint); flex-shrink: 0; font-size: 0.7rem; }
+
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
       .bottom-nav { display: block; }
@@ -865,6 +925,7 @@
       if (uptime) metaHtml += `<span class="meta-item"><span class="meta-label">Up</span> ${uptime}</span>`;
       if (chip) metaHtml += `<span class="meta-item"><span class="meta-label">Chip</span> ${esc(chip)}</span>`;
       if (online && dev.id) metaHtml += `<a class="meta-item" href="/proxy/${encodeURIComponent(dev.id)}/" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;">Dashboard ↗</a>`;
+      metaHtml += `<a class="meta-item" onclick="event.stopPropagation();openDeviceDetail('${esc(dev.id)}')" style="color:var(--accent);text-decoration:none;cursor:pointer;">Details</a>`;
 
       let controlsHtml = '';
       if (expanded && dev.capabilities && dev.capabilities.length) {
@@ -969,6 +1030,136 @@
       expandedDevice = expandedDevice === id ? null : id;
       renderDevices();
     }
+
+    /* ────────────────────── Device Detail Panel ────────────────────── */
+    async function openDeviceDetail(id) {
+      const dev = devices.find(d => d.id === id);
+      if (!dev) return;
+
+      const overlay = document.getElementById('detailOverlay');
+      const panel = document.getElementById('detailPanel');
+      const title = document.getElementById('detailTitle');
+      const body = document.getElementById('detailBody');
+
+      title.textContent = getNickname(dev);
+      panel.style.display = 'flex';
+      panel.classList.remove('hidden');
+      overlay.classList.remove('hidden');
+
+      const online = dev.online !== false;
+      const sys = dev.system || {};
+      let html = '';
+
+      // Status & identity
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Device Info</div>
+        <div class="detail-grid">
+          <div class="detail-stat">
+            <div class="detail-stat-label">Status</div>
+            <div class="detail-stat-value" style="color:${online ? 'var(--green)' : 'var(--red)'};">${online ? 'Online' : 'Offline'}</div>
+          </div>
+          <div class="detail-stat">
+            <div class="detail-stat-label">Device ID</div>
+            <div class="detail-stat-value" style="font-size:0.75rem;word-break:break-all;">${esc(dev.id)}</div>
+          </div>
+          ${dev.ip ? `<div class="detail-stat">
+            <div class="detail-stat-label">IP Address</div>
+            <div class="detail-stat-value">${esc(dev.ip)}${dev.port ? ':' + dev.port : ''}</div>
+          </div>` : ''}
+          ${dev.firmware ? `<div class="detail-stat">
+            <div class="detail-stat-label">Firmware</div>
+            <div class="detail-stat-value">${esc(dev.firmware)}</div>
+          </div>` : ''}
+        </div>
+      </div>`;
+
+      // System metrics
+      if (sys.rssi != null || sys.heap_free != null || sys.uptime_s != null || sys.chip) {
+        html += `<div class="detail-section">
+          <div class="detail-section-title">System</div>
+          <div class="detail-grid">
+            ${sys.rssi != null ? `<div class="detail-stat">
+              <div class="detail-stat-label">Signal (RSSI)</div>
+              <div class="detail-stat-value">${sys.rssi} dBm</div>
+            </div>` : ''}
+            ${sys.heap_free != null ? `<div class="detail-stat">
+              <div class="detail-stat-label">Free Heap</div>
+              <div class="detail-stat-value">${formatBytes(sys.heap_free)}</div>
+            </div>` : ''}
+            ${sys.uptime_s != null ? `<div class="detail-stat">
+              <div class="detail-stat-label">Uptime</div>
+              <div class="detail-stat-value">${formatUptime(sys.uptime_s)}</div>
+            </div>` : ''}
+            ${sys.chip ? `<div class="detail-stat">
+              <div class="detail-stat-label">Chip</div>
+              <div class="detail-stat-value">${esc(sys.chip)}</div>
+            </div>` : ''}
+          </div>
+        </div>`;
+      }
+
+      // Capabilities / controls
+      if (dev.capabilities && dev.capabilities.length) {
+        html += `<div class="detail-section">
+          <div class="detail-section-title">Controls</div>
+          ${dev.capabilities.map(cap => renderControl(dev.id, cap)).join('')}
+        </div>`;
+      }
+
+      // Links
+      if (online && dev.id) {
+        html += `<div class="detail-section">
+          <div class="detail-section-title">Links</div>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <a href="/proxy/${encodeURIComponent(dev.id)}/" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" style="text-decoration:none;">Device Dashboard ↗</a>
+          </div>
+        </div>`;
+      }
+
+      // Logs placeholder — loading
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Recent Logs</div>
+        <div id="detailLogs" style="font-size:0.8rem;color:var(--text-faint);">Loading...</div>
+      </div>`;
+
+      body.innerHTML = html;
+
+      // Fetch logs asynchronously
+      try {
+        const logs = await api(`/api/devices/${id}/logs?limit=20`);
+        const logsEl = document.getElementById('detailLogs');
+        if (!logsEl) return;
+        if (!logs || !logs.length) {
+          logsEl.textContent = 'No logs recorded';
+          return;
+        }
+        logsEl.innerHTML = `<div class="detail-log-list">${logs.map(function(l) {
+          const sev = (l.severity || 'info').toLowerCase();
+          const time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
+          return `<div class="detail-log">
+            <span class="detail-log-sev ${sev}">${esc(sev)}</span>
+            <span class="detail-log-msg">${esc(l.message || '')}</span>
+            <span class="detail-log-time">${esc(time)}</span>
+          </div>`;
+        }).join('')}</div>`;
+      } catch {
+        const logsEl = document.getElementById('detailLogs');
+        if (logsEl) logsEl.textContent = 'Could not load logs';
+      }
+    }
+
+    function closeDeviceDetail() {
+      document.getElementById('detailOverlay').classList.add('hidden');
+      const panel = document.getElementById('detailPanel');
+      panel.classList.add('hidden');
+      setTimeout(function() { panel.style.display = 'none'; }, 200);
+    }
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && !document.getElementById('detailOverlay').classList.contains('hidden')) {
+        closeDeviceDetail();
+      }
+    });
 
     /* ────────────────────────── Commands ────────────────────────── */
     async function sendCommand(deviceId, capId, value) {
@@ -1662,6 +1853,16 @@
       <button class="btn btn-ghost btn-sm" onclick="dismissInstall()">Later</button>
       <button class="btn btn-primary btn-sm" onclick="promptInstall()">Install</button>
     </div>
+  </div>
+
+  <!-- Device Detail Panel -->
+  <div class="detail-overlay hidden" id="detailOverlay" onclick="closeDeviceDetail()"></div>
+  <div class="detail-panel hidden" id="detailPanel" style="display:none;" onclick="event.stopPropagation()">
+    <div class="detail-header">
+      <h2 id="detailTitle"></h2>
+      <button class="detail-close" onclick="closeDeviceDetail()" title="Close">&times;</button>
+    </div>
+    <div class="detail-body" id="detailBody"></div>
   </div>
 </body>
 </html>
