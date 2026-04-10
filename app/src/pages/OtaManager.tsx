@@ -82,10 +82,10 @@ export default function OtaManager() {
         const { event_type, payload } = e.payload;
 
         if (event_type === "ota_progress") {
-          // The library currently only emits 0/-1/100 over WS, and the WS
-          // tends to drop before 100 ever lands. We still handle these in
-          // case a future library version streams real progress, but
-          // success is normally detected via the reboot watcher below.
+          // The library streams real progress (every 5%) during OTA
+          // download via the httpUpdate.onProgress callback. If the WS
+          // stays up, these arrive as 0, 5, 10, ..., 100. Fallback to
+          // the reboot watcher still works if the WS drops mid-transfer.
           const pct = payload.percent ?? -1;
           setOtaProgress(pct);
           if (pct === -1) {
@@ -97,10 +97,9 @@ export default function OtaManager() {
             inFlightRef.current = null;
           }
         } else if (event_type === "ota_delivered") {
-          // Bytes flushed from the desktop. The device is now in its OTA
-          // write loop with WS dropped — we won't see ota_progress=100.
-          // Switch to "delivered, waiting for reboot" and let the uptime
-          // watcher confirm success.
+          // Fired twice: once from the desktop HTTP server (bytes flushed)
+          // and once from the device itself (firmware written to flash,
+          // about to reboot). Both are safe to handle identically.
           setStatus("delivered");
           setOtaProgress(0);
         } else if (event_type === "ota_delivery_failed") {

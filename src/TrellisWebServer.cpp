@@ -218,13 +218,29 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
       serializeJson(progress, startJson);
       _ws->broadcastTXT(startJson);
 
-      // Perform OTA
-      TrellisOTA::update(url);
-      // If update() returns, it failed (success reboots)
-      progress["percent"] = -1;
-      String failJson;
-      serializeJson(progress, failJson);
-      _ws->broadcastTXT(failJson);
+      // Perform OTA with real-time progress broadcasting.
+      WebSocketsServer* ws = _ws;
+      bool ok = TrellisOTA::update(url, [ws](const String& json) {
+        String copy = json;
+        ws->broadcastTXT(copy);
+      });
+
+      if (ok) {
+        // Firmware written — tell all clients before rebooting.
+        JsonDocument delivered;
+        delivered["event"] = "ota_delivered";
+        String deliveredJson;
+        serializeJson(delivered, deliveredJson);
+        _ws->broadcastTXT(deliveredJson);
+        delay(100);  // Let the WebSocket frame flush
+        Serial.println("[Trellis] Rebooting...");
+        ESP.restart();
+      } else {
+        progress["percent"] = -1;
+        String failJson;
+        serializeJson(progress, failJson);
+        _ws->broadcastTXT(failJson);
+      }
     }
   }
 #endif
