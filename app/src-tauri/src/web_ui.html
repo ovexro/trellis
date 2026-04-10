@@ -497,6 +497,28 @@
     .detail-log-sev.error { color: var(--red); }
     .detail-log-msg { color: var(--text-dim); word-break: break-word; flex: 1; }
     .detail-log-time { color: var(--text-faint); flex-shrink: 0; font-size: 0.7rem; }
+    /* Firmware history */
+    .detail-fw-item {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.45rem 0; border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-size: 0.8rem;
+    }
+    .detail-fw-item:last-child { border-bottom: none; }
+    .detail-fw-dot {
+      width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+      background: var(--accent); position: relative;
+    }
+    .detail-fw-dot::before {
+      content: ''; position: absolute; left: 2px; top: 6px;
+      width: 2px; height: calc(100% + 0.9rem); background: var(--border);
+    }
+    .detail-fw-item:last-child .detail-fw-dot::before { display: none; }
+    .detail-fw-ver { font-weight: 500; color: var(--text); }
+    .detail-fw-meta { color: var(--text-faint); font-size: 0.7rem; }
+    /* Sparkline */
+    .detail-sparkline { display: block; margin-top: 0.25rem; }
+    .detail-sparkline polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .detail-sparkline .spark-fill { fill: var(--accent); opacity: 0.08; stroke: none; }
 
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
@@ -505,6 +527,12 @@
       .grid { grid-template-columns: 1fr; }
       .toast-container { top: auto; bottom: 5rem; right: 0.75rem; left: 0.75rem; }
       .toast { max-width: 100%; }
+      .detail-panel { width: 100%; }
+      .detail-header { padding: 0.75rem 1rem; }
+      .detail-body { padding: 1rem; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-log-list { max-height: 200px; }
+      .detail-stat-value { font-size: 0.8rem; }
     }
 
     @media (min-width: 641px) and (max-width: 900px) {
@@ -1032,6 +1060,24 @@
     }
 
     /* ────────────────────── Device Detail Panel ────────────────────── */
+    function buildSparkline(points, w, h) {
+      if (!points || points.length < 2) return '';
+      const vals = points.map(function(p) { return p.value; });
+      const min = Math.min.apply(null, vals);
+      const max = Math.max.apply(null, vals);
+      const range = max - min || 1;
+      const coords = vals.map(function(v, i) {
+        const x = (i / (vals.length - 1)) * w;
+        const y = h - ((v - min) / range) * (h - 2) - 1;
+        return x.toFixed(1) + ',' + y.toFixed(1);
+      });
+      const line = coords.join(' ');
+      const fill = coords[0].split(',')[0] + ',' + h + ' ' + line + ' ' + coords[coords.length - 1].split(',')[0] + ',' + h;
+      return '<svg class="detail-sparkline" width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">'
+        + '<polyline class="spark-fill" points="' + fill + '"/>'
+        + '<polyline points="' + line + '"/></svg>';
+    }
+
     async function openDeviceDetail(id) {
       const dev = devices.find(d => d.id === id);
       if (!dev) return;
@@ -1081,10 +1127,12 @@
             ${sys.rssi != null ? `<div class="detail-stat">
               <div class="detail-stat-label">Signal (RSSI)</div>
               <div class="detail-stat-value">${sys.rssi} dBm</div>
+              <div id="detailSparkRssi"></div>
             </div>` : ''}
             ${sys.heap_free != null ? `<div class="detail-stat">
               <div class="detail-stat-label">Free Heap</div>
               <div class="detail-stat-value">${formatBytes(sys.heap_free)}</div>
+              <div id="detailSparkHeap"></div>
             </div>` : ''}
             ${sys.uptime_s != null ? `<div class="detail-stat">
               <div class="detail-stat-label">Uptime</div>
@@ -1116,6 +1164,12 @@
         </div>`;
       }
 
+      // Firmware history placeholder
+      html += `<div class="detail-section" id="detailFwSection" style="display:none;">
+        <div class="detail-section-title">Firmware History</div>
+        <div id="detailFwList"></div>
+      </div>`;
+
       // Logs placeholder — loading
       html += `<div class="detail-section">
         <div class="detail-section-title">Recent Logs</div>
@@ -1124,28 +1178,55 @@
 
       body.innerHTML = html;
 
-      // Fetch logs asynchronously
-      try {
-        const logs = await api(`/api/devices/${id}/logs?limit=20`);
-        const logsEl = document.getElementById('detailLogs');
-        if (!logsEl) return;
+      // Fetch logs, firmware history, and sparklines in parallel
+      const logsP = api(`/api/devices/${id}/logs?limit=20`).catch(function() { return null; });
+      const fwP = api(`/api/devices/${id}/firmware`).catch(function() { return null; });
+      const rssiP = api(`/api/devices/${id}/metrics?metric=_rssi&hours=1`).catch(function() { return null; });
+      const heapP = api(`/api/devices/${id}/metrics?metric=_heap&hours=1`).catch(function() { return null; });
+
+      const [logs, fwHist, rssiPts, heapPts] = await Promise.all([logsP, fwP, rssiP, heapP]);
+
+      // Render logs
+      const logsEl = document.getElementById('detailLogs');
+      if (logsEl) {
         if (!logs || !logs.length) {
           logsEl.textContent = 'No logs recorded';
-          return;
+        } else {
+          logsEl.innerHTML = `<div class="detail-log-list">${logs.map(function(l) {
+            const sev = (l.severity || 'info').toLowerCase();
+            const time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
+            return `<div class="detail-log">
+              <span class="detail-log-sev ${sev}">${esc(sev)}</span>
+              <span class="detail-log-msg">${esc(l.message || '')}</span>
+              <span class="detail-log-time">${esc(time)}</span>
+            </div>`;
+          }).join('')}</div>`;
         }
-        logsEl.innerHTML = `<div class="detail-log-list">${logs.map(function(l) {
-          const sev = (l.severity || 'info').toLowerCase();
-          const time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
-          return `<div class="detail-log">
-            <span class="detail-log-sev ${sev}">${esc(sev)}</span>
-            <span class="detail-log-msg">${esc(l.message || '')}</span>
-            <span class="detail-log-time">${esc(time)}</span>
-          </div>`;
-        }).join('')}</div>`;
-      } catch {
-        const logsEl = document.getElementById('detailLogs');
-        if (logsEl) logsEl.textContent = 'Could not load logs';
       }
+
+      // Render firmware history
+      if (fwHist && fwHist.length) {
+        const fwSection = document.getElementById('detailFwSection');
+        const fwList = document.getElementById('detailFwList');
+        if (fwSection && fwList) {
+          fwSection.style.display = '';
+          fwList.innerHTML = fwHist.slice(0, 5).map(function(f) {
+            const date = f.uploaded_at ? f.uploaded_at.split(' ')[0] : '';
+            const size = f.file_size ? formatBytes(f.file_size) : '';
+            return '<div class="detail-fw-item">'
+              + '<span class="detail-fw-dot"></span>'
+              + '<span class="detail-fw-ver">' + esc(f.version || '?') + '</span>'
+              + '<span class="detail-fw-meta">' + esc(date) + (size ? ' · ' + size : '') + '</span>'
+              + '</div>';
+          }).join('');
+        }
+      }
+
+      // Render sparklines
+      const rssiEl = document.getElementById('detailSparkRssi');
+      if (rssiEl && rssiPts && rssiPts.length >= 2) rssiEl.innerHTML = buildSparkline(rssiPts, 120, 24);
+      const heapEl = document.getElementById('detailSparkHeap');
+      if (heapEl && heapPts && heapPts.length >= 2) heapEl.innerHTML = buildSparkline(heapPts, 120, 24);
     }
 
     function closeDeviceDetail() {
