@@ -785,7 +785,7 @@
     /* ────────────────────── Notification Preferences ────────────────────── */
     const NOTIF_PREFS_KEY = 'trellis_notif_prefs';
     const NOTIF_DEVICE_PREFS_KEY = 'trellis_notif_device_prefs';
-    const NOTIF_DEFAULTS = { device_offline: true, device_online: false, log_error: false };
+    const NOTIF_DEFAULTS = { device_offline: true, device_online: false, log_error: false, notification_sound: false };
     function getNotifPrefs() {
       try {
         const stored = localStorage.getItem(NOTIF_PREFS_KEY);
@@ -821,9 +821,26 @@
       }
       return getNotifPrefs()[key];
     }
+    function playNotifSound() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const g = ctx.createGain();
+        g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.15, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        const o1 = ctx.createOscillator();
+        o1.type = 'sine'; o1.frequency.setValueAtTime(880, ctx.currentTime);
+        o1.connect(g); o1.start(ctx.currentTime); o1.stop(ctx.currentTime + 0.15);
+        const o2 = ctx.createOscillator();
+        o2.type = 'sine'; o2.frequency.setValueAtTime(1175, ctx.currentTime + 0.15);
+        o2.connect(g); o2.start(ctx.currentTime + 0.15); o2.stop(ctx.currentTime + 0.4);
+        setTimeout(function() { ctx.close(); }, 500);
+      } catch {}
+    }
     function maybeNotify(title, body, tag, deviceId) {
       if (!('Notification' in window) || Notification.permission !== 'granted' || document.hasFocus()) return;
       new Notification(title, { body: body, tag: tag });
+      if (getNotifPrefs().notification_sound) playNotifSound();
     }
 
     function toast(msg, type = 'success') {
@@ -1447,6 +1464,9 @@
           ${notifToggle('device_offline', 'Device offline', 'When a device becomes unreachable')}
           ${notifToggle('device_online', 'Device online', 'When a device appears on the network')}
           ${notifToggle('log_error', 'Error logs', 'When a device reports a log with severity "error"')}
+          <div style="border-top:1px solid var(--border);margin-top:0.5rem;padding-top:0.5rem;">
+          ${notifToggle('notification_sound', 'Notification sound', 'Play a short chime when a notification fires')}
+          </div>
         </div>`;
 
         // Per-device notification overrides
