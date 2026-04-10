@@ -10,7 +10,7 @@ bool TrellisOTA::update(const char* url, std::function<void(const String&)> broa
 
   // Stream real progress percentages over WebSocket.
   if (broadcaster) {
-    int lastPct = -1;
+    int lastPct = 0;  // Start at 0: caller already broadcasts the initial 0% event
     httpUpdate.onProgress([broadcaster, lastPct](int current, int total) mutable {
       if (total <= 0) return;
       int pct = (current * 100) / total;
