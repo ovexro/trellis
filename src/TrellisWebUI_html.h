@@ -272,6 +272,7 @@ function connectWs(){
     else if(m.event==="heartbeat"&&m.system){renderSystem(m.system)}
     else if(m.event==="log"){addLog(m.severity,m.message)}
     else if(m.event==="ota_progress"){otaProgress(m.percent)}
+    else if(m.event==="ota_delivered"){otaDelivered()}
   };
 }
 function scheduleReconnect(){clearTimeout(reconnectT);reconnectT=setTimeout(connectWs,2000)}
@@ -361,6 +362,15 @@ function otaProgress(percent){
   $("otaBar").style.width=p+"%";
   $("otaPct").textContent=p+"%";
 }
+function otaDelivered(){
+  /* Firmware written to flash — device will reboot momentarily */
+  otaShow();
+  $("otaBar").style.width="100%";
+  $("otaPct").textContent="received";
+  $("otaTitle").textContent="Firmware received";
+  $("otaMsg").textContent="Update written. Device will reboot now…";
+  $("otaIc").textContent="✓";
+}
 function otaReboot(){
   /* Called when WS closes during an active update — device is rebooting */
   $("otaTitle").textContent="Restarting device";
@@ -400,6 +410,6 @@ maybeShowPwaHint();
 </script>
 </body>
 </html>)TWUI";
-static const char TRELLIS_WEB_UI_HTML_HASH[] = "c443bd0afb4c2bfd";
+static const char TRELLIS_WEB_UI_HTML_HASH[] = "fb4c53df7924588f";
 
 #endif
