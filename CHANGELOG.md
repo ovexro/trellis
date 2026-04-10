@@ -2,6 +2,61 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.5] — 2026-04-10
+
+A large feature release spanning real-time infrastructure, security hardening, and UX polish for the `:9090` web dashboard. Twelve feature commits landed between v0.4.4 and the tag — the biggest batch since the v0.4.0 remote-access release. Hardware-tested on a real ESP32 with OTA round-trip verification.
+
+### Added
+
+- **MQTT `tls_skip_verify` option.** New boolean in MQTT settings that disables TLS certificate validation via the rustls `dangerous()` API with a custom `NoVerifier`. Connection is still encrypted but broker identity is not checked — equivalent of `curl -k`. Settings UI shows a checkbox inside the TLS section with an amber security warning when active. Both `start()` and `test_connection()` honor the flag. Useful for self-signed broker certs where providing a CA PEM is impractical.
+- **1 MB body size limit on REST API.** All incoming requests are checked against `MAX_BODY_SIZE` (1,048,576 bytes) before allocation. Returns 413 Payload Too Large with a descriptive error. OTA firmware uploads go directly to device `:8080`, not through the REST API, so they're unaffected.
+- **Role-based access control (RBAC).** Each API token now carries a role: `admin` (full access) or `viewer` (read-only). Viewers can read devices, metrics, status, schedules, rules, webhooks, and token metadata but cannot send commands, trigger OTA, manage tokens, change settings, or access the device proxy. Existing tokens default to admin (backward-compatible). `Role` enum in `auth.rs`, `require_admin()` guard on 20 mutating endpoints + proxy. Settings UI has a role dropdown in the create form, role column in the token table, and role badge in the created-token modal. 14 unit tests.
+- **`GET /api/auth/whoami` endpoint.** Returns `{ role, token_id }` for the authenticated caller. Loopback callers get `{ role: "admin", token_id: null }`. The `:9090` web dashboard calls this on load to detect viewer tokens: disables toggles/sliders/color pickers/text inputs, hides group/ntfy write controls, and shows a "Read-only" badge in the header.
+- **Drag-and-drop device card reordering.** Device cards in both the desktop app and the `:9090` web dashboard can be reordered via HTML5 DnD. Order persists in SQLite (`sort_order` column on `devices` table). `PUT /api/devices/reorder` REST endpoint (admin-only). Visual feedback: opacity on drag, accent ring on drop target, grip handle icon. Viewers see cards in the saved order but cannot drag.
+- **WebSocket push for the web dashboard.** Persistent `/ws` connection replaces 5-second polling with instant event delivery. Device state changes, heartbeats, logs, and discovery events (online/offline) arrive in real time. `WsBroadcaster` fan-out in Rust feeds all connected browser clients. Query-param token auth (`/ws?token=trls_...`) for remote access since the browser WebSocket API can't set custom headers. Loopback bypass applies. Polling auto-resumes as fallback on WS disconnect. Green/gray connection indicator dot in header.
+- **PWA support.** Web app manifest (`/manifest.json`) with standalone display mode, themed SVG icons, and dark background. Service worker (`/sw.js`) caches the HTML shell for offline display with network-first strategy. Mobile install prompt banner for "Add to Home Screen" with persistent dismiss. Both routes served pre-auth.
+- **PWA polish.** Card flash animation on WS update, reconnect pulsing dot, offline banner (`navigator.onLine`), and browser Notification API integration for device offline/online/error events.
+- **Browser notification preferences.** "Browser Notifications" settings section with three toggles: device offline (default on), device online (default off), and error logs (default off). Persisted to `localStorage`. Permission status label with color coding. Permission requested on first toggle-on. Viewers see toggles but cannot change them.
+- **Per-device notification filtering.** "Per-Device Overrides" section below global toggles. Each device gets three buttons (Offline/Online/Errors) that cycle through inherit → on → off. Overrides stored in `localStorage`, checked via `shouldNotify()` before firing browser notifications. Absent overrides follow the global setting.
+- **Device detail slide-out panel.** Click "Details" on any device card to open a right-side panel showing: device info (status, ID, IP, firmware), system metrics (RSSI, free heap, uptime, chip) in a 2-column stat grid, interactive controls, link to per-device embedded dashboard, and 20 most recent log entries with severity coloring. Closes on overlay click, close button, or Escape key.
+
+### Fixed
+
+- **OTA 0% progress deduplication.** The `httpUpdate.onProgress` callback fires 0% twice (download start + write start). Added `lastPct` guard in `TrellisOTA.cpp` so only the first 0% event is forwarded over WebSocket. **Hardware-tested**: exactly 1 zero-percent event confirmed, clean 5% increments through 100%.
+
+### Library
+
+- **Real-time OTA progress + delivery confirmation.** `httpUpdate.onProgress` streams real progress percentages (every 5%) over WebSocket during firmware download. After successful write, device sends explicit `ota_delivered` event before rebooting via `rebootOnUpdate(false)` + controlled shutdown. Desktop and embedded dashboards show live progress bar and a "Firmware received" confirmation tick. Broadcaster callback decouples OTA from WebSocket library.
+- **Dependencies section added to README** for Arduino IDE users (WebSockets, ArduinoJson, ESPAsyncWebServer, AsyncTCP).
+
+### Verified
+
+- Full OTA round-trip on real ESP32 hardware (greenhouse-controller, 192.168.1.108). Compiled `test/TestDevice/TestDevice.ino` with updated 0.4.5 library, flashed via USB, triggered OTA via direct WebSocket command. Results: exactly 1 zero-percent event, clean 5% increments (0→5→10→...→95→100), `ota_delivered` event received, device rebooted to "1.0.1-ota-test" firmware. Restored to original "1.0.0" firmware via USB. ETag on device: `"0.4.5-fb4c53df7924588f"`.
+
+## [0.4.4] — 2026-04-09
+
+The onboarding and hardening release. New users get a 4-step guided wizard that goes from zero to a working device in one flow. The security surface gets token expiry, per-IP rate limiting, and a reverse proxy that lets remote users reach individual device dashboards through a tunnel. Internal refactor splits the monolithic Settings page into 8 focused modules.
+
+### Added
+
+- **Get Started onboarding wizard.** 4-step guided flow (Welcome/Prerequisites → Pick Template → Configure & Flash → Device Appeared) that takes new users from zero to a working device. 5 bundled starter templates: Blink (LED toggle), Sensor Monitor (analog + text), Smart Relay (switch + timer), Weather Station (temp/humidity/pressure), Greenhouse Controller (soil moisture + pump + grow light). Prerequisite checks detect `arduino-cli`, board cores, and library dependencies with one-click install for missing deps. Template-to-flash pipeline: select template → customize device name/board/capabilities → compile & flash via USB in one click. Device discovery confirmation watches mDNS for the new device. Dashboard empty state integration ("Get Started" button alongside "Add by IP"). Always accessible from the sidebar.
+- **Per-device dashboard proxy at `/proxy/{device-id}/`.** Reverse proxy on `:9090` that forwards HTTP to the device's embedded `:8080` web server and bridges WebSocket to `:8081`. Passes through the existing Bearer token auth gate so remote users (via Cloudflare Tunnel / Tailscale Funnel) can reach individual device dashboards without direct LAN access. HTML rewriting makes `fetch("/api/info")` and WebSocket URLs route through the proxy. Protocol-aware (`ws://` or `wss://`) for tunnel compatibility. "Device Dashboard" link in the desktop app device detail page and in the `:9090` web dashboard device cards.
+- **Token expiry / TTL.** Optional `expires_at` on API tokens so they can auto-expire instead of being valid until manually revoked. TTL options: 1h, 24h, 7d, 30d, 90d, or never (default, backward-compatible). Auth gate rejects expired tokens with a distinct error message. Settings UI has a TTL dropdown in the create form and an Expires column with color-coded status (red=expired, amber=<24h, dim=never).
+- **Per-IP rate limiting with exponential backoff.** In-memory rate limiter tracks consecutive failed auth attempts per source IP. After 3 grace failures, subsequent requests are rejected with 429 Too Many Requests before the auth check runs. Backoff doubles each attempt (1s → 2s → 4s → ... capped at 60s). Auto-resets after 15 minutes of silence or on successful auth. Loopback exempt. 5 unit tests.
+
+### Fixed
+
+- **Existing users no longer redirected to onboarding wizard.** The first-run redirect checked only the `onboarding_completed` setting, which was never set for users who had devices before the wizard was added. Now queries `saved_devices` from SQLite alongside the setting — if either indicates a returning user, the wizard is bypassed and the flag is auto-set. Also adds a visible "Skip to dashboard" link.
+- **6 onboarding wizard UX fixes.** "View Device" marks onboarding complete, device discovery snapshot taken at flash time, `checkDeps` error state surfaced with retry, build failure retry button, stale build output cleared on template change, responsive grid on Configure & Flash step.
+
+### Refactored
+
+- **Settings.tsx split into 8 focused modules.** The 1362-line monolith is replaced by `app/src/pages/settings/` with dedicated files for each section (Config, Notifications, MQTT, API Tokens, Remote Access, Diagnostics/About) plus shared types. Cross-section dependency (token count for the Remote Access zero-token warning) wired via a callback prop through a thin `index.tsx` shell. Zero behavior change.
+
+### Library
+
+- **Library code is byte-identical to v0.4.3 except the `TRELLIS_VERSION` macro.** No microcontroller behavior changes. The Arduino LM and PIO releases exist purely so all three distribution endpoints stay in lockstep with the desktop app version.
+
 ## [0.4.3] — 2026-04-08
 
 A desktop UX patch release that fixes the OTA progress bar's "stuck at 0%" symptom — a real bug that bit the v0.4.2 hardware test cycle and could easily have been mistaken for a delivery failure when the OTA had actually succeeded.
