@@ -130,6 +130,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] HTTP OTA update handler (ESP32)
 - [x] OTA progress reporting via WebSocket
 - [x] Auto-reboot after successful update
+- [x] **Real-time OTA progress + delivery confirmation (post-v0.4.4)** — `httpUpdate.onProgress` streams real progress percentages (every 5%) over WebSocket during firmware download. After successful write, device sends explicit `ota_delivered` event before rebooting. Desktop and embedded dashboards show live progress bar and a "Firmware received" confirmation tick. Broadcaster callback decouples OTA from WebSocket library.
 
 ### Telemetry
 - [x] RSSI reporting
