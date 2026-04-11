@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{Annotation, ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -236,6 +236,18 @@ pub fn get_metrics(
     hours: u32,
 ) -> Result<Vec<MetricPoint>, String> {
     db.get_metrics(&device_id, &metric_id, hours)
+}
+
+/// Return the chart-annotation stream for the React `MetricChart` overlay.
+/// Mirrors the `/api/devices/{id}/annotations?hours=N` REST endpoint used by
+/// the `:9090` web dashboard so both surfaces render the same markers.
+#[tauri::command]
+pub fn get_device_annotations(
+    db: State<'_, Database>,
+    device_id: String,
+    hours: u32,
+) -> Result<Vec<Annotation>, String> {
+    db.get_annotations(&device_id, hours)
 }
 
 // ─── Alerts ──────────────────────────────────────────────────────────────────

@@ -9,11 +9,26 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  ReferenceLine,
+  ReferenceDot,
 } from "recharts";
 
 interface MetricPoint {
   value: number;
   timestamp: string;
+}
+
+interface Annotation {
+  timestamp: string;
+  kind: string;
+  label: string;
+  severity: string;
+}
+
+interface ChartPoint {
+  value: number;
+  timestamp: string;
+  time: number; // ms since epoch for numeric XAxis
 }
 
 interface MetricChartProps {
@@ -31,6 +46,40 @@ const TIME_RANGES = [
   { label: "7d", hours: 168 },
 ];
 
+// Kind → color and human label. Mirrors `annColor()` / `annLabel()` in
+// `app/src-tauri/src/web_ui.html` so the React overlay matches the hand-rolled
+// :9090 dashboard exactly (same hex, same label strings).
+const ANN_COLOR: Record<string, string> = {
+  ota: "#3b82f6",     // blue — firmware upload
+  online: "#10b981",  // green — device came back
+  offline: "#ef4444", // red — device dropped
+  error: "#f59e0b",   // amber — device-reported error
+  warn: "#f59e0b",    // amber — device-reported warning
+};
+const ANN_FALLBACK = "#6b7280";
+const ANN_LABEL: Record<string, string> = {
+  ota: "OTA",
+  online: "Online",
+  offline: "Offline",
+  error: "Error",
+  warn: "Warning",
+};
+// Stable legend order matches the :9090 dashboard.
+const LEGEND_ORDER = ["ota", "online", "offline", "warn", "error"];
+
+function annColor(kind: string): string {
+  return ANN_COLOR[kind] ?? ANN_FALLBACK;
+}
+function annLabelText(kind: string): string {
+  return ANN_LABEL[kind] ?? kind;
+}
+
+// SQLite timestamps are UTC but lack the `Z` suffix — append it so the
+// browser parses them correctly regardless of local TZ.
+function parseUtcMs(ts: string): number {
+  return new Date(ts + "Z").getTime();
+}
+
 export default function MetricChart({
   deviceId,
   metricId,
@@ -38,7 +87,8 @@ export default function MetricChart({
   unit,
   color = "#22c55e",
 }: MetricChartProps) {
-  const [data, setData] = useState<MetricPoint[]>([]);
+  const [data, setData] = useState<ChartPoint[]>([]);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [hours, setHours] = useState(1);
   const [loading, setLoading] = useState(false);
 
@@ -51,12 +101,19 @@ export default function MetricChart({
   const loadData = async () => {
     setLoading(true);
     try {
-      const points = await invoke<MetricPoint[]>("get_metrics", {
-        deviceId,
-        metricId,
-        hours,
-      });
-      setData(points);
+      // Fetch metrics + annotations in parallel — single render pass, no
+      // flicker when annotations land a tick after the line.
+      const [points, anns] = await Promise.all([
+        invoke<MetricPoint[]>("get_metrics", { deviceId, metricId, hours }),
+        invoke<Annotation[]>("get_device_annotations", { deviceId, hours }),
+      ]);
+      setData(
+        points.map((p) => ({
+          ...p,
+          time: parseUtcMs(p.timestamp),
+        }))
+      );
+      setAnnotations(anns);
     } catch (err) {
       console.error("Failed to load metrics:", err);
     } finally {
@@ -64,12 +121,53 @@ export default function MetricChart({
     }
   };
 
-  const formatTime = (timestamp: string) => {
-    const d = new Date(timestamp + "Z");
+  const formatTime = (ms: number) => {
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return "";
     if (hours <= 1) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     if (hours <= 24) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     return d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit" });
   };
+
+  const formatTooltipTime = (ms: number) => {
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return "";
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${months[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  };
+
+  // Derive the plot window + y-axis domain from the data points themselves.
+  // We need explicit y bounds (with headroom at the top) so ReferenceDot
+  // markers can anchor at a predictable "near top of plot" y value instead
+  // of being clipped by the auto-domain.
+  const vals = data.map((p) => p.value);
+  const rawMin = vals.length ? Math.min(...vals) : 0;
+  const rawMax = vals.length ? Math.max(...vals) : 1;
+  const ySpan = (rawMax - rawMin) || 1;
+  const yMin = rawMin - ySpan * 0.1;
+  const yMax = rawMax + ySpan * 0.18; // extra headroom for the marker row
+  const markerY = rawMax + ySpan * 0.14;
+
+  const firstTime = data.length ? data[0].time : 0;
+  const lastTime = data.length ? data[data.length - 1].time : 0;
+
+  // Filter annotations to those inside the visible window. Also drop any
+  // whose timestamp fails to parse. `inWindow` is what feeds the legend
+  // row — only kinds that actually landed on the chart are shown.
+  const inWindow = data.length >= 2
+    ? annotations
+        .map((a) => ({ ...a, time: parseUtcMs(a.timestamp) }))
+        .filter((a) => !isNaN(a.time) && a.time >= firstTime && a.time <= lastTime)
+    : [];
+
+  // Build the legend row — stable order, unknown kinds appended at the end.
+  const presentKinds = new Set(inWindow.map((a) => a.kind));
+  const legendKinds: string[] = [];
+  LEGEND_ORDER.forEach((k) => { if (presentKinds.has(k)) legendKinds.push(k); });
+  inWindow.forEach((a) => {
+    if (!legendKinds.includes(a.kind)) legendKinds.push(a.kind);
+  });
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
@@ -127,40 +225,115 @@ export default function MetricChart({
           <span className="text-xs">{loading ? "Loading..." : "Waiting for data from device..."}</span>
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={160}>
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-            <XAxis
-              dataKey="timestamp"
-              tickFormatter={formatTime}
-              stroke="#52525b"
-              tick={{ fontSize: 10 }}
-              interval="preserveStartEnd"
-            />
-            <YAxis stroke="#52525b" tick={{ fontSize: 10 }} width={40} />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: "#18181b",
-                border: "1px solid #27272a",
-                borderRadius: "8px",
-                fontSize: "12px",
-              }}
-              labelFormatter={(l) => formatTime(String(l))}
-              formatter={(value) => [
-                `${Number(value).toFixed(1)}${unit ? ` ${unit}` : ""}`,
-                label,
-              ]}
-            />
-            <Line
-              type="monotone"
-              dataKey="value"
-              stroke={color}
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 3 }}
-            />
-          </LineChart>
-        </ResponsiveContainer>
+        <>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={data}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
+              <XAxis
+                dataKey="time"
+                type="number"
+                domain={["dataMin", "dataMax"]}
+                scale="time"
+                tickFormatter={formatTime}
+                stroke="#52525b"
+                tick={{ fontSize: 10 }}
+                interval="preserveStartEnd"
+              />
+              <YAxis
+                domain={[yMin, yMax]}
+                stroke="#52525b"
+                tick={{ fontSize: 10 }}
+                width={40}
+                allowDataOverflow={false}
+              />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: "#18181b",
+                  border: "1px solid #27272a",
+                  borderRadius: "8px",
+                  fontSize: "12px",
+                }}
+                labelFormatter={(l) => formatTime(Number(l))}
+                formatter={(value) => [
+                  `${Number(value).toFixed(1)}${unit ? ` ${unit}` : ""}`,
+                  label,
+                ]}
+              />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke={color}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 3 }}
+                isAnimationActive={false}
+              />
+              {/* Annotations: vertical dashed line (decorative) + circle marker
+                  at the top of the plot area. One <ReferenceLine> and one
+                  <ReferenceDot> per in-window annotation. Colors match the
+                  :9090 palette and the native SVG <title> element provides
+                  the hover tooltip text without wiring Recharts Tooltip. */}
+              {inWindow.map((a, i) => {
+                const c = annColor(a.kind);
+                return (
+                  <ReferenceLine
+                    key={`ann-line-${i}`}
+                    x={a.time}
+                    stroke={c}
+                    strokeDasharray="2 2"
+                    strokeOpacity={0.7}
+                    ifOverflow="discard"
+                  />
+                );
+              })}
+              {inWindow.map((a, i) => {
+                const c = annColor(a.kind);
+                const tipText = `${annLabelText(a.kind)} — ${a.label || ""} (${formatTooltipTime(a.time)})`;
+                return (
+                  <ReferenceDot
+                    key={`ann-dot-${i}`}
+                    x={a.time}
+                    y={markerY}
+                    r={3}
+                    fill={c}
+                    stroke="#0a0a0a"
+                    strokeWidth={1}
+                    ifOverflow="extendDomain"
+                    shape={(props: any) => (
+                      <g className="chart-annotation" style={{ cursor: "pointer" }}>
+                        <title>{tipText}</title>
+                        {/* 6px transparent hit target for touch */}
+                        <circle cx={props.cx} cy={props.cy} r={6} fill="transparent" />
+                        <circle
+                          cx={props.cx}
+                          cy={props.cy}
+                          r={3}
+                          fill={c}
+                          stroke="#0a0a0a"
+                          strokeWidth={1}
+                        />
+                      </g>
+                    )}
+                  />
+                );
+              })}
+            </LineChart>
+          </ResponsiveContainer>
+
+          {legendKinds.length > 0 && (
+            <div className="flex flex-wrap gap-3 mt-2 text-[10px] text-zinc-500">
+              {legendKinds.map((k) => (
+                <span key={k} className="inline-flex items-center gap-1.5">
+                  <span
+                    className="inline-block w-2 h-2 rounded-full"
+                    style={{ background: annColor(k) }}
+                  />
+                  {annLabelText(k)}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

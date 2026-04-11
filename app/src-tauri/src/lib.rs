@@ -73,6 +73,7 @@ pub fn run() {
             start_ota,
             store_metric,
             get_metrics,
+            get_device_annotations,
             create_alert,
             get_alerts,
             delete_alert,
