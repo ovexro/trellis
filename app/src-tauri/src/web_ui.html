@@ -1102,10 +1102,19 @@
       const label = esc(cap.label || cap.id);
       switch (cap.type) {
         case 'switch':
+          // sendToggle reads the CURRENT cap.value at click time from
+          // the devices state array and sends its inverse — do NOT
+          // hardcode !cap.value here, because the detail panel isn't
+          // re-rendered after sendCommand (renderDevices only touches
+          // the card list), so a hardcoded onclick would go stale and
+          // repeat the previous value on every click.
           return `<div class="control-row">
             <span class="control-label">${label}</span>
             <div class="control-value">
-              <button class="toggle ${cap.value ? 'on' : ''}" ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}', ${!cap.value})"`}></button>
+              <button class="toggle ${cap.value ? 'on' : ''}"
+                data-trellis-device="${esc(deviceId)}"
+                data-trellis-cap="${esc(cap.id)}"
+                ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}')"`}></button>
             </div>
           </div>`;
 
@@ -2143,14 +2152,34 @@
           if (cap) cap.value = value;
         }
         renderDevices();
+        // renderDevices() rebuilds the card list but does NOT touch
+        // the detail panel (openDeviceDetail builds its body once and
+        // never re-renders on command). Patch any matching toggle
+        // buttons in-place so the detail panel's visual state stays
+        // in sync with cap.value — otherwise the .on class goes
+        // stale and the user has no feedback that the command landed.
+        if (typeof value === 'boolean') {
+          const sel = '.toggle[data-trellis-device="' + cssEscape(deviceId)
+            + '"][data-trellis-cap="' + cssEscape(capId) + '"]';
+          document.querySelectorAll(sel).forEach(function(btn) {
+            btn.classList.toggle('on', value);
+          });
+        }
       } catch (e) {
         toast('Failed to send command', 'error');
       }
     }
 
-    function sendToggle(e, deviceId, capId, value) {
+    function sendToggle(e, deviceId, capId) {
       e.stopPropagation();
-      sendCommand(deviceId, capId, value);
+      // Read current state live at click time — the caller does NOT
+      // pass a precomputed value because the button's onclick would
+      // otherwise capture stale state from render time.
+      const dev = devices.find(function(d) { return d.id === deviceId; });
+      if (!dev || !dev.capabilities) return;
+      const cap = dev.capabilities.find(function(c) { return c.id === capId; });
+      if (!cap) return;
+      sendCommand(deviceId, capId, !cap.value);
     }
 
     function sendSlider(e, deviceId, capId, value) {
