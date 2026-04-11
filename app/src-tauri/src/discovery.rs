@@ -369,6 +369,11 @@ fn health_check_loop(
                                 let msg = serde_json::json!({"type":"device_discovery","event":"found","device":&*device});
                                 bc.broadcast(msg.to_string());
                             }
+                            // Persist the transition so chart annotations
+                            // can draw a vertical marker at this timestamp.
+                            if let Some(db) = app_handle.try_state::<Database>() {
+                                let _ = db.store_log(&id, "state", "online");
+                            }
                             log::info!("[Health] Device {} came back online", id);
                         }
 
@@ -394,6 +399,11 @@ fn health_check_loop(
                             if let Some(bc) = ws_broadcaster.lock().unwrap().as_ref() {
                                 let msg = serde_json::json!({"type":"device_discovery","event":"lost","device":&*device});
                                 bc.broadcast(msg.to_string());
+                            }
+                            // Persist the transition so chart annotations
+                            // can draw a vertical marker at this timestamp.
+                            if let Some(db) = app_handle.try_state::<Database>() {
+                                let _ = db.store_log(&id, "state", "offline");
                             }
                             log::info!("[Health] Device {} went offline", id);
                         }

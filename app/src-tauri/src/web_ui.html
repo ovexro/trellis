@@ -537,6 +537,17 @@
       border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-size: 0.7rem;
       pointer-events: none; z-index: 10; box-shadow: var(--shadow); white-space: nowrap;
     }
+    .chart-annotation { cursor: help; }
+    .chart-annotation circle { transition: r 0.1s ease-out; }
+    .chart-annotation:hover circle { r: 4.5; }
+    .chart-legend {
+      display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem;
+      margin-top: 0.25rem; font-size: 0.65rem; color: var(--text-faint);
+    }
+    .chart-legend-item { display: inline-flex; align-items: center; gap: 0.25rem; }
+    .chart-legend-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    }
     /* Metrics tab */
     .metrics-device-section {
       margin-bottom: 1.25rem; padding: 1rem; background: var(--card);
@@ -1190,6 +1201,29 @@
         + String(d.getSeconds()).padStart(2, '0');
     }
 
+    // Annotation kind → color and human label. The `kind` field is a stable
+    // identifier written by the backend (see db.rs get_annotations).
+    function annColor(kind) {
+      switch (kind) {
+        case 'ota': return '#3b82f6';      // blue — firmware upload
+        case 'online': return '#10b981';   // green — device came back
+        case 'offline': return '#ef4444';  // red — device dropped
+        case 'error': return '#f59e0b';    // amber — device-reported error
+        case 'warn': return '#f59e0b';     // amber — device-reported warning
+        default: return '#6b7280';         // gray fallback
+      }
+    }
+    function annLabel(kind) {
+      switch (kind) {
+        case 'ota': return 'OTA';
+        case 'online': return 'Online';
+        case 'offline': return 'Offline';
+        case 'error': return 'Error';
+        case 'warn': return 'Warning';
+        default: return kind;
+      }
+    }
+
     function renderChart(container, points, opts) {
       points = downsampleMetrics(points, 200);
       if (!points || points.length < 2) {
@@ -1242,18 +1276,76 @@
       var color = opts.color || 'var(--accent)';
       var uid = 'ch' + Math.random().toString(36).substr(2, 6);
 
+      // ─── Annotations: point-in-time event markers ───
+      // Timestamps are mapped to the chart's x-range linearly by time.
+      // The dashed lines render below the chart-hover rect (decorative only),
+      // while the circular markers render above it so hovering a marker
+      // triggers the SVG <title> native tooltip.
+      var annLines = '';
+      var annCircles = '';
+      var annKindsPresent = {};
+      var annList = (opts.annotations && opts.annotations.length) ? opts.annotations : null;
+      if (annList) {
+        var firstTs = new Date(points[0].timestamp.replace(' ', 'T') + 'Z').getTime();
+        var lastTs = new Date(points[points.length - 1].timestamp.replace(' ', 'T') + 'Z').getTime();
+        // Guard against degenerate windows (all points same ts).
+        if (lastTs > firstTs) {
+          for (var ai = 0; ai < annList.length; ai++) {
+            var a = annList[ai];
+            var aTs = new Date(a.timestamp.replace(' ', 'T') + 'Z').getTime();
+            if (isNaN(aTs) || aTs < firstTs || aTs > lastTs) continue;
+            var ax = pad.left + ((aTs - firstTs) / (lastTs - firstTs)) * pw;
+            var axStr = ax.toFixed(1);
+            var aColor = annColor(a.kind);
+            annKindsPresent[a.kind] = true;
+            var tipText = annLabel(a.kind) + ' — ' + (a.label || '') + ' (' + fmtTooltipTime(a.timestamp) + ')';
+            annLines += '<line x1="' + axStr + '" y1="' + pad.top + '" x2="' + axStr + '" y2="' + (pad.top + ph) + '" stroke="' + aColor + '" stroke-width="1" stroke-dasharray="2,2" opacity="0.7"/>';
+            annCircles += '<g class="chart-annotation">'
+              + '<title>' + esc(tipText) + '</title>'
+              + '<circle cx="' + axStr + '" cy="' + (pad.top + 2) + '" r="3" fill="' + aColor + '" stroke="var(--bg)" stroke-width="1"/>'
+              + '</g>';
+          }
+        }
+      }
+
+      // Render order matters for SVG pointer-event hit testing:
+      //   1. grid, data polyline, annotation dashed lines — decorative, below
+      //   2. chart-hover rect — captures mouse for data crosshair
+      //   3. annotation circles — on top of the hover rect so the SVG
+      //      <title> tooltip fires when hovering a marker (later elements
+      //      receive hover events first in SVG).
       var svg = '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">'
         + yParts + xParts
         + '<polyline points="' + fillStr + '" fill="' + color + '" opacity="0.1" stroke="none"/>'
         + '<polyline points="' + lineStr + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>'
+        + annLines
         + '<line class="chart-cursor" x1="0" y1="' + pad.top + '" x2="0" y2="' + (pad.top + ph) + '" stroke="var(--text-faint)" stroke-width="0.5" stroke-dasharray="3,3" opacity="0"/>'
         + '<circle class="chart-dot" cx="0" cy="0" r="3" fill="' + color + '" opacity="0"/>'
         + '<rect class="chart-hover" x="' + pad.left + '" y="' + pad.top + '" width="' + pw + '" height="' + ph + '" fill="transparent" style="cursor:crosshair;"/>'
+        + annCircles
         + '</svg>';
+
+      // Legend row — only shown if any annotations landed on this chart.
+      // Items appear in a stable order so charts across the page look
+      // consistent regardless of which kinds were written first.
+      var legendOrder = ['ota', 'online', 'offline', 'warn', 'error'];
+      var kinds = legendOrder.filter(function(k) { return annKindsPresent[k]; });
+      // Append any unknown/future kinds not in the fixed order.
+      Object.keys(annKindsPresent).forEach(function(k) {
+        if (kinds.indexOf(k) === -1) kinds.push(k);
+      });
+      var legendHtml = '';
+      if (kinds.length) {
+        legendHtml = '<div class="chart-legend">'
+          + kinds.map(function(k) {
+            return '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + annColor(k) + ';"></span>' + esc(annLabel(k)) + '</span>';
+          }).join('')
+          + '</div>';
+      }
 
       var wrapper = document.createElement('div');
       wrapper.style.position = 'relative';
-      wrapper.innerHTML = svg + '<div class="chart-tooltip" style="display:none;"></div>';
+      wrapper.innerHTML = svg + '<div class="chart-tooltip" style="display:none;"></div>' + legendHtml;
       container.innerHTML = '';
       container.appendChild(wrapper);
 
@@ -1327,7 +1419,11 @@
       var fetches = metrics.map(function(m) {
         return api('/api/devices/' + encodeURIComponent(id) + '/metrics?metric=' + encodeURIComponent(m.id) + '&hours=' + hours).catch(function() { return null; });
       });
+      // Fetch annotations once for the same time window; every chart on this
+      // device gets the same set overlaid.
+      var annFetch = api('/api/devices/' + encodeURIComponent(id) + '/annotations?hours=' + hours).catch(function() { return []; });
       var results = await Promise.all(fetches);
+      var annotations = await annFetch;
 
       container.innerHTML = '';
       var hasData = false;
@@ -1344,7 +1440,7 @@
         var chartDiv = document.createElement('div');
         wrap.appendChild(chartDiv);
         container.appendChild(wrap);
-        renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours });
+        renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations });
       });
 
       if (!hasData) {
@@ -1747,8 +1843,12 @@
           var fetches = metrics.map(function(m) {
             return api('/api/devices/' + encodeURIComponent(dev.id) + '/metrics?metric=' + encodeURIComponent(m.id) + '&hours=' + hours).catch(function() { return null; });
           });
+          // Annotations fetched once per device in parallel with metrics.
+          var annFetch = api('/api/devices/' + encodeURIComponent(dev.id) + '/annotations?hours=' + hours).catch(function() { return []; });
 
-          return Promise.all(fetches).then(function(results) {
+          return Promise.all([Promise.all(fetches), annFetch]).then(function(bundle) {
+            var results = bundle[0];
+            var annotations = bundle[1] || [];
             chartsEl.innerHTML = '';
             var hasData = false;
             var grid = document.createElement('div');
@@ -1767,7 +1867,7 @@
               var chartDiv = document.createElement('div');
               wrap.appendChild(chartDiv);
               grid.appendChild(wrap);
-              renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours });
+              renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations });
             });
 
             if (hasData) {

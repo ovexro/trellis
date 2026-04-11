@@ -683,6 +683,105 @@ impl Database {
         Ok(path)
     }
 
+    // ─── Annotations (chart event markers) ───────────────────────────────
+
+    /// Collect point-in-time events for a device within the given rolling
+    /// window (in hours). Unions OTA uploads from firmware_history with
+    /// state/error/warn rows from device_logs. Sorted oldest-first.
+    /// Capped at 200 points — if exceeded, the newest 200 are kept so the
+    /// most recent activity is always visible on the chart.
+    pub fn get_annotations(
+        &self,
+        device_id: &str,
+        hours: u32,
+    ) -> Result<Vec<Annotation>, String> {
+        let conn = self.conn.lock().unwrap();
+        let window = format!("-{} hours", hours);
+        let mut out: Vec<Annotation> = Vec::new();
+
+        // OTA events — one row per firmware upload
+        let mut stmt = conn
+            .prepare(
+                "SELECT version, uploaded_at FROM firmware_history
+                 WHERE device_id = ?1 AND uploaded_at >= datetime('now', ?2)
+                 ORDER BY uploaded_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id, window], |row| {
+                let version: String = row.get(0)?;
+                let ts: String = row.get(1)?;
+                Ok(Annotation {
+                    timestamp: ts,
+                    kind: "ota".to_string(),
+                    label: format!("OTA v{}", version),
+                    severity: "info".to_string(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+
+        // State transitions + device-reported errors/warnings
+        let mut stmt = conn
+            .prepare(
+                "SELECT severity, message, timestamp FROM device_logs
+                 WHERE device_id = ?1
+                   AND timestamp >= datetime('now', ?2)
+                   AND (severity = 'state' OR severity = 'error' OR severity = 'warn')
+                 ORDER BY timestamp ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id, window], |row| {
+                let severity: String = row.get(0)?;
+                let message: String = row.get(1)?;
+                let ts: String = row.get(2)?;
+                let kind = match severity.as_str() {
+                    "state" => match message.as_str() {
+                        "online" => "online",
+                        "offline" => "offline",
+                        _ => "state",
+                    },
+                    "error" => "error",
+                    "warn" => "warn",
+                    _ => "other",
+                }
+                .to_string();
+                // Humanize the default state labels; everything else passes
+                // through the device-reported message unchanged.
+                let label = match (severity.as_str(), message.as_str()) {
+                    ("state", "online") => "Came online".to_string(),
+                    ("state", "offline") => "Went offline".to_string(),
+                    _ => message,
+                };
+                Ok(Annotation {
+                    timestamp: ts,
+                    kind,
+                    label,
+                    severity,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+
+        // Merge the two streams by timestamp.
+        out.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        // Cap at 200 total — keep the most recent so the newest activity
+        // is always visible when errors are noisy on a 7-day window.
+        const MAX: usize = 200;
+        if out.len() > MAX {
+            let skip = out.len() - MAX;
+            out = out.split_off(skip);
+        }
+
+        Ok(out)
+    }
+
     // ─── API tokens ──────────────────────────────────────────────────────
 
     /// Insert a new token row. The caller is responsible for generating the
@@ -842,6 +941,19 @@ pub struct LogEntry {
     pub severity: String,
     pub message: String,
     pub timestamp: String,
+}
+
+/// Chart annotation event — a point-in-time marker drawn as a vertical line
+/// on the metric charts. Produced by unioning firmware_history (OTA events)
+/// and device_logs rows whose severity is 'state', 'error', or 'warn'.
+/// `kind` is a stable frontend identifier that drives the color/label in the
+/// chart legend: "ota", "online", "offline", "error", "warn".
+#[derive(Debug, Clone, Serialize)]
+pub struct Annotation {
+    pub timestamp: String,
+    pub kind: String,
+    pub label: String,
+    pub severity: String,
 }
 
 /// Public-facing view of an API token row. The plaintext token is **never**

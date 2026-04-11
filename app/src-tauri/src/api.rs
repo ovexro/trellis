@@ -911,6 +911,16 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/annotations") => {
+            let id = &p["/api/devices/".len()..p.len() - "/annotations".len()];
+            // Window matches the metric-chart `hours` query param (1/6/24/168).
+            let hours: u32 = req.query.get("hours").and_then(|h| h.parse().ok()).unwrap_or(24);
+            match ctx.db.get_annotations(id, hours) {
+                Ok(a) => json_ok(&a),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/alerts") => {
             let id = &p["/api/devices/".len()..p.len() - "/alerts".len()];
             match ctx.db.get_alerts(id) {
