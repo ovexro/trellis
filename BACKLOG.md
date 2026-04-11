@@ -6,7 +6,31 @@ Forward-looking list: candidate next tasks, speculative enhancements, and known 
 
 Concrete enough to pick up in a future session. Each has scope + what it unblocks. Not a priority order.
 
-- **Desktop `DeviceDetail` React page vs web dashboard detail panel parity** — the `:9090` web dashboard's detail panel shipped 6 major surfaces in v0.4.6 (interactive charts with range picker, chart event annotations, annotation click-through, severity filter chips, uptime ribbon, uptime stat line). The desktop React `DeviceDetail` page is the parallel component on the desktop-app side and has not received these features. High-confidence consistency gap. Scope: port each v0.4.6 detail-panel feature to the React page, or explicitly decide the desktop page is deprecated in favor of the web dashboard. Likely a multi-session effort — or a deliberate deprecation decision, which is faster.
+- **Desktop `DeviceDetail` React page — v0.4.6 detail-panel parity port** — investigated 2026-04-11, deprecation ruled out: `DeviceCard.tsx:34` navigates `/device/:id` on card click (primary desktop flow) and the desktop shell does NOT embed `:9090` in an iframe, so every desktop user lands in the React page and never sees the `:9090` slide-out panel. Port plan below (multi-session).
+
+  **Confirmed gaps** vs `:9090` detail panel (which has all 6 v0.4.6 surfaces):
+  1. Chart event annotations (OTA/state/error/warn) — missing; `MetricChart.tsx` is Recharts-based with no annotation layer
+  2. Annotation click-through (marker → scroll+highlight log row) — missing; depends on #3 first
+  3. Recent Logs chip row — partial; `DeviceLogs.tsx:83` has only `all/error/warn/info` filtered client-side. Missing `state`, `debug`, `events` (composite) and re-fetch-on-chip-click via `?severity=...`
+  4. Uptime timeline ribbon — missing; no React equivalent
+  5. Uptime stat line (`NN.N% online · Xd Yh tracked · N transitions`) — missing
+  6. Chart range picker (`1h/6h/24h/7d`) — ✅ already parity via Recharts
+
+  **P1 — ship-blocker parity sub-tasks** (each a self-contained session):
+  - **(a) Chart annotations overlay on `MetricChart.tsx`** — stay on Recharts; use `<ReferenceLine>` / `<ReferenceDot>` or the `customized` prop to paint markers matching the `:9090` color scheme (OTA blue / online green / offline red / warn+error amber). Fetch from `GET /api/devices/{id}/annotations?hours=N` (verify Tauri wrapper exists) in parallel with the metrics fetch. Legend row below chart listing only kinds present in window.
+  - **(b) Recent Logs chip row parity in `DeviceLogs.tsx`** — add `state`, `debug`, `events` chips alongside existing ones; switch from client-side filter to server-side re-fetch on chip click. **Prerequisite:** audit `app/src-tauri/src/commands.rs::get_device_logs` for a `severity` arg — if absent, add it (~10 lines Rust, new optional param, maps to `Database::get_logs_filtered` which already exists per v0.4.6 on the Rust side).
+  - **(c) New `<UptimeTimeline>` component** — fetches annotations, derives segments client-side the same way `renderUptimeTimeline()` in `web_ui.html` does (green=online / red=offline / gray=leading unknown, last segment extends to "now"), renders SVG ribbon + stat line above it. Slot into `DeviceDetail.tsx` between System stats and Sensor Charts.
+
+  **P2 — consistency polish** (batch into one session):
+  - **(d) Annotation click-through** — chart marker click opens the relevant log filter (Events) and scrolls/flash-highlights the matching row. Requires (b) in place. Cross-component coordination via imperative handle on `<DeviceLogs>` or a shared zustand slice.
+  - **(e) Uptime ribbon segment click** — same click-through pattern, activates State filter and highlights matching state-transition log row.
+  - **(f) Visual parity polish** — crosshair width, grid color, tooltip style alignment between Recharts and the `:9090` hand-rolled SVG. Optional.
+
+  **P3 — explicitly out of scope for parity effort:**
+  - Top-level Metrics tab (the `:9090` dashboard has one; desktop does not). That's a new feature, not a parity gap. Track separately if pursued.
+  - Replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
+
+  **Suggested session breakdown:** N+1 = (b) chip row + backend severity arg. N+2 = (a) chart annotations. N+3 = (c) uptime timeline. N+4 = (d)+(e)+(f) cleanup.
 
 - **Add LED brightness slider polish to AutoConnect.ino** — the brightness slider is now live on the ESP32 but hasn't been hardened. Candidates: (1) persist value across reboots to NVS so brightness resumes, (2) sync initial value to the dashboard on discovery (currently shows whatever PWM duty is active), (3) confirm/document how it shares GPIO 2 with the existing LED switch. Needs an ESP32 re-flash.
 
