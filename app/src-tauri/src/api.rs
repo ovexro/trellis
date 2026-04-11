@@ -905,7 +905,22 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
         ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/logs") => {
             let id = &p["/api/devices/".len()..p.len() - "/logs".len()];
             let limit: u32 = req.query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100);
-            match ctx.db.get_logs(id, limit) {
+            // Optional comma-separated severity filter, e.g.
+            // `?severity=state,error,warn` for the annotation click-through
+            // path which only cares about rows that can produce annotations.
+            let severities: Option<Vec<String>> = req.query.get("severity").map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            });
+            let result = match severities {
+                Some(ref list) if !list.is_empty() => {
+                    ctx.db.get_logs_filtered(id, limit, Some(list))
+                }
+                _ => ctx.db.get_logs(id, limit),
+            };
+            match result {
                 Ok(l) => json_ok(&l),
                 Err(e) => json_error(500, &e),
             }

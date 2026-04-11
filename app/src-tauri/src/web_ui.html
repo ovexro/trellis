@@ -537,9 +537,17 @@
       border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-size: 0.7rem;
       pointer-events: none; z-index: 10; box-shadow: var(--shadow); white-space: nowrap;
     }
-    .chart-annotation { cursor: help; }
-    .chart-annotation circle { transition: r 0.1s ease-out; }
-    .chart-annotation:hover circle { r: 4.5; }
+    .chart-annotation { cursor: pointer; }
+    .chart-annotation circle.ann-marker { transition: r 0.1s ease-out; }
+    .chart-annotation:hover circle.ann-marker { r: 4.5; }
+    /* Brief flash highlight applied to a log/firmware row when an
+       annotation is clicked through. The animation is fire-and-forget:
+       the class is removed after it finishes so it can be retriggered. */
+    @keyframes annFlash {
+      0%   { background-color: rgba(245, 158, 11, 0.35); }
+      100% { background-color: transparent; }
+    }
+    .annotation-flash { animation: annFlash 1.6s ease-out; }
     .chart-legend {
       display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem;
       margin-top: 0.25rem; font-size: 0.65rem; color: var(--text-faint);
@@ -1300,9 +1308,18 @@
             annKindsPresent[a.kind] = true;
             var tipText = annLabel(a.kind) + ' — ' + (a.label || '') + ' (' + fmtTooltipTime(a.timestamp) + ')';
             annLines += '<line x1="' + axStr + '" y1="' + pad.top + '" x2="' + axStr + '" y2="' + (pad.top + ph) + '" stroke="' + aColor + '" stroke-width="1" stroke-dasharray="2,2" opacity="0.7"/>';
-            annCircles += '<g class="chart-annotation">'
+            // Each annotation group carries its kind/timestamp/label as
+            // data-* attrs so the click handler can route to the right
+            // detail-panel section without re-fetching the annotation list.
+            // The visible circle (r=3) sits above an invisible 6px hit
+            // target so taps land reliably on touch devices.
+            annCircles += '<g class="chart-annotation"'
+              + ' data-ann-kind="' + esc(a.kind) + '"'
+              + ' data-ann-ts="' + esc(a.timestamp) + '"'
+              + ' data-ann-label="' + esc(a.label || '') + '">'
               + '<title>' + esc(tipText) + '</title>'
-              + '<circle cx="' + axStr + '" cy="' + (pad.top + 2) + '" r="3" fill="' + aColor + '" stroke="var(--bg)" stroke-width="1"/>'
+              + '<circle cx="' + axStr + '" cy="' + (pad.top + 2) + '" r="6" fill="transparent"/>'
+              + '<circle class="ann-marker" cx="' + axStr + '" cy="' + (pad.top + 2) + '" r="3" fill="' + aColor + '" stroke="var(--bg)" stroke-width="1"/>'
               + '</g>';
           }
         }
@@ -1397,6 +1414,23 @@
         onMove({ clientX: touch.clientX, clientY: touch.clientY });
       });
       hoverRect.addEventListener('touchend', onLeave);
+
+      // Annotation click-through — open the device detail panel and
+      // scroll to the matching log/firmware row. Skipped silently if
+      // the chart was rendered without a deviceId (defensive — every
+      // call site passes one as of v0.4.5+).
+      if (opts.deviceId) {
+        var devForClick = opts.deviceId;
+        wrapper.querySelectorAll('.chart-annotation').forEach(function(g) {
+          g.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var kind = g.dataset.annKind;
+            var ts = g.dataset.annTs;
+            var label = g.dataset.annLabel || '';
+            if (kind && ts) onAnnotationClick(devForClick, kind, ts, label);
+          });
+        });
+      }
     }
 
     async function loadDetailCharts(id, caps) {
@@ -1440,7 +1474,7 @@
         var chartDiv = document.createElement('div');
         wrap.appendChild(chartDiv);
         container.appendChild(wrap);
-        renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations });
+        renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations, deviceId: id });
       });
 
       if (!hasData) {
@@ -1454,6 +1488,87 @@
         b.classList.toggle('active', parseInt(b.dataset.hours) === hours);
       });
       if (detailChartDeviceId) loadDetailCharts(detailChartDeviceId, detailChartCaps);
+    }
+
+    /* ─── Annotation click-through ───────────────────────────────────
+       Triggered when the user clicks an annotation marker on any chart
+       (device detail panel or Metrics tab). Opens the device detail
+       panel for the right device, then scrolls to and flash-highlights
+       the matching log row (state/error/warn) or firmware row (ota).
+       Match key is the annotation timestamp string, which comes
+       directly from the same SQLite columns the row was written to.
+       ─────────────────────────────────────────────────────────────── */
+    async function onAnnotationClick(deviceId, kind, ts, label) {
+      // Open the detail panel and wait for the synchronous part of
+      // openDeviceDetail to finish — that includes the await on logs
+      // + firmware fetch, so the rows we want to scroll to are already
+      // in the DOM by the time it resolves.
+      try {
+        await openDeviceDetail(deviceId);
+      } catch (e) {
+        toast('Could not open device detail', 'error');
+        return;
+      }
+      // Two render targets: 'fw' for OTA annotations, 'logs' for
+      // everything else (state/error/warn — all live in device_logs).
+      var section = kind === 'ota' ? 'fw' : 'logs';
+      var selFor = function(t) {
+        return '.detail-section [data-ann-section="' + section + '"][data-ann-ts="' + cssEscape(t) + '"]';
+      };
+      var flash = function(row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // Force a reflow to restart the CSS animation, in case the
+        // user re-clicks the same annotation.
+        row.classList.remove('annotation-flash');
+        void row.offsetWidth;
+        row.classList.add('annotation-flash');
+        setTimeout(function() { row.classList.remove('annotation-flash'); }, 1700);
+      };
+      // Try the rendered list first.
+      var row = document.querySelector(selFor(ts));
+      if (row) { flash(row); return; }
+      // Firmware history is rendered in full from openDeviceDetail, so
+      // an OTA annotation that misses here was genuinely pruned.
+      if (section === 'fw') {
+        toast('Firmware entry no longer in history', 'error');
+        return;
+      }
+      // For log annotations: the rendered "Recent Logs" list is capped
+      // at 200 of any severity, which can push older state/error/warn
+      // entries out of view on devices with lots of info logs. Re-fetch
+      // with a severity filter so the matching row is guaranteed to be
+      // present, then re-render the section before scrolling.
+      try {
+        var filtered = await api('/api/devices/' + encodeURIComponent(deviceId) + '/logs?limit=200&severity=state,error,warn');
+        if (Array.isArray(filtered) && filtered.length) {
+          var logsEl = document.getElementById('detailLogs');
+          if (logsEl) {
+            logsEl.innerHTML = '<div class="detail-log-list">' + filtered.map(function(l) {
+              var sev = (l.severity || 'info').toLowerCase();
+              var time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
+              return '<div class="detail-log" data-ann-section="logs" data-ann-ts="' + esc(l.timestamp || '') + '">'
+                + '<span class="detail-log-sev ' + sev + '">' + esc(sev) + '</span>'
+                + '<span class="detail-log-msg">' + esc(l.message || '') + '</span>'
+                + '<span class="detail-log-time">' + esc(time) + '</span>'
+                + '</div>';
+            }).join('') + '</div>';
+          }
+        }
+      } catch (e) { /* fall through to the not-found toast */ }
+      row = document.querySelector(selFor(ts));
+      if (row) {
+        flash(row);
+      } else {
+        toast('Log entry no longer in history', 'error');
+      }
+    }
+
+    // Lightweight CSS.escape() polyfill — only the chars we actually
+    // emit into data-ann-ts ("YYYY-MM-DD HH:MM:SS") need escaping, but
+    // be defensive against future formats.
+    function cssEscape(s) {
+      if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
+      return String(s).replace(/[^a-zA-Z0-9_-]/g, function(c) { return '\\' + c; });
     }
 
     async function openDeviceDetail(id) {
@@ -1568,8 +1683,10 @@
 
       body.innerHTML = html;
 
-      // Fetch logs, firmware history, and sparklines in parallel
-      const logsP = api(`/api/devices/${id}/logs?limit=20`).catch(function() { return null; });
+      // Fetch logs, firmware history, and sparklines in parallel.
+      // Logs limit matches the annotation cap (200) so any clicked
+      // annotation is guaranteed to find its underlying row in view.
+      const logsP = api(`/api/devices/${id}/logs?limit=200`).catch(function() { return null; });
       const fwP = api(`/api/devices/${id}/firmware`).catch(function() { return null; });
       const rssiP = api(`/api/devices/${id}/metrics?metric=_rssi&hours=1`).catch(function() { return null; });
       const heapP = api(`/api/devices/${id}/metrics?metric=_heap&hours=1`).catch(function() { return null; });
@@ -1585,7 +1702,10 @@
           logsEl.innerHTML = `<div class="detail-log-list">${logs.map(function(l) {
             const sev = (l.severity || 'info').toLowerCase();
             const time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
-            return `<div class="detail-log">
+            // data-ann-ts on every row lets onAnnotationClick locate the
+            // matching log entry and flash-highlight it. data-ann-section
+            // distinguishes log rows from firmware rows below.
+            return `<div class="detail-log" data-ann-section="logs" data-ann-ts="${esc(l.timestamp || '')}">
               <span class="detail-log-sev ${sev}">${esc(sev)}</span>
               <span class="detail-log-msg">${esc(l.message || '')}</span>
               <span class="detail-log-time">${esc(time)}</span>
@@ -1600,10 +1720,13 @@
         const fwList = document.getElementById('detailFwList');
         if (fwSection && fwList) {
           fwSection.style.display = '';
-          fwList.innerHTML = fwHist.slice(0, 5).map(function(f) {
+          // Render every firmware entry — annotation click-through needs
+          // to be able to locate any historical OTA, not just the 5 most
+          // recent. Firmware history rows are typically few per device.
+          fwList.innerHTML = fwHist.map(function(f) {
             const date = f.uploaded_at ? f.uploaded_at.split(' ')[0] : '';
             const size = f.file_size ? formatBytes(f.file_size) : '';
-            return '<div class="detail-fw-item">'
+            return '<div class="detail-fw-item" data-ann-section="fw" data-ann-ts="' + esc(f.uploaded_at || '') + '">'
               + '<span class="detail-fw-dot"></span>'
               + '<span class="detail-fw-ver">' + esc(f.version || '?') + '</span>'
               + '<span class="detail-fw-meta">' + esc(date) + (size ? ' · ' + size : '') + '</span>'
@@ -1867,7 +1990,7 @@
               var chartDiv = document.createElement('div');
               wrap.appendChild(chartDiv);
               grid.appendChild(wrap);
-              renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations });
+              renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations, deviceId: dev.id });
             });
 
             if (hasData) {

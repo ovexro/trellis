@@ -340,16 +340,49 @@ impl Database {
         device_id: &str,
         limit: u32,
     ) -> Result<Vec<LogEntry>, String> {
+        self.get_logs_filtered(device_id, limit, None)
+    }
+
+    /// Same as `get_logs` but optionally restricts to a set of severities.
+    /// Used by the annotation click-through path to fetch only the rows
+    /// that can ever appear as annotations (state/error/warn), so noisy
+    /// `info` logs cannot push older annotation rows out of the window.
+    pub fn get_logs_filtered(
+        &self,
+        device_id: &str,
+        limit: u32,
+        severities: Option<&[String]>,
+    ) -> Result<Vec<LogEntry>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT severity, message, timestamp FROM device_logs
-                 WHERE device_id = ?1
-                 ORDER BY timestamp DESC LIMIT ?2",
-            )
-            .map_err(|e| e.to_string())?;
+        // Build the SQL with all-anonymous `?` placeholders so positional
+        // binding stays unambiguous regardless of how many severities the
+        // caller passes (rusqlite gets confused if `?N` and `?` are mixed).
+        let sev_list: &[String] = severities.unwrap_or(&[]);
+        let sev_clause = if sev_list.is_empty() {
+            String::new()
+        } else {
+            let placeholders: Vec<&str> = (0..sev_list.len()).map(|_| "?").collect();
+            format!(" AND severity IN ({})", placeholders.join(","))
+        };
+        let sql = format!(
+            "SELECT severity, message, timestamp FROM device_logs
+             WHERE device_id = ?{}
+             ORDER BY timestamp DESC LIMIT ?",
+            sev_clause
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        // Bind in left-to-right order matching the SQL above:
+        //   device_id, severities..., limit
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(2 + sev_list.len());
+        params.push(Box::new(device_id.to_string()));
+        for sev in sev_list {
+            params.push(Box::new(sev.clone()));
+        }
+        params.push(Box::new(limit));
+        let param_refs: Vec<&dyn rusqlite::ToSql> =
+            params.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
-            .query_map(rusqlite::params![device_id, limit], |row| {
+            .query_map(param_refs.as_slice(), |row| {
                 Ok(LogEntry {
                     severity: row.get(0)?,
                     message: row.get(1)?,
