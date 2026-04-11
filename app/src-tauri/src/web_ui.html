@@ -574,6 +574,17 @@
       font-family: system-ui, -apple-system, sans-serif;
       font-size: 9px;
     }
+    /* Uptime summary stat line — sits between the Uptime History
+       section title and the SVG strip. Rolls up the ribbon's segments
+       into a single quantitative line (online %, tracked span, count). */
+    .uptime-stat-line {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+      font-size: 0.75rem; color: var(--text-faint);
+      margin-bottom: 0.4rem; line-height: 1.2;
+    }
+    .uptime-stat-pct { font-weight: 600; color: var(--text); }
+    .uptime-stat-sep { opacity: 0.5; }
+    .uptime-stat-empty { font-style: italic; }
     /* Metrics tab */
     .metrics-device-section {
       margin-bottom: 1.25rem; padding: 1rem; background: var(--card);
@@ -1541,7 +1552,7 @@
       // here: the user selected this window to see history, not
       // "current state stretched backward".
       if (states.length === 0) {
-        container.innerHTML = renderUptimeEmptyRibbon(windowStart, now, hours);
+        container.innerHTML = buildUptimeStatLine([]) + renderUptimeEmptyRibbon(windowStart, now, hours);
         return;
       }
 
@@ -1578,7 +1589,7 @@
         });
       }
 
-      container.innerHTML = renderUptimeSvg(segments, windowStart, now, hours);
+      container.innerHTML = buildUptimeStatLine(segments) + renderUptimeSvg(segments, windowStart, now, hours);
 
       // Wire click-through on non-inferred segments. The leading
       // inferred segment has no matching log row so it's non-clickable.
@@ -1591,6 +1602,41 @@
           onUptimeSegmentClick(deviceId, ts);
         });
       });
+    }
+
+    // Roll the uptime segments into a one-line summary that sits above
+    // the ribbon: online %, total tracked span, transition count. The
+    // "known" basis excludes the leading inferred/unknown segment so
+    // the percentage is a faithful ratio over the time we actually
+    // observed transitions for, not over the full window. Empty input
+    // (zero state transitions in window) falls through to a single
+    // italicized "No tracked uptime in this window" line.
+    function buildUptimeStatLine(segments) {
+      var knownMs = 0, onlineMs = 0, transitions = 0;
+      (segments || []).forEach(function(s) {
+        if (s.inferred) return;
+        var dur = Math.max(0, s.end - s.start);
+        knownMs += dur;
+        if (s.kind === 'online') onlineMs += dur;
+        transitions++;
+      });
+      if (knownMs <= 0) {
+        return '<div class="uptime-stat-line uptime-stat-empty">No tracked uptime in this window</div>';
+      }
+      var pct = (onlineMs / knownMs) * 100;
+      var pctStr;
+      if (pct >= 99.95) pctStr = '100%';
+      else if (pct > 0 && pct < 0.05) pctStr = '<0.1%';
+      else pctStr = pct.toFixed(1) + '%';
+      var trackedStr = formatUptime(Math.floor(knownMs / 1000));
+      var transStr = transitions + ' transition' + (transitions === 1 ? '' : 's');
+      return '<div class="uptime-stat-line">'
+        + '<span class="uptime-stat-pct">' + esc(pctStr) + ' online</span>'
+        + '<span class="uptime-stat-sep">·</span>'
+        + '<span>' + esc(trackedStr) + ' tracked</span>'
+        + '<span class="uptime-stat-sep">·</span>'
+        + '<span>' + esc(transStr) + '</span>'
+        + '</div>';
     }
 
     // Parse a SQLite-formatted UTC timestamp to ms epoch. Matches the
