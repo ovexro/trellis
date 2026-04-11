@@ -11,14 +11,14 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   **Confirmed gaps** vs `:9090` detail panel (which has all 6 v0.4.6 surfaces):
   1. Chart event annotations (OTA/state/error/warn) — missing; `MetricChart.tsx` is Recharts-based with no annotation layer
   2. Annotation click-through (marker → scroll+highlight log row) — missing; depends on #3 first
-  3. Recent Logs chip row — partial; `DeviceLogs.tsx:83` has only `all/error/warn/info` filtered client-side. Missing `state`, `debug`, `events` (composite) and re-fetch-on-chip-click via `?severity=...`
+  3. ~~Recent Logs chip row~~ — ✅ **shipped** as P1(b); 7-chip row (All/Events/State/Error/Warn/Info/Debug) with server-side re-fetch, stale-fetch guard, live-log filter guard, `key={device.id}` remount on device switch for filter reset parity. Rust `get_device_logs` now takes optional comma-separated `severity` arg.
   4. Uptime timeline ribbon — missing; no React equivalent
   5. Uptime stat line (`NN.N% online · Xd Yh tracked · N transitions`) — missing
   6. Chart range picker (`1h/6h/24h/7d`) — ✅ already parity via Recharts
 
   **P1 — ship-blocker parity sub-tasks** (each a self-contained session):
   - **(a) Chart annotations overlay on `MetricChart.tsx`** — stay on Recharts; use `<ReferenceLine>` / `<ReferenceDot>` or the `customized` prop to paint markers matching the `:9090` color scheme (OTA blue / online green / offline red / warn+error amber). Fetch from `GET /api/devices/{id}/annotations?hours=N` (verify Tauri wrapper exists) in parallel with the metrics fetch. Legend row below chart listing only kinds present in window.
-  - **(b) Recent Logs chip row parity in `DeviceLogs.tsx`** — add `state`, `debug`, `events` chips alongside existing ones; switch from client-side filter to server-side re-fetch on chip click. **Prerequisite:** audit `app/src-tauri/src/commands.rs::get_device_logs` for a `severity` arg — if absent, add it (~10 lines Rust, new optional param, maps to `Database::get_logs_filtered` which already exists per v0.4.6 on the Rust side).
+  - ~~**(b) Recent Logs chip row parity in `DeviceLogs.tsx`**~~ — ✅ **shipped**. Severity arg on `get_device_logs` maps to existing `Database::get_logs_filtered`. `DeviceLogs.tsx` rewritten with 7 chips, fetchGenRef stale-fetch guard, filterRef for live-log listener. `DeviceDetail.tsx` passes `key={device.id}` so the component remounts (resetting filter to "all") on device switch, matching the `:9090` reset behavior.
   - **(c) New `<UptimeTimeline>` component** — fetches annotations, derives segments client-side the same way `renderUptimeTimeline()` in `web_ui.html` does (green=online / red=offline / gray=leading unknown, last segment extends to "now"), renders SVG ribbon + stat line above it. Slot into `DeviceDetail.tsx` between System stats and Sensor Charts.
 
   **P2 — consistency polish** (batch into one session):
@@ -30,7 +30,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   - Top-level Metrics tab (the `:9090` dashboard has one; desktop does not). That's a new feature, not a parity gap. Track separately if pursued.
   - Replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
 
-  **Suggested session breakdown:** N+1 = (b) chip row + backend severity arg. N+2 = (a) chart annotations. N+3 = (c) uptime timeline. N+4 = (d)+(e)+(f) cleanup.
+  **Suggested session breakdown:** ~~N+1 = (b) chip row + backend severity arg~~ (done). N+1 = (a) chart annotations. N+2 = (c) uptime timeline. N+3 = (d)+(e)+(f) cleanup.
 
 - **Add LED brightness slider polish to AutoConnect.ino** — the brightness slider is now live on the ESP32 but hasn't been hardened. Candidates: (1) persist value across reboots to NVS so brightness resumes, (2) sync initial value to the dashboard on discovery (currently shows whatever PWM duty is active), (3) confirm/document how it shares GPIO 2 with the existing LED switch. Needs an ESP32 re-flash.
 

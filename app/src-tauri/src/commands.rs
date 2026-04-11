@@ -278,8 +278,25 @@ pub fn get_device_logs(
     db: State<'_, Database>,
     device_id: String,
     limit: u32,
+    severity: Option<String>,
 ) -> Result<Vec<LogEntry>, String> {
-    db.get_logs(&device_id, limit)
+    // `severity` is a comma-separated list (e.g. "state,error,warn") to match
+    // the REST API's `?severity=...` query param shape used by the :9090 web
+    // dashboard. Empty / missing → unfiltered (same as `get_logs`).
+    let sev_list: Vec<String> = severity
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if sev_list.is_empty() {
+        db.get_logs(&device_id, limit)
+    } else {
+        db.get_logs_filtered(&device_id, limit, Some(&sev_list))
+    }
 }
 
 #[tauri::command]

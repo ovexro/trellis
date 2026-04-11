@@ -288,7 +288,7 @@ export default function DeviceDetail() {
 
       {/* Device Logs */}
       <SectionHeader title="Logs" />
-      <DeviceLogs deviceId={device.id} />
+      <DeviceLogs key={device.id} deviceId={device.id} />
 
       {/* Remove Device */}
       <div className="mt-12 pt-6 border-t border-zinc-800/50">
