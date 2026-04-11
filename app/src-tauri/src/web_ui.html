@@ -556,6 +556,24 @@
     .chart-legend-dot {
       display: inline-block; width: 6px; height: 6px; border-radius: 50%;
     }
+    /* Uptime Timeline — horizontal ribbon of online/offline segments
+       over the current chart time range. Lives in the device detail
+       panel between the System stat grid and the interactive controls. */
+    .uptime-timeline { display: block; width: 100%; }
+    .uptime-svg { display: block; width: 100%; }
+    .uptime-segment { transition: filter 0.15s ease-out; }
+    .uptime-segment[data-inferred="false"] { cursor: pointer; }
+    .uptime-segment[data-inferred="false"]:hover rect { filter: brightness(1.25); }
+    .uptime-axis-tick {
+      fill: var(--text-faint);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 8px;
+    }
+    .uptime-empty-label {
+      fill: var(--text-faint);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 9px;
+    }
     /* Metrics tab */
     .metrics-device-section {
       margin-bottom: 1.25rem; padding: 1rem; background: var(--card);
@@ -1480,6 +1498,10 @@
       if (!hasData) {
         container.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);">No metric data for this period</div>';
       }
+
+      // Uptime strip re-uses the same annotation set so it stays in
+      // sync with chart annotations and re-renders on range changes.
+      renderUptimeTimeline(id, hours, annotations);
     }
 
     function setChartRange(hours) {
@@ -1488,6 +1510,225 @@
         b.classList.toggle('active', parseInt(b.dataset.hours) === hours);
       });
       if (detailChartDeviceId) loadDetailCharts(detailChartDeviceId, detailChartCaps);
+    }
+
+    /* ── Uptime Timeline renderer ─────────────────────────────────────
+       Builds a horizontal ribbon of online/offline segments over the
+       current chart time range. Driven by the same annotation set as
+       the metric charts (state transitions have kind 'online' /
+       'offline' in db.rs::get_annotations), so the strip re-renders
+       whenever setChartRange fires. Leading segment before the first
+       transition is marked 'unknown' (gray) since we have no way to
+       prove the prior state when it pre-dates the annotation stream.
+       ────────────────────────────────────────────────────────────── */
+    function renderUptimeTimeline(deviceId, hours, annotations) {
+      var container = document.getElementById('detailUptimeTimeline');
+      if (!container) return;
+
+      var now = Date.now();
+      var windowStart = now - hours * 3600 * 1000;
+
+      // Filter to state transitions only, clipped to the window.
+      // Backend already sorts by timestamp ASC.
+      var states = (annotations || []).filter(function(a) {
+        if (a.kind !== 'online' && a.kind !== 'offline') return false;
+        var ts = parseUtcTs(a.timestamp);
+        return !isNaN(ts) && ts >= windowStart && ts <= now;
+      });
+
+      // No transitions in window → single "no data" ribbon.
+      // We intentionally do NOT infer current state from dev.online
+      // here: the user selected this window to see history, not
+      // "current state stretched backward".
+      if (states.length === 0) {
+        container.innerHTML = renderUptimeEmptyRibbon(windowStart, now, hours);
+        return;
+      }
+
+      // Build segments: optional leading inferred + one per transition.
+      var segments = [];
+      var firstTs = parseUtcTs(states[0].timestamp);
+      if (firstTs > windowStart) {
+        // Transitions only fire on change, so the prior state is the
+        // opposite of the first transition's kind — rendered gray
+        // because we can't be sure the device was actually being
+        // tracked before window_start.
+        segments.push({
+          kind: 'unknown',
+          start: windowStart,
+          end: firstTs,
+          inferred: true,
+        });
+      }
+
+      for (var i = 0; i < states.length; i++) {
+        var cur = states[i];
+        var curTs = parseUtcTs(cur.timestamp);
+        var nextTs = (i + 1 < states.length)
+          ? parseUtcTs(states[i + 1].timestamp)
+          : now;
+        if (nextTs <= curTs) continue; // guard against clock skew
+        segments.push({
+          kind: cur.kind,             // 'online' or 'offline'
+          start: curTs,
+          end: nextTs,
+          startTsRaw: cur.timestamp,  // for click-through lookup into logs
+          label: cur.label,           // backend-humanized "Came online"/"Went offline"
+          inferred: false,
+        });
+      }
+
+      container.innerHTML = renderUptimeSvg(segments, windowStart, now, hours);
+
+      // Wire click-through on non-inferred segments. The leading
+      // inferred segment has no matching log row so it's non-clickable.
+      container.querySelectorAll('.uptime-segment').forEach(function(g) {
+        if (g.dataset.inferred === 'true') return;
+        g.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var ts = g.dataset.startTs;
+          if (!ts) return;
+          onUptimeSegmentClick(deviceId, ts);
+        });
+      });
+    }
+
+    // Parse a SQLite-formatted UTC timestamp to ms epoch. Matches the
+    // Z-suffix trick used in renderChart's annotation math so that
+    // comparisons against Date.now() are correct regardless of TZ.
+    function parseUtcTs(ts) {
+      if (!ts) return NaN;
+      return new Date(ts.replace(' ', 'T') + 'Z').getTime();
+    }
+
+    // Inverse of parseUtcTs — turn a ms epoch back into the SQLite
+    // "YYYY-MM-DD HH:MM:SS" UTC shape, so we can feed synthetic
+    // boundary timestamps (window edges, "now") through fmtTooltipTime
+    // and fmtChartTime and get display that's consistent with the
+    // existing chart axes and tooltips.
+    function formatSqliteUtc(ms) {
+      var d = new Date(ms);
+      if (isNaN(d.getTime())) return '';
+      var pad2 = function(n) { return String(n).padStart(2, '0'); };
+      return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate())
+        + ' ' + pad2(d.getUTCHours()) + ':' + pad2(d.getUTCMinutes()) + ':' + pad2(d.getUTCSeconds());
+    }
+
+    function uptimeColor(s) {
+      if (s.inferred || s.kind === 'unknown') return '#6b7280'; // gray
+      if (s.kind === 'online') return '#10b981';   // green — same hex as annColor('online')
+      if (s.kind === 'offline') return '#ef4444';  // red  — same hex as annColor('offline')
+      return '#6b7280';
+    }
+
+    function uptimeKindLabel(kind) {
+      if (kind === 'online') return 'Online';
+      if (kind === 'offline') return 'Offline';
+      if (kind === 'unknown') return 'Unknown';
+      return kind;
+    }
+
+    function uptimeTooltip(s) {
+      var durationMs = s.end - s.start;
+      var human = formatUptime(Math.max(0, Math.floor(durationMs / 1000)));
+      if (s.inferred) {
+        return 'Unknown — no state transition recorded before this point (' + human + ')';
+      }
+      var startHuman = fmtTooltipTime(formatSqliteUtc(s.start));
+      var endHuman = (Date.now() - s.end < 2000)
+        ? 'now'
+        : fmtTooltipTime(formatSqliteUtc(s.end));
+      var word = s.kind === 'online' ? 'Online' : 'Offline';
+      return word + ' for ' + human + ' (' + startHuman + ' → ' + endHuman + ')';
+    }
+
+    function renderUptimeSvg(segments, windowStart, windowEnd, hours) {
+      // Match the chart's data area so the strip aligns visually with
+      // the metric charts below it.
+      var W = 400, STRIP_H = 18, TOTAL_H = 30;
+      var pad = { left: 42, right: 10 };
+      var pw = W - pad.left - pad.right;
+      var windowMs = windowEnd - windowStart;
+      if (windowMs <= 0) return '';
+
+      function x(t) {
+        var clamped = Math.max(windowStart, Math.min(windowEnd, t));
+        return pad.left + ((clamped - windowStart) / windowMs) * pw;
+      }
+
+      var segHtml = segments.map(function(s) {
+        var x1 = x(s.start);
+        var x2 = x(s.end);
+        var w = Math.max(0.5, x2 - x1);
+        var color = uptimeColor(s);
+        var tip = uptimeTooltip(s);
+        return '<g class="uptime-segment"'
+          + ' data-kind="' + esc(s.kind) + '"'
+          + ' data-inferred="' + (s.inferred ? 'true' : 'false') + '"'
+          + (s.startTsRaw ? (' data-start-ts="' + esc(s.startTsRaw) + '"') : '')
+          + '>'
+          + '<title>' + esc(tip) + '</title>'
+          + '<rect x="' + x1.toFixed(1) + '" y="0" width="' + w.toFixed(1) + '" height="' + STRIP_H + '" fill="' + color + '"/>'
+          + '</g>';
+      }).join('');
+
+      var startLabel = fmtChartTime(formatSqliteUtc(windowStart), hours);
+
+      var svg = '<svg class="uptime-svg" viewBox="0 0 ' + W + ' ' + TOTAL_H + '" preserveAspectRatio="xMidYMid meet">'
+        + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="var(--border)" opacity="0.3"/>'
+        + segHtml
+        + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="none" stroke="var(--border)" stroke-width="0.5"/>'
+        + '<text class="uptime-axis-tick" x="' + pad.left + '" y="' + (STRIP_H + 10) + '" text-anchor="start">' + esc(startLabel) + '</text>'
+        + '<text class="uptime-axis-tick" x="' + (W - pad.right) + '" y="' + (STRIP_H + 10) + '" text-anchor="end">now</text>'
+        + '</svg>';
+
+      // Legend row — only kinds present, in stable order.
+      var kindsPresent = {};
+      segments.forEach(function(s) {
+        kindsPresent[s.inferred ? 'unknown' : s.kind] = true;
+      });
+      var legendOrder = ['online', 'offline', 'unknown'];
+      var items = legendOrder.filter(function(k) { return kindsPresent[k]; }).map(function(k) {
+        var swatchColor = uptimeColor({ kind: k, inferred: k === 'unknown' });
+        return '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + swatchColor + ';"></span>' + esc(uptimeKindLabel(k)) + '</span>';
+      }).join('');
+      var legendHtml = items ? '<div class="chart-legend" style="margin-top:0;">' + items + '</div>' : '';
+
+      return svg + legendHtml;
+    }
+
+    function renderUptimeEmptyRibbon(windowStart, windowEnd, hours) {
+      var W = 400, STRIP_H = 18, TOTAL_H = 30;
+      var pad = { left: 42, right: 10 };
+      var pw = W - pad.left - pad.right;
+      var startLabel = fmtChartTime(formatSqliteUtc(windowStart), hours);
+      return '<svg class="uptime-svg" viewBox="0 0 ' + W + ' ' + TOTAL_H + '" preserveAspectRatio="xMidYMid meet">'
+        + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="var(--border)" opacity="0.4"/>'
+        + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="none" stroke="var(--border)" stroke-width="0.5"/>'
+        + '<text class="uptime-empty-label" x="' + (pad.left + pw / 2) + '" y="' + (STRIP_H / 2 + 3) + '" text-anchor="middle">No state transitions in this window</text>'
+        + '<text class="uptime-axis-tick" x="' + pad.left + '" y="' + (STRIP_H + 10) + '" text-anchor="start">' + esc(startLabel) + '</text>'
+        + '<text class="uptime-axis-tick" x="' + (W - pad.right) + '" y="' + (STRIP_H + 10) + '" text-anchor="end">now</text>'
+        + '</svg>';
+    }
+
+    // Click on an uptime segment → activate the 'State' filter chip
+    // and flash-highlight the matching transition in the Recent Logs
+    // list. Mirrors the annotation-click-through pattern but targets
+    // 'state' specifically (not 'events') so the context is obvious:
+    // the user clicked an uptime segment, they want the state list.
+    function onUptimeSegmentClick(deviceId, ts) {
+      if (deviceId !== currentLogDeviceId) return;
+      setLogFilter('state').then(function() {
+        var sel = '.detail-section [data-ann-section="logs"][data-ann-ts="' + cssEscape(ts) + '"]';
+        var row = document.querySelector(sel);
+        if (row) {
+          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          row.classList.remove('annotation-flash');
+          void row.offsetWidth;
+          row.classList.add('annotation-flash');
+          setTimeout(function() { row.classList.remove('annotation-flash'); }, 1700);
+        }
+      });
     }
 
     /* ─── Recent Logs severity filter ────────────────────────────────
@@ -1704,6 +1945,14 @@
           </div>
         </div>`;
       }
+
+      // Uptime timeline — populated by renderUptimeTimeline after
+      // loadDetailCharts fetches the annotation set for this window.
+      // Re-renders on every setChartRange change via the same path.
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Uptime History</div>
+        <div id="detailUptimeTimeline" class="uptime-timeline" style="font-size:0.75rem;color:var(--text-faint);">Loading...</div>
+      </div>`;
 
       // Capabilities / controls
       if (dev.capabilities && dev.capabilities.length) {
