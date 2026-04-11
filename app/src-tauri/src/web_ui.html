@@ -1490,6 +1490,78 @@
       if (detailChartDeviceId) loadDetailCharts(detailChartDeviceId, detailChartCaps);
     }
 
+    /* ─── Recent Logs severity filter ────────────────────────────────
+       The detail panel's Recent Logs section has a chip row above the
+       list that lets the user filter by severity. 'Events' maps to the
+       multi-severity set (state/error/warn) that backs chart
+       annotations — same terminology as the Metrics tab legend.
+       The chip row is also what the annotation click-through activates
+       when it needs to reach a row outside the default recent-200
+       window, so the filter state is always visible to the user.
+       ─────────────────────────────────────────────────────────────── */
+    var currentLogDeviceId = null;
+    var currentLogFilter = '';
+
+    function logFilterToSevParam(filter) {
+      switch (filter) {
+        case 'events': return 'state,error,warn';
+        case 'state':  return 'state';
+        case 'error':  return 'error';
+        case 'warn':   return 'warn';
+        case 'info':   return 'info';
+        case 'debug':  return 'debug';
+        default: return '';
+      }
+    }
+
+    function renderLogsList(logs) {
+      if (!logs || !logs.length) return 'No logs recorded';
+      return '<div class="detail-log-list">' + logs.map(function(l) {
+        var sev = (l.severity || 'info').toLowerCase();
+        var time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
+        // data-ann-ts on every row lets onAnnotationClick locate the
+        // matching log entry and flash-highlight it. data-ann-section
+        // distinguishes log rows from firmware rows.
+        return '<div class="detail-log" data-ann-section="logs" data-ann-ts="' + esc(l.timestamp || '') + '">'
+          + '<span class="detail-log-sev ' + sev + '">' + esc(sev) + '</span>'
+          + '<span class="detail-log-msg">' + esc(l.message || '') + '</span>'
+          + '<span class="detail-log-time">' + esc(time) + '</span>'
+          + '</div>';
+      }).join('') + '</div>';
+    }
+
+    async function loadDeviceLogs(deviceId, filter) {
+      // Stale-check: if the user switched devices between the click and
+      // this call, bail — another loadDeviceLogs is already in flight
+      // for the new id and will render over our result.
+      if (deviceId !== currentLogDeviceId) return;
+      var url = '/api/devices/' + encodeURIComponent(deviceId) + '/logs?limit=200';
+      var sevParam = logFilterToSevParam(filter);
+      if (sevParam) url += '&severity=' + encodeURIComponent(sevParam);
+      var logs = null;
+      try { logs = await api(url); } catch (e) { /* null → 'No logs recorded' */ }
+      // Second stale check: the user may have switched devices while
+      // the fetch was in flight.
+      if (deviceId !== currentLogDeviceId) return;
+      var logsEl = document.getElementById('detailLogs');
+      if (!logsEl) return;
+      logsEl.innerHTML = renderLogsList(logs);
+    }
+
+    async function setLogFilter(filter) {
+      currentLogFilter = filter || '';
+      // Update chip active state across the row.
+      document.querySelectorAll('.log-filter-btn').forEach(function(b) {
+        b.classList.toggle('active', (b.dataset.sev || '') === currentLogFilter);
+      });
+      if (!currentLogDeviceId) return;
+      var logsEl = document.getElementById('detailLogs');
+      if (logsEl) {
+        logsEl.innerHTML = '<div style="font-size:0.8rem;color:var(--text-faint);">Loading...</div>';
+      }
+      await loadDeviceLogs(currentLogDeviceId, currentLogFilter);
+    }
+
     /* ─── Annotation click-through ───────────────────────────────────
        Triggered when the user clicks an annotation marker on any chart
        (device detail panel or Metrics tab). Opens the device detail
@@ -1535,25 +1607,13 @@
       }
       // For log annotations: the rendered "Recent Logs" list is capped
       // at 200 of any severity, which can push older state/error/warn
-      // entries out of view on devices with lots of info logs. Re-fetch
-      // with a severity filter so the matching row is guaranteed to be
-      // present, then re-render the section before scrolling.
+      // entries out of view on devices with lots of info logs. Switch
+      // the chip filter to 'Events' (state+error+warn) — this updates
+      // the visible chip state so the user can see why the list shrunk
+      // and can click 'All' to restore. The call awaits the re-render,
+      // so the matching row is in the DOM by the time we re-query it.
       try {
-        var filtered = await api('/api/devices/' + encodeURIComponent(deviceId) + '/logs?limit=200&severity=state,error,warn');
-        if (Array.isArray(filtered) && filtered.length) {
-          var logsEl = document.getElementById('detailLogs');
-          if (logsEl) {
-            logsEl.innerHTML = '<div class="detail-log-list">' + filtered.map(function(l) {
-              var sev = (l.severity || 'info').toLowerCase();
-              var time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
-              return '<div class="detail-log" data-ann-section="logs" data-ann-ts="' + esc(l.timestamp || '') + '">'
-                + '<span class="detail-log-sev ' + sev + '">' + esc(sev) + '</span>'
-                + '<span class="detail-log-msg">' + esc(l.message || '') + '</span>'
-                + '<span class="detail-log-time">' + esc(time) + '</span>'
-                + '</div>';
-            }).join('') + '</div>';
-          }
-        }
+        await setLogFilter('events');
       } catch (e) { /* fall through to the not-found toast */ }
       row = document.querySelector(selFor(ts));
       if (row) {
@@ -1574,6 +1634,12 @@
     async function openDeviceDetail(id) {
       const dev = devices.find(d => d.id === id);
       if (!dev) return;
+
+      // Reset log filter state for the new device. Without this, a
+      // filter set on the previous device would carry over to the new
+      // panel and the chip row would show a stale active state.
+      currentLogDeviceId = id;
+      currentLogFilter = '';
 
       const overlay = document.getElementById('detailOverlay');
       const panel = document.getElementById('detailPanel');
@@ -1675,9 +1741,28 @@
         <div id="detailFwList"></div>
       </div>`;
 
-      // Logs placeholder — loading
+      // Logs placeholder — loading. Chip row above the list lets the
+      // user filter by severity without needing an annotation click.
+      // 'Events' maps to state+error+warn (the annotation set) and is
+      // also what the annotation click-through fallback activates.
+      const logFilterChips = [
+        { sev: '',       label: 'All',    title: 'All severities'                    },
+        { sev: 'events', label: 'Events', title: 'State, warn, error (chart events)' },
+        { sev: 'state',  label: 'State',  title: 'Device online/offline transitions' },
+        { sev: 'error',  label: 'Error',  title: 'Error logs'                        },
+        { sev: 'warn',   label: 'Warn',   title: 'Warning logs'                      },
+        { sev: 'info',   label: 'Info',   title: 'Info logs'                         },
+        { sev: 'debug',  label: 'Debug',  title: 'Debug logs'                        },
+      ];
       html += `<div class="detail-section">
-        <div class="detail-section-title">Recent Logs</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;gap:0.5rem;flex-wrap:wrap;">
+          <div class="detail-section-title" style="margin-bottom:0;">Recent Logs</div>
+          <div class="chart-range-btns" style="flex-wrap:wrap;">
+            ${logFilterChips.map(function(c) {
+              return '<button class="chart-range-btn log-filter-btn ' + (c.sev === '' ? 'active' : '') + '" data-sev="' + c.sev + '" title="' + esc(c.title) + '" onclick="setLogFilter(\'' + c.sev + '\')">' + esc(c.label) + '</button>';
+            }).join('')}
+          </div>
+        </div>
         <div id="detailLogs" style="font-size:0.8rem;color:var(--text-faint);">Loading...</div>
       </div>`;
 
@@ -1693,25 +1778,10 @@
 
       const [logs, fwHist, rssiPts, heapPts] = await Promise.all([logsP, fwP, rssiP, heapP]);
 
-      // Render logs
+      // Render logs (via the shared helper that setLogFilter also uses)
       const logsEl = document.getElementById('detailLogs');
       if (logsEl) {
-        if (!logs || !logs.length) {
-          logsEl.textContent = 'No logs recorded';
-        } else {
-          logsEl.innerHTML = `<div class="detail-log-list">${logs.map(function(l) {
-            const sev = (l.severity || 'info').toLowerCase();
-            const time = l.timestamp ? l.timestamp.split(' ')[1] || l.timestamp : '';
-            // data-ann-ts on every row lets onAnnotationClick locate the
-            // matching log entry and flash-highlight it. data-ann-section
-            // distinguishes log rows from firmware rows below.
-            return `<div class="detail-log" data-ann-section="logs" data-ann-ts="${esc(l.timestamp || '')}">
-              <span class="detail-log-sev ${sev}">${esc(sev)}</span>
-              <span class="detail-log-msg">${esc(l.message || '')}</span>
-              <span class="detail-log-time">${esc(time)}</span>
-            </div>`;
-          }).join('')}</div>`;
-        }
+        logsEl.innerHTML = renderLogsList(logs);
       }
 
       // Render firmware history
@@ -1750,6 +1820,11 @@
       const panel = document.getElementById('detailPanel');
       panel.classList.add('hidden');
       setTimeout(function() { panel.style.display = 'none'; }, 200);
+      // Stop any in-flight loadDeviceLogs from writing into the closed
+      // panel's DOM. The stale-check in loadDeviceLogs bails when the
+      // deviceId no longer matches.
+      currentLogDeviceId = null;
+      currentLogFilter = '';
     }
 
     document.addEventListener('keydown', function(e) {
