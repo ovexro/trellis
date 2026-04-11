@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download } from "lucide-react";
 import {
@@ -29,6 +29,10 @@ interface ChartPoint {
   value: number;
   timestamp: string;
   time: number; // ms since epoch for numeric XAxis
+}
+
+interface AnnotationWithTime extends Annotation {
+  time: number;
 }
 
 interface MetricChartProps {
@@ -67,6 +71,16 @@ const ANN_LABEL: Record<string, string> = {
 // Stable legend order matches the :9090 dashboard.
 const LEGEND_ORDER = ["ota", "online", "offline", "warn", "error"];
 
+// Visual cap on markers rendered per chart. 200 × 6 charts × 2 (line + dot) =
+// 2400 Recharts children, which is enough to block the main thread on every
+// render and cause scroll jank (observed on Greenhouse). 40 per chart is
+// plenty for visual density on a 400px-wide plot and drops the total to a
+// manageable 480. If the backend returns more than the cap, we evenly
+// subsample across the window so the marker distribution still reflects the
+// full event stream. The legend still shows every kind that was present in
+// the full un-subsampled window.
+const MARKER_CAP_PER_CHART = 40;
+
 function annColor(kind: string): string {
   return ANN_COLOR[kind] ?? ANN_FALLBACK;
 }
@@ -80,7 +94,19 @@ function parseUtcMs(ts: string): number {
   return new Date(ts + "Z").getTime();
 }
 
-export default function MetricChart({
+// Evenly pick up to `cap` items from `src`, preserving the first and last
+// element so the visual window boundaries are always marked.
+function subsample<T>(src: T[], cap: number): T[] {
+  if (src.length <= cap) return src;
+  const out: T[] = [];
+  const step = (src.length - 1) / (cap - 1);
+  for (let i = 0; i < cap; i++) {
+    out.push(src[Math.round(i * step)]);
+  }
+  return out;
+}
+
+function MetricChartImpl({
   deviceId,
   metricId,
   label,
@@ -90,87 +116,152 @@ export default function MetricChart({
   const [data, setData] = useState<ChartPoint[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [hours, setHours] = useState(1);
-  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    loadData();
-    const interval = setInterval(loadData, 10000); // Refresh every 10s
-    return () => clearInterval(interval);
-  }, [deviceId, metricId, hours]);
-
-  const loadData = async () => {
-    setLoading(true);
+  // Metrics refresh is hot — new sensor readings arrive every ~5s from live
+  // WS broadcasts, so we re-fetch the line data on an interval. Annotations
+  // are cold — they only change when a new event is logged (OTA / state
+  // change / error / warn), so they're loaded once per deps change and never
+  // on the interval. Splitting these two halves the per-tick Tauri work and,
+  // more importantly, stops the expensive annotation re-render (up to 40
+  // ReferenceLine + 40 ReferenceDot per chart) from firing every 10s.
+  const loadMetrics = useCallback(async () => {
     try {
-      // Fetch metrics + annotations in parallel — single render pass, no
-      // flicker when annotations land a tick after the line.
-      const [points, anns] = await Promise.all([
-        invoke<MetricPoint[]>("get_metrics", { deviceId, metricId, hours }),
-        invoke<Annotation[]>("get_device_annotations", { deviceId, hours }),
-      ]);
+      const points = await invoke<MetricPoint[]>("get_metrics", {
+        deviceId,
+        metricId,
+        hours,
+      });
       setData(
         points.map((p) => ({
           ...p,
           time: parseUtcMs(p.timestamp),
         }))
       );
-      setAnnotations(anns);
     } catch (err) {
       console.error("Failed to load metrics:", err);
-    } finally {
-      setLoading(false);
     }
-  };
+  }, [deviceId, metricId, hours]);
 
-  const formatTime = (ms: number) => {
-    const d = new Date(ms);
-    if (isNaN(d.getTime())) return "";
-    if (hours <= 1) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    if (hours <= 24) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit" });
-  };
+  const loadAnnotations = useCallback(async () => {
+    try {
+      const anns = await invoke<Annotation[]>("get_device_annotations", {
+        deviceId,
+        hours,
+      });
+      setAnnotations(anns);
+    } catch (err) {
+      console.error("Failed to load annotations:", err);
+    }
+  }, [deviceId, hours]);
 
-  const formatTooltipTime = (ms: number) => {
-    const d = new Date(ms);
-    if (isNaN(d.getTime())) return "";
-    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${months[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  };
+  // Annotations: load once per deps change, never on the interval.
+  useEffect(() => {
+    loadAnnotations();
+  }, [loadAnnotations]);
 
-  // Derive the plot window + y-axis domain from the data points themselves.
-  // We need explicit y bounds (with headroom at the top) so ReferenceDot
-  // markers can anchor at a predictable "near top of plot" y value instead
-  // of being clipped by the auto-domain.
-  const vals = data.map((p) => p.value);
-  const rawMin = vals.length ? Math.min(...vals) : 0;
-  const rawMax = vals.length ? Math.max(...vals) : 1;
-  const ySpan = (rawMax - rawMin) || 1;
-  const yMin = rawMin - ySpan * 0.1;
-  const yMax = rawMax + ySpan * 0.18; // extra headroom for the marker row
-  const markerY = rawMax + ySpan * 0.14;
+  // Metrics: load immediately, then refresh every 10s. Each chart gets a
+  // random 0-10s offset on its first interval tick so six charts on a
+  // multi-sensor device (e.g. Greenhouse) don't all fire on the same
+  // millisecond — that was the "half-second stall every 10s" the user
+  // observed after the P1(a) perf pass. Spreading the ticks across the
+  // window keeps peak per-tick work at 1 chart's worth instead of 6x.
+  useEffect(() => {
+    let cancelled = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    loadMetrics();
+    const initialOffset = Math.random() * 10000;
+    const firstTick = setTimeout(() => {
+      if (cancelled) return;
+      loadMetrics();
+      interval = setInterval(loadMetrics, 10000);
+    }, initialOffset);
+    return () => {
+      cancelled = true;
+      clearTimeout(firstTick);
+      if (interval !== null) clearInterval(interval);
+    };
+  }, [loadMetrics]);
 
-  const firstTime = data.length ? data[0].time : 0;
-  const lastTime = data.length ? data[data.length - 1].time : 0;
+  // Loading-state is only used by the empty-state placeholder below. Since
+  // we now never flip it to true on a live refresh (only the initial load
+  // matters for the placeholder), we can track it as a plain boolean that
+  // flips false once the first successful load lands.
+  const loading = data.length === 0;
 
-  // Filter annotations to those inside the visible window. Also drop any
-  // whose timestamp fails to parse. `inWindow` is what feeds the legend
-  // row — only kinds that actually landed on the chart are shown.
-  const inWindow = data.length >= 2
-    ? annotations
+  const formatTime = useCallback(
+    (ms: number) => {
+      const d = new Date(ms);
+      if (isNaN(d.getTime())) return "";
+      if (hours <= 1) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      if (hours <= 24) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit" });
+    },
+    [hours]
+  );
+
+  // All derived state in one memo so it recomputes only when data or
+  // annotations change. Scroll and parent re-renders no longer re-run the
+  // O(n) filter/sort/set operations.
+  const derived = useMemo(() => {
+    if (data.length === 0) {
+      return {
+        yMin: 0,
+        yMax: 1,
+        markerY: 0.9,
+        inWindow: [] as AnnotationWithTime[],
+        legendKinds: [] as string[],
+      };
+    }
+    const vals = data.map((p) => p.value);
+    const rawMin = Math.min(...vals);
+    const rawMax = Math.max(...vals);
+    const ySpan = (rawMax - rawMin) || 1;
+    const yMin = rawMin - ySpan * 0.1;
+    const yMax = rawMax + ySpan * 0.18;
+    const markerY = rawMax + ySpan * 0.14;
+
+    const firstTime = data[0].time;
+    const lastTime = data[data.length - 1].time;
+
+    // Filter annotations to those inside the visible window.
+    let inWindow: AnnotationWithTime[] = [];
+    if (data.length >= 2) {
+      inWindow = annotations
         .map((a) => ({ ...a, time: parseUtcMs(a.timestamp) }))
-        .filter((a) => !isNaN(a.time) && a.time >= firstTime && a.time <= lastTime)
-    : [];
+        .filter((a) => !isNaN(a.time) && a.time >= firstTime && a.time <= lastTime);
+    }
 
-  // Build the legend row — stable order, unknown kinds appended at the end.
-  const presentKinds = new Set(inWindow.map((a) => a.kind));
-  const legendKinds: string[] = [];
-  LEGEND_ORDER.forEach((k) => { if (presentKinds.has(k)) legendKinds.push(k); });
-  inWindow.forEach((a) => {
-    if (!legendKinds.includes(a.kind)) legendKinds.push(a.kind);
-  });
+    // Build the legend row from the FULL in-window set, before capping,
+    // so "kinds present in window" is accurate even when we subsample the
+    // visible markers for performance.
+    const presentKinds = new Set(inWindow.map((a) => a.kind));
+    const legendKinds: string[] = [];
+    LEGEND_ORDER.forEach((k) => {
+      if (presentKinds.has(k)) legendKinds.push(k);
+    });
+    inWindow.forEach((a) => {
+      if (!legendKinds.includes(a.kind)) legendKinds.push(a.kind);
+    });
+
+    // Cap visible markers so multi-chart pages (e.g. Greenhouse with 4
+    // sensors + 2 system metrics = 6 charts) don't paint thousands of
+    // SVG elements. See `MARKER_CAP_PER_CHART` comment for rationale.
+    const capped = subsample(inWindow, MARKER_CAP_PER_CHART);
+
+    return { yMin, yMax, markerY, inWindow: capped, legendKinds };
+  }, [data, annotations]);
+
+  const { yMin, yMax, markerY, inWindow, legendKinds } = derived;
 
   return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+    <div
+      className="bg-zinc-900 border border-zinc-800 rounded-xl p-4"
+      // Paint containment: the chart's SVG and its own hover state don't
+      // leak paint invalidations into the surrounding page. Critical when
+      // multiple charts are stacked and the user scrolls — without this,
+      // the browser repaints all charts on every scroll tick.
+      style={{ contain: "layout paint" }}
+    >
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-sm font-semibold text-zinc-300">
           {label}
@@ -244,7 +335,6 @@ export default function MetricChart({
                 stroke="#52525b"
                 tick={{ fontSize: 10 }}
                 width={40}
-                allowDataOverflow={false}
               />
               <Tooltip
                 contentStyle={{
@@ -268,11 +358,11 @@ export default function MetricChart({
                 activeDot={{ r: 3 }}
                 isAnimationActive={false}
               />
-              {/* Annotations: vertical dashed line (decorative) + circle marker
-                  at the top of the plot area. One <ReferenceLine> and one
-                  <ReferenceDot> per in-window annotation. Colors match the
-                  :9090 palette and the native SVG <title> element provides
-                  the hover tooltip text without wiring Recharts Tooltip. */}
+              {/* Annotations: one <ReferenceLine> + one <ReferenceDot> per
+                  in-window event. Visible markers are capped via subsample()
+                  so multi-chart pages stay responsive. Uses Recharts' built-in
+                  dot (no custom shape closure) — drops the previous native
+                  <title> hover tooltip as a minor trade-off for render speed. */}
               {inWindow.map((a, i) => {
                 const c = annColor(a.kind);
                 return (
@@ -288,7 +378,6 @@ export default function MetricChart({
               })}
               {inWindow.map((a, i) => {
                 const c = annColor(a.kind);
-                const tipText = `${annLabelText(a.kind)} — ${a.label || ""} (${formatTooltipTime(a.time)})`;
                 return (
                   <ReferenceDot
                     key={`ann-dot-${i}`}
@@ -299,21 +388,6 @@ export default function MetricChart({
                     stroke="#0a0a0a"
                     strokeWidth={1}
                     ifOverflow="extendDomain"
-                    shape={(props: any) => (
-                      <g className="chart-annotation" style={{ cursor: "pointer" }}>
-                        <title>{tipText}</title>
-                        {/* 6px transparent hit target for touch */}
-                        <circle cx={props.cx} cy={props.cy} r={6} fill="transparent" />
-                        <circle
-                          cx={props.cx}
-                          cy={props.cy}
-                          r={3}
-                          fill={c}
-                          stroke="#0a0a0a"
-                          strokeWidth={1}
-                        />
-                      </g>
-                    )}
                   />
                 );
               })}
@@ -338,3 +412,9 @@ export default function MetricChart({
     </div>
   );
 }
+
+// Memoized so DeviceDetail re-renders (e.g. device-store updates from live
+// WS events) don't cascade into all 6 charts on pages like Greenhouse. Props
+// are all primitives so the default shallow compare is correct.
+const MetricChart = memo(MetricChartImpl);
+export default MetricChart;
