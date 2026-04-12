@@ -51,6 +51,7 @@ public:
   // Update values
   void setSensor(const char* id, float value);
   void setSwitch(const char* id, bool value);
+  void setSlider(const char* id, float value);
   void setText(const char* id, const char* value);
   void setColor(const char* id, const char* value);
 

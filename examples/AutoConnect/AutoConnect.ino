@@ -22,6 +22,7 @@ void setup() {
   trellis.setFirmwareVersion("1.0.0");
 
   trellis.addSwitch("led", "Built-in LED", 2);
+  trellis.addSlider("brightness", "LED Brightness", 0, 100, 4);
   trellis.addSensor("temp", "Temperature", "C");
 
   // No WiFi credentials needed — uses stored creds or starts provisioning AP

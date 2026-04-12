@@ -166,6 +166,22 @@ void Trellis::addSlider(const char* id, const char* label, float min, float max,
   _capabilities[idx].gpio = gpio;
   _capabilities[idx].floatValue = min;
   pinMode(gpio, OUTPUT);
+
+  // Restore last-known value from NVS so the slider resumes across reboots.
+  // PWM is applied immediately so hardware state matches before the first
+  // client connects and reads /api/info.
+#if defined(ESP32)
+  Preferences prefs;
+  prefs.begin("trellis_cap", true);
+  if (prefs.isKey(id)) {
+    float stored = prefs.getFloat(id, min);
+    _capabilities[idx].floatValue = stored;
+    int pwmVal = map((long)(stored), (long)(min), (long)(max), 0, 255);
+    analogWrite(gpio, pwmVal);
+    Serial.printf("[Trellis] Restored slider '%s' = %.1f from NVS\n", id, stored);
+  }
+  prefs.end();
+#endif
 }
 
 void Trellis::addColor(const char* id, const char* label) {
@@ -192,6 +208,15 @@ void Trellis::setSwitch(const char* id, bool value) {
   if (cap && cap->type == CapabilityType::SWITCH) {
     cap->boolValue = value;
     digitalWrite(cap->gpio, value ? HIGH : LOW);
+  }
+}
+
+void Trellis::setSlider(const char* id, float value) {
+  Capability* cap = findCapability(id);
+  if (cap && cap->type == CapabilityType::SLIDER) {
+    cap->floatValue = value;
+    int pwmVal = map((long)(value), (long)(cap->minValue), (long)(cap->maxValue), 0, 255);
+    analogWrite(cap->gpio, pwmVal);
   }
 }
 
