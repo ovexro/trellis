@@ -22,15 +22,15 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   - ~~**(c) New `<UptimeTimeline>` component**~~ — ✅ **shipped**. `UptimeTimeline.tsx` derives online/offline/unknown segments from annotations (same algorithm as `renderUptimeTimeline()` in `web_ui.html`), renders SVG ribbon with stat line (online %, tracked span, transitions) and legend. Uses existing `get_device_annotations` Tauri command — no new backend work. Slotted into `DeviceDetail.tsx` between System stats and Sensor Charts with its own time range picker. Perf: `memo`, `useMemo`, CSS containment, no closure SVG props, no polling interval.
 
   **P2 — consistency polish** (batch into one session):
-  - **(d) Annotation click-through** — chart marker click opens the relevant log filter (Events) and scrolls/flash-highlights the matching row. Requires (b) in place. Cross-component coordination via imperative handle on `<DeviceLogs>` or a shared zustand slice. P1(a) markers already carry kind/timestamp/label via the custom-shape closure — wire up onClick on the `<g className="chart-annotation">` group to a new callback prop on `<MetricChart>`.
-  - **(e) Uptime ribbon segment click** — same click-through pattern, activates State filter and highlights matching state-transition log row.
-  - **(f) Visual parity polish** — crosshair width, grid color, tooltip style alignment between Recharts and the `:9090` hand-rolled SVG. Optional.
+  - ~~**(d) Annotation click-through**~~ — ✅ **shipped**. `MetricChart.tsx` accepts `onAnnotationClick` callback, Recharts `ReferenceDot` onClick + cursor-pointer. `DeviceDetail.tsx` mediates via `useRef<DeviceLogsHandle>`. `DeviceLogs.tsx` converted to `forwardRef` with `useImperativeHandle` exposing `scrollToLog(timestamp, targetFilter)`. Tries current DOM first, then switches filter chip and retries after refetch. Flash-highlight via CSS `annFlash` keyframe (amber 1.5s fade). OTA annotations skipped (firmware history click-through not in scope).
+  - ~~**(e) Uptime ribbon segment click**~~ — ✅ **shipped**. `UptimeTimeline.tsx` accepts `onSegmentClick` callback, non-inferred segments carry `annotationTs` from the original annotation. Click activates the `State` filter chip and scrolls to the matching transition log row. Same `scrollToLog` path as annotation click-through.
+  - ~~**(f) Visual parity polish**~~ — ✅ **shipped**. Cursor pointer on annotation dots and uptime segments. Hover brightness effect (`filter: brightness(1.3)`) on uptime segments via `.uptime-seg-hover:hover` CSS class.
 
   **P3 — explicitly out of scope for parity effort:**
   - Top-level Metrics tab (the `:9090` dashboard has one; desktop does not). That's a new feature, not a parity gap. Track separately if pursued.
   - Replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
 
-  **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). N+4 = (d)+(e)+(f) cleanup.
+  **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). ~~N+4 = (d)+(e)+(f) cleanup~~ (done). **All P1+P2 sub-tasks shipped. Only P3 out-of-scope items remain.**
 
 - **Add LED brightness slider polish to AutoConnect.ino** — the brightness slider is now live on the ESP32 but hasn't been hardened. Candidates: (1) persist value across reboots to NVS so brightness resumes, (2) sync initial value to the dashboard on discovery (currently shows whatever PWM duty is active), (3) confirm/document how it shares GPIO 2 with the existing LED switch. Needs an ESP32 re-flash.
 
