@@ -12,14 +12,14 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   1. ~~Chart event annotations (OTA/state/error/warn)~~ — ✅ **shipped** as P1(a); Recharts `<ReferenceLine>` + `<ReferenceDot>` pair per annotation, numeric-time XAxis, kind-present-only legend below chart, native SVG `<title>` tooltip. New Rust `get_device_annotations` Tauri command wraps existing `Database::get_annotations`.
   2. Annotation click-through (marker → scroll+highlight log row) — missing; depends on #3 first
   3. ~~Recent Logs chip row~~ — ✅ **shipped** as P1(b); 7-chip row (All/Events/State/Error/Warn/Info/Debug) with server-side re-fetch, stale-fetch guard, live-log filter guard, `key={device.id}` remount on device switch for filter reset parity. Rust `get_device_logs` now takes optional comma-separated `severity` arg.
-  4. Uptime timeline ribbon — missing; no React equivalent
-  5. Uptime stat line (`NN.N% online · Xd Yh tracked · N transitions`) — missing
+  4. ~~Uptime timeline ribbon~~ — ✅ **shipped** as P1(c); SVG ribbon + stat line + legend via `UptimeTimeline.tsx`
+  5. ~~Uptime stat line~~ — ✅ **shipped** as part of P1(c); included in `UptimeTimeline.tsx` stat line row
   6. Chart range picker (`1h/6h/24h/7d`) — ✅ already parity via Recharts
 
   **P1 — ship-blocker parity sub-tasks** (each a self-contained session):
   - ~~**(a) Chart annotations overlay on `MetricChart.tsx`**~~ — ✅ **shipped**. Added `get_device_annotations` Tauri command (`commands.rs` + `lib.rs` handler). `MetricChart.tsx` switched to `type="number"` XAxis with `time` field (ms), fetches metrics + annotations in parallel via `Promise.all`, renders `<ReferenceLine>` (dashed, opacity 0.7) + `<ReferenceDot>` (custom shape with transparent 6px hit target + 3px visible circle + native `<title>`) per in-window annotation. Legend row below chart shows only kinds present, in stable order (`ota, online, offline, warn, error`). Colors/labels mirror `annColor()`/`annLabel()` in `web_ui.html` exactly. YAxis uses explicit `[yMin - 10%, yMax + 18%]` domain so the marker row at `rawMax + 14%` sits predictably near the top of the plot.
   - ~~**(b) Recent Logs chip row parity in `DeviceLogs.tsx`**~~ — ✅ **shipped**. Severity arg on `get_device_logs` maps to existing `Database::get_logs_filtered`. `DeviceLogs.tsx` rewritten with 7 chips, fetchGenRef stale-fetch guard, filterRef for live-log listener. `DeviceDetail.tsx` passes `key={device.id}` so the component remounts (resetting filter to "all") on device switch, matching the `:9090` reset behavior.
-  - **(c) New `<UptimeTimeline>` component** — fetches annotations, derives segments client-side the same way `renderUptimeTimeline()` in `web_ui.html` does (green=online / red=offline / gray=leading unknown, last segment extends to "now"), renders SVG ribbon + stat line above it. Slot into `DeviceDetail.tsx` between System stats and Sensor Charts. Can reuse the new `get_device_annotations` Tauri command from P1(a).
+  - ~~**(c) New `<UptimeTimeline>` component**~~ — ✅ **shipped**. `UptimeTimeline.tsx` derives online/offline/unknown segments from annotations (same algorithm as `renderUptimeTimeline()` in `web_ui.html`), renders SVG ribbon with stat line (online %, tracked span, transitions) and legend. Uses existing `get_device_annotations` Tauri command — no new backend work. Slotted into `DeviceDetail.tsx` between System stats and Sensor Charts with its own time range picker. Perf: `memo`, `useMemo`, CSS containment, no closure SVG props, no polling interval.
 
   **P2 — consistency polish** (batch into one session):
   - **(d) Annotation click-through** — chart marker click opens the relevant log filter (Events) and scrolls/flash-highlights the matching row. Requires (b) in place. Cross-component coordination via imperative handle on `<DeviceLogs>` or a shared zustand slice. P1(a) markers already carry kind/timestamp/label via the custom-shape closure — wire up onClick on the `<g className="chart-annotation">` group to a new callback prop on `<MetricChart>`.
@@ -30,7 +30,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   - Top-level Metrics tab (the `:9090` dashboard has one; desktop does not). That's a new feature, not a parity gap. Track separately if pursued.
   - Replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
 
-  **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). N+3 = (c) uptime timeline. N+4 = (d)+(e)+(f) cleanup.
+  **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). N+4 = (d)+(e)+(f) cleanup.
 
 - **Add LED brightness slider polish to AutoConnect.ino** — the brightness slider is now live on the ESP32 but hasn't been hardened. Candidates: (1) persist value across reboots to NVS so brightness resumes, (2) sync initial value to the dashboard on discovery (currently shows whatever PWM duty is active), (3) confirm/document how it shares GPIO 2 with the existing LED switch. Needs an ESP32 re-flash.
 
