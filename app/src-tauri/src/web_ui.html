@@ -531,7 +531,7 @@
     }
     .chart-range-btn:hover { color: var(--text-dim); border-color: var(--text-faint); }
     .chart-range-btn.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
-    .chart-svg { display: block; width: 100%; }
+    .chart-svg { display: block; width: 100%; touch-action: pan-y pinch-zoom; }
     .chart-tooltip {
       position: absolute; background: var(--card); border: 1px solid var(--border);
       border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-size: 0.7rem;
@@ -620,8 +620,8 @@
       .detail-grid { grid-template-columns: 1fr; }
       .detail-log-list { max-height: 200px; }
       .detail-stat-value { font-size: 0.8rem; }
-      .chart-range-btns { gap: 0.15rem; }
-      .chart-range-btn { padding: 0.15rem 0.35rem; font-size: 0.6rem; }
+      .chart-range-btns { gap: 0.25rem; flex-wrap: wrap; }
+      .chart-range-btn { padding: 0.4rem 0.55rem; font-size: 0.65rem; min-height: 2rem; }
       .metrics-chart-grid { grid-template-columns: 1fr; }
       .metrics-device-section { padding: 0.75rem; }
     }
@@ -1648,10 +1648,8 @@
       var trackedStr = formatUptime(Math.floor(knownMs / 1000));
       var transStr = transitions + ' transition' + (transitions === 1 ? '' : 's');
       return '<div class="uptime-stat-line">'
-        + '<span class="uptime-stat-pct">' + esc(pctStr) + ' online</span>'
-        + '<span class="uptime-stat-sep">·</span>'
-        + '<span>' + esc(trackedStr) + ' tracked</span>'
-        + '<span class="uptime-stat-sep">·</span>'
+        + '<span style="white-space:nowrap;"><span class="uptime-stat-pct">' + esc(pctStr) + ' online</span> <span class="uptime-stat-sep">·</span></span>'
+        + '<span style="white-space:nowrap;">' + esc(trackedStr) + ' tracked <span class="uptime-stat-sep">·</span></span>'
         + '<span>' + esc(transStr) + '</span>'
         + '</div>';
     }
