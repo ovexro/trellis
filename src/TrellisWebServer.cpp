@@ -171,6 +171,15 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
       case CapabilityType::SWITCH: {
         bool val = doc["value"].as<bool>();
         _trellis->setSwitch(id, val);
+        // Persist to NVS so the value survives reboots (ESP32 only)
+#if defined(ESP32)
+        {
+          Preferences prefs;
+          prefs.begin("trellis_cap", false);
+          prefs.putBool(id, val);
+          prefs.end();
+        }
+#endif
         broadcastUpdate(id, val);
         break;
       }

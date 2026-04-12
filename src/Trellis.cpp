@@ -149,6 +149,19 @@ void Trellis::addSwitch(const char* id, const char* label, int gpio) {
   _capabilities[idx].boolValue = false;
   pinMode(gpio, OUTPUT);
   digitalWrite(gpio, LOW);
+
+  // Restore last-known value from NVS so the switch resumes across reboots.
+#if defined(ESP32)
+  Preferences prefs;
+  prefs.begin("trellis_cap", true);
+  if (prefs.isKey(id)) {
+    bool stored = prefs.getBool(id, false);
+    _capabilities[idx].boolValue = stored;
+    digitalWrite(gpio, stored ? HIGH : LOW);
+    Serial.printf("[Trellis] Restored switch '%s' = %s from NVS\n", id, stored ? "ON" : "OFF");
+  }
+  prefs.end();
+#endif
 }
 
 void Trellis::addSensor(const char* id, const char* label, const char* unit) {
