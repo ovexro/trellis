@@ -2,6 +2,34 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.8] — 2026-04-12
+
+The GitHub OTA + accessibility release. OTA firmware updates can now be pulled directly from any public GitHub repository's Releases page — both in the desktop app and the web dashboard. Accessibility improvements bring focus trapping, keyboard navigation, and mobile touch polish to the web dashboard. Several internal audits close out low-priority backlog items.
+
+### Added
+
+- **OTA firmware updates from GitHub Releases.** New "Update from GitHub Release" section on the desktop OTA page. Enter a GitHub `owner/repo` (or full URL), the app fetches releases via the GitHub API and shows `.bin` and `.bin.gz` firmware assets with tag, date, and file size. One-click Flash downloads the asset and pushes it through the existing OTA pipeline. `.bin.gz` files are auto-decompressed via `flate2` before serving. Per-device repo binding persisted in the settings table. Two new Tauri commands (`check_github_releases`, `start_github_ota`) and two REST API endpoints (`GET /api/github/releases`, `POST /api/github/ota`).
+- **Web dashboard GitHub OTA.** "Update from GitHub" section in the `:9090` device detail panel (ESP32 + admin + online only). Repo input, release dropdown with Flash buttons, version comparison against current firmware, per-device repo persistence. Confirmation dialog before flashing. Uses the same REST API endpoints as the desktop app.
+
+### Fixed
+
+- **Mobile touch polish on web dashboard.** Chart containers now use `touch-action: pan-y pinch-zoom` so touch-scrolling works alongside chart interaction. Touch targets bumped to `min-height: 2rem`. Stat line separators wrapped with `white-space: nowrap` to prevent awkward mid-separator line breaks on narrow viewports.
+- **Focus trap in device detail panel.** Tab / Shift+Tab trapped inside the panel when open, Escape returns focus to the trigger element, `aria-hidden` on background content, `role="dialog" aria-modal="true"` on the panel.
+- **Keyboard-accessible Details links.** Device card "Details" link is now Tab-reachable (`href="#"`, Enter opens panel). Metrics tab device headers gain `tabindex="0"`, `role="button"`, and Enter/Space handlers.
+- **Stale-fetch guard for charts, firmware, and sparklines.** Added device-ID checks after async fetches in `openDeviceDetail` and `loadDetailCharts` to prevent stale data from a previous device being written into a newly opened panel.
+- **OTA page subtitle updated** to mention GitHub Releases as a firmware source.
+
+### Audited (no changes needed)
+
+- `cssEscape` usage on uptime ribbon segment click — both paths correctly escape timestamps.
+- Data retention scope — `firmware_history` and `alerts` tables confirmed to not need pruning (negligible automatic growth).
+- WebSocket push rate limiting — `/ws` upgrade hits the same `rate_limiter.check()` as REST endpoints; full parity confirmed.
+
+### Verified
+
+- Hardware test on real ESP32 (greenhouse-controller, 192.168.1.108). LED toggle round-trip confirmed, telemetry flowing (RSSI, heap, temp, humidity), MQTT bridge connected. Library code byte-identical to v0.4.7 — no re-flash needed.
+- GitHub OTA tested with arendst/Tasmota (140 `.bin` assets) and Aircoookie/WLED (`.bin` + `.bin.gz`).
+
 ## [0.4.7] — 2026-04-12
 
 The DeviceDetail parity + persistence release. The React desktop page now matches every observability surface from the `:9090` web dashboard: chart annotations, severity filter chips, uptime timeline with stat line, annotation click-through, and uptime segment click. Dense transition regions on the uptime ribbon collapse into striped cluster bars. The Arduino library gains NVS persistence — slider and switch values survive reboots on ESP32. Hardware-tested on a real ESP32 (NVS round-trips for both switches and sliders confirmed across multiple reboots).
