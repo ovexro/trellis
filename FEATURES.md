@@ -96,9 +96,16 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] `addSensor(id, label, unit)` — read-only value
 - [x] `setSensor(id, value)` — update sensor reading
 - [x] `addSlider(id, label, min, max, gpio)` — PWM output
+- [x] `setSlider(id, value)` — update slider value + apply PWM
 - [x] `addColor(id, label)` — RGB value
 - [x] `addText(id, label)` — text display/input
 - [x] `onCommand(callback)` — custom command handler
+
+### NVS Persistence (v0.4.7, ESP32 only)
+- [x] Switch values persist across reboots — GPIO state applied on boot before first client connects
+- [x] Slider values persist across reboots — PWM duty applied on boot before first client connects
+- [x] Shared `trellis_cap` NVS namespace, keyed by capability ID (max 15 chars)
+- [x] Pico W degrades gracefully — values start at defaults, no persistence
 
 ### Networking
 - [x] WiFi connection with timeout
