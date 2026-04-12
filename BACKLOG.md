@@ -34,7 +34,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Uptime timeline polish pass — remaining candidates**:
   - ~~Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.~~ — ✅ **shipped** (ca8b632). Expand-on-hover deferred — the tooltip shows transition count + timespan which is sufficient.
-  - Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.
+  - ~~Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.~~ — ✅ **shipped** (4d1a6ca). Compact 10px ribbon per device with online % label, reuses existing annotation fetch.
 
 - **Polish-pass sweep of the detail panel on a real phone** — filter chip mobile layout, uptime strip mobile layout, uptime stat line mobile wrapping, tab-key focus order, keyboard shortcut to open the panel from the device list, ensure chip/strip/stat-line state clears correctly on device switch. Requires real phone testing.
 
