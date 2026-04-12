@@ -50,6 +50,8 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Voice assistant integration research** — investigate Sinric Pro or direct Alexa/Google Home paths. Requires MQTT bridge (already shipped) as prerequisite.
 
+- **Web dashboard GitHub OTA** — the REST API endpoints (`GET /api/github/releases`, `POST /api/github/ota`) are live but the `:9090` web dashboard doesn't have a UI for them yet. The desktop React OTA page has the full feature. Adding a GitHub OTA section to `web_ui.html` would give remote users (via tunnel) the same capability.
+
 ## Known follow-ups
 
 Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anything.

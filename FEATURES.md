@@ -52,6 +52,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Firmware version tracking (history per device, stored in SQLite)
 - [x] Firmware rollback (one-click re-flash previous firmware)
 - [x] Firmware version comparison (current vs new)
+- [x] **OTA from GitHub Releases (post-v0.4.7)** — point to any GitHub repo (`owner/repo` or full URL), app fetches releases via GitHub API, shows .bin firmware assets with tag/date/size, one-click download + flash via existing OTA pipeline. Per-device repo binding persisted in settings. Version comparison highlights the release matching the device's current firmware. REST API endpoints (`GET /api/github/releases`, `POST /api/github/ota`) enable the same flow from the web dashboard. Completes Tier 4 "Firmware OTA from GitHub".
 
 ### Settings & Preferences
 - [x] Dark theme (default)
