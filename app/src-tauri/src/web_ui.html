@@ -600,6 +600,11 @@
     .metrics-status-dot {
       display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
     }
+    .metrics-uptime-row {
+      display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;
+    }
+    .metrics-uptime-strip { flex: 1; min-width: 0; }
+    .metrics-uptime-pct { font-size: 0.7rem; color: var(--text-dim); white-space: nowrap; flex-shrink: 0; }
     .metrics-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 
     @media (max-width: 640px) {
@@ -1829,6 +1834,70 @@
         + '</svg>';
     }
 
+    // Compact uptime ribbon for the Metrics tab — no axis labels, no
+    // legend, edge-to-edge. Returns {svg, pct} where pct is the online
+    // percentage string (or null if no transitions).
+    function renderMiniUptimeRibbon(annotations, windowStart, windowEnd) {
+      var windowMs = windowEnd - windowStart;
+      if (windowMs <= 0) return { svg: '', pct: null };
+
+      var states = (annotations || []).filter(function(a) {
+        if (a.kind !== 'online' && a.kind !== 'offline') return false;
+        var ts = parseUtcTs(a.timestamp);
+        return !isNaN(ts) && ts >= windowStart && ts <= windowEnd;
+      });
+      if (states.length === 0) return { svg: '', pct: null };
+
+      var segs = [];
+      var firstTs = parseUtcTs(states[0].timestamp);
+      if (firstTs > windowStart) {
+        segs.push({ kind: 'unknown', start: windowStart, end: firstTs, inferred: true });
+      }
+      for (var i = 0; i < states.length; i++) {
+        var curTs = parseUtcTs(states[i].timestamp);
+        var nextTs = (i + 1 < states.length) ? parseUtcTs(states[i + 1].timestamp) : windowEnd;
+        if (nextTs <= curTs) continue;
+        segs.push({ kind: states[i].kind, start: curTs, end: nextTs, inferred: false });
+      }
+
+      // Compute online %
+      var knownMs = 0, onlineMs = 0;
+      segs.forEach(function(s) {
+        if (s.inferred) return;
+        var dur = Math.max(0, s.end - s.start);
+        knownMs += dur;
+        if (s.kind === 'online') onlineMs += dur;
+      });
+      var pct = null;
+      if (knownMs > 0) {
+        var p = (onlineMs / knownMs) * 100;
+        pct = p >= 99.95 ? '100%' : (p < 0.05 ? '<0.1%' : p.toFixed(1) + '%');
+      }
+
+      // Cluster narrow segments
+      var displaySegs = clusterUptimeSegments(segs, windowMs);
+
+      var W = 400, H = 10;
+      function x(t) {
+        return ((Math.max(windowStart, Math.min(windowEnd, t)) - windowStart) / windowMs) * W;
+      }
+      var rects = displaySegs.map(function(s) {
+        var x1 = x(s.start), x2 = x(s.end), w = Math.max(0.5, x2 - x1);
+        var fill = s.clustered ? 'url(#metrics-cluster-pat)' : uptimeColor(s);
+        var tip = uptimeTooltip(s);
+        return '<g><title>' + esc(tip) + '</title>'
+          + '<rect x="' + x1.toFixed(1) + '" y="0" width="' + w.toFixed(1) + '" height="' + H + '" fill="' + fill + '"/></g>';
+      }).join('');
+
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="display:block;width:100%;height:10px;border-radius:3px;overflow:hidden;">'
+        + '<defs><pattern id="metrics-cluster-pat" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+        + '<rect width="3" height="6" fill="#10b981"/><rect x="3" width="3" height="6" fill="#ef4444"/></pattern></defs>'
+        + '<rect width="' + W + '" height="' + H + '" fill="var(--border)" opacity="0.3"/>'
+        + rects + '</svg>';
+
+      return { svg: svg, pct: pct };
+    }
+
     // Click on an uptime segment → activate the 'State' filter chip
     // and flash-highlight the matching transition in the Recent Logs
     // list. Mirrors the annotation-click-through pattern but targets
@@ -2455,9 +2524,21 @@
               renderChart(chartDiv, pts, { label: m.label, unit: m.unit, color: m.color, hours: hours, annotations: annotations, deviceId: dev.id });
             });
 
+            // Uptime ribbon — reuses the same annotations already fetched
+            var windowEnd = Date.now();
+            var windowStart = windowEnd - hours * 3600 * 1000;
+            var ribbon = renderMiniUptimeRibbon(annotations, windowStart, windowEnd);
+            if (ribbon.svg) {
+              var row = document.createElement('div');
+              row.className = 'metrics-uptime-row';
+              row.innerHTML = '<div class="metrics-uptime-strip">' + ribbon.svg + '</div>'
+                + (ribbon.pct ? '<span class="metrics-uptime-pct">' + esc(ribbon.pct) + ' online</span>' : '');
+              chartsEl.appendChild(row);
+            }
+
             if (hasData) {
               chartsEl.appendChild(grid);
-            } else {
+            } else if (!ribbon.svg) {
               chartsEl.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);">No metric data for this period</div>';
             }
           });
