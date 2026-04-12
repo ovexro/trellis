@@ -28,7 +28,7 @@
 
 #define TRELLIS_MAX_CAPABILITIES 16
 #define TRELLIS_DEFAULT_PORT 8080
-#define TRELLIS_VERSION "0.4.6"
+#define TRELLIS_VERSION "0.4.7"
 
 class Trellis {
 public:
@@ -51,6 +51,7 @@ public:
   // Update values
   void setSensor(const char* id, float value);
   void setSwitch(const char* id, bool value);
+  void setSlider(const char* id, float value);
   void setText(const char* id, const char* value);
   void setColor(const char* id, const char* value);
 

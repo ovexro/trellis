@@ -2,6 +2,29 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.7] — 2026-04-12
+
+The DeviceDetail parity + persistence release. The React desktop page now matches every observability surface from the `:9090` web dashboard: chart annotations, severity filter chips, uptime timeline with stat line, annotation click-through, and uptime segment click. Dense transition regions on the uptime ribbon collapse into striped cluster bars. The Arduino library gains NVS persistence — slider and switch values survive reboots on ESP32. Hardware-tested on a real ESP32 (NVS round-trips for both switches and sliders confirmed across multiple reboots).
+
+### Added
+
+- **DeviceDetail React page — chart annotations overlay.** Recharts `<ReferenceLine>` + `<ReferenceDot>` pairs for OTA/online/offline/warn/error events, matching the `:9090` dashboard's annotation system. Numeric-time XAxis, kind-present-only legend below chart, native SVG `<title>` tooltip. New `get_device_annotations` Tauri command wraps the existing `Database::get_annotations`.
+- **DeviceDetail React page — Recent Logs severity filter chips.** 7-chip row (All / Events / State / Error / Warn / Info / Debug) with server-side re-fetch via optional `severity` arg on `get_device_logs` Tauri command. Stale-fetch guard, live-log filter guard, `key={device.id}` remount on device switch for filter reset parity.
+- **DeviceDetail React page — UptimeTimeline component.** SVG ribbon + stat line + legend in a new `UptimeTimeline.tsx`. Derives online/offline/unknown segments from annotations (same algorithm as `web_ui.html`), renders with its own time range picker. Stat line shows online %, tracked span, and transition count. Perf: `memo`, `useMemo`, CSS containment.
+- **DeviceDetail React page — annotation + uptime click-through.** Clicking a chart annotation dot or an uptime segment scrolls to and flash-highlights the matching log row. `DeviceLogs.tsx` converted to `forwardRef` with `useImperativeHandle` exposing `scrollToLog(timestamp, targetFilter)`. Flash highlight via CSS `annFlash` keyframe (amber 1.5s fade). Cursor pointer and hover brightness on interactive elements.
+- **Uptime timeline clustering.** When 3+ consecutive segments would each render narrower than 6px, they collapse into a single diagonal-stripe bar (green/red SVG pattern). Tooltip shows transition count + timespan. Click activates the State filter chip. Stat line uses pre-clustered data so percentages stay accurate. Applied to both the React page and the `:9090` web dashboard.
+- **NVS persistence for slider values (ESP32).** `addSlider()` restores the last user-set value from ESP32 NVS on boot and applies PWM immediately, so hardware state matches before the first client connects. New `setSlider()` public API method for parity with `setSwitch()`.
+- **NVS persistence for switch values (ESP32).** `addSwitch()` restores the last user-set value from NVS on boot and applies GPIO immediately. Both switch and slider persistence share the `trellis_cap` NVS namespace.
+- **AutoConnect example gains brightness slider.** `addSlider("brightness", "LED Brightness", 0, 100, 4)` on GPIO 4, demonstrating the new NVS persistence alongside the existing LED switch on GPIO 2.
+
+### Fixed
+
+- **Scroll jank on multi-sensor DeviceDetail pages.** `MetricChart` was re-rendering all charts on every annotation/metric fetch. Added `useMemo` for annotation filtering and chart data prep to eliminate 10s stalls on devices with 4+ sensor capabilities.
+
+### Verified
+
+- Hardware test GATE on real ESP32 (greenhouse-controller, 192.168.1.108). NVS slider persistence: set 75 → reboot → 75, set 30 → reboot → 30. NVS switch persistence: ON → reboot → ON, OFF → reboot → OFF. All 5 examples compile clean on ESP32, AutoConnect compiles on Pico W. Device online with 4 capabilities (LED switch, brightness slider, temp sensor, humidity sensor). MQTT bridge connected.
+
 ## [0.4.6] — 2026-04-11
 
 The observability release. Ten dashboard features land on top of v0.4.5 plus a stale-state bug in the device detail panel. The metric chart grows cursor-anchored tooltips, drag-to-zoom, and event annotations drawn from real state transitions and log entries; annotations click-through to the exact log or firmware row that generated them. A new Metrics tab gives a fleet-wide monitoring overview. Recent Logs gains severity filter chips. The device detail panel gets an uptime timeline strip with a summary stat line above it. Hardware-tested on a real ESP32 (temp/humidity/LED/brightness all round-tripping, 51 state transitions feeding the ribbon, 161 annotations in the last 24h).

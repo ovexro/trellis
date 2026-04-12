@@ -171,15 +171,30 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
       case CapabilityType::SWITCH: {
         bool val = doc["value"].as<bool>();
         _trellis->setSwitch(id, val);
+        // Persist to NVS so the value survives reboots (ESP32 only)
+#if defined(ESP32)
+        {
+          Preferences prefs;
+          prefs.begin("trellis_cap", false);
+          prefs.putBool(id, val);
+          prefs.end();
+        }
+#endif
         broadcastUpdate(id, val);
         break;
       }
       case CapabilityType::SLIDER: {
         float val = doc["value"].as<float>();
-        cap->floatValue = val;
-        // Apply PWM
-        int pwmVal = map((long)(val), (long)(cap->minValue), (long)(cap->maxValue), 0, 255);
-        analogWrite(cap->gpio, pwmVal);
+        _trellis->setSlider(id, val);
+        // Persist to NVS so the value survives reboots (ESP32 only)
+#if defined(ESP32)
+        {
+          Preferences prefs;
+          prefs.begin("trellis_cap", false);
+          prefs.putFloat(id, val);
+          prefs.end();
+        }
+#endif
         broadcastUpdate(id, val);
         break;
       }
