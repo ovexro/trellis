@@ -346,7 +346,7 @@ export default function OtaManager() {
         Firmware Update (OTA)
       </h1>
       <p className="text-sm text-zinc-500 mb-6">
-        Upload a compiled .bin firmware file to a device over WiFi.
+        Upload a local .bin file or pull firmware directly from a GitHub release.
         The device will download the firmware from your PC and reboot.
       </p>
 
