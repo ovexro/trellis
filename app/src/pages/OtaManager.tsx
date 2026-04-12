@@ -15,6 +15,7 @@ interface GithubRelease {
   tag: string;
   name: string;
   published_at: string;
+  prerelease: boolean;
   assets: GithubAsset[];
 }
 
@@ -55,7 +56,11 @@ export default function OtaManager() {
   const [ghReleases, setGhReleases] = useState<GithubRelease[]>([]);
   const [ghChecking, setGhChecking] = useState(false);
   const [ghError, setGhError] = useState("");
+  const [ghShowPrerelease, setGhShowPrerelease] = useState(false);
+  const [ghAssetFilter, setGhAssetFilter] = useState("");
   const [ghDownloading, setGhDownloading] = useState<string | null>(null);
+  const [ghDownloadPct, setGhDownloadPct] = useState(-1);
+  const [ghDownloadTotal, setGhDownloadTotal] = useState(0);
 
   // Tracks the in-flight OTA so events from a different selected device
   // don't get mis-routed and so the reboot watcher knows what uptime
@@ -86,6 +91,22 @@ export default function OtaManager() {
       unlistenEnter.then((fn) => fn());
       unlistenLeave.then((fn) => fn());
     };
+  }, []);
+
+  // GitHub download progress (desktop → GitHub, before device OTA begins)
+  useEffect(() => {
+    const unlisten = listen<{
+      device_id: string;
+      downloaded: number;
+      total: number;
+      percent: number;
+    }>("gh-download-progress", (e) => {
+      const inFlight = inFlightRef.current;
+      if (!inFlight || e.payload.device_id !== inFlight.deviceId) return;
+      setGhDownloadPct(e.payload.percent);
+      setGhDownloadTotal(e.payload.total);
+    });
+    return () => { unlisten.then((fn) => fn()); };
   }, []);
 
   useEffect(() => {
@@ -199,13 +220,17 @@ export default function OtaManager() {
 
   useEffect(() => {
     loadFirmwareHistory(selectedDevice);
-    // Restore per-device GitHub repo binding
+    // Restore per-device GitHub repo + asset filter bindings
     if (selectedDevice) {
       invoke<{ value: string }>("get_setting", { key: `github_ota_${selectedDevice}` })
         .then((r) => { if (r?.value) setGhRepo(r.value); else setGhRepo(""); })
         .catch(() => setGhRepo(""));
+      invoke<{ value: string }>("get_setting", { key: `github_ota_filter_${selectedDevice}` })
+        .then((r) => { if (r?.value) setGhAssetFilter(r.value); else setGhAssetFilter(""); })
+        .catch(() => setGhAssetFilter(""));
     } else {
       setGhRepo("");
+      setGhAssetFilter("");
     }
     setGhReleases([]);
     setGhError("");
@@ -246,7 +271,9 @@ export default function OtaManager() {
     setGhDownloading(asset.download_url);
     setStatus("uploading");
     setErrorMsg("");
-    setOtaProgress(0);
+    setOtaProgress(-1);
+    setGhDownloadPct(0);
+    setGhDownloadTotal(0);
     inFlightRef.current = {
       deviceId: device.id,
       uptimeBaseline: device.system.uptime_s,
@@ -267,6 +294,8 @@ export default function OtaManager() {
       inFlightRef.current = null;
     } finally {
       setGhDownloading(null);
+      setGhDownloadPct(-1);
+      setGhDownloadTotal(0);
     }
   };
 
@@ -468,7 +497,22 @@ export default function OtaManager() {
               : "Upload Firmware"}
         </button>
 
-        {status === "uploading" && otaProgress >= 0 && (
+        {ghDownloading && ghDownloadPct >= 0 && (
+          <div>
+            <div className="flex justify-between text-xs text-zinc-400 mb-1">
+              <span>Downloading from GitHub…</span>
+              <span>{ghDownloadPct}%{ghDownloadTotal > 0 ? ` · ${formatFileSize(ghDownloadTotal)}` : ""}</span>
+            </div>
+            <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-trellis-500 rounded-full transition-all duration-300"
+                style={{ width: `${ghDownloadPct}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status === "uploading" && !ghDownloading && otaProgress >= 0 && (
           <div>
             <div className="flex justify-between text-xs text-zinc-400 mb-1">
               <span>Downloading firmware to device...</span>
@@ -546,6 +590,21 @@ export default function OtaManager() {
             </button>
           </div>
 
+          {ghReleases.length > 0 && (
+            <input
+              type="text"
+              value={ghAssetFilter}
+              onChange={(e) => setGhAssetFilter(e.target.value)}
+              onBlur={() => {
+                if (selectedDevice) {
+                  invoke("set_setting", { key: `github_ota_filter_${selectedDevice}`, value: ghAssetFilter.trim() }).catch(() => {});
+                }
+              }}
+              placeholder="Filter assets by name (e.g. esp32, firmware-v2)"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder:text-zinc-600 mb-4"
+            />
+          )}
+
           {ghError && (
             <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-500/10 p-3 rounded-lg mb-4">
               <AlertCircle size={16} className="flex-shrink-0" />
@@ -553,13 +612,38 @@ export default function OtaManager() {
             </div>
           )}
 
-          {ghReleases.length > 0 && (
+          {ghReleases.length > 0 && (() => {
+            const hasPrerelease = ghReleases.some((r) => r.prerelease);
+            const filterLc = ghAssetFilter.trim().toLowerCase();
+            const matchesFilter = (a: GithubAsset) => !filterLc || a.name.toLowerCase().includes(filterLc);
+            const filtered = (ghShowPrerelease ? ghReleases : ghReleases.filter((r) => !r.prerelease))
+              .filter((r) => r.assets.some(matchesFilter));
+            return (
             <div className="space-y-2">
-              {ghReleases.map((rel) => (
+              {hasPrerelease && (
+                <label className="flex items-center gap-2 text-xs text-zinc-500 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={ghShowPrerelease}
+                    onChange={(e) => setGhShowPrerelease(e.target.checked)}
+                    className="accent-trellis-500"
+                  />
+                  Show pre-releases ({ghReleases.filter((r) => r.prerelease).length})
+                </label>
+              )}
+              {filtered.length === 0 && (
+                <p className="text-xs text-zinc-600">No stable releases with firmware assets. Enable "Show pre-releases" above.</p>
+              )}
+              {filtered.map((rel) => (
                 <div key={rel.tag} className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg p-4">
                   <div className="flex items-center justify-between mb-2">
                     <div>
                       <span className="text-sm font-mono text-zinc-200">{rel.tag}</span>
+                      {rel.prerelease && (
+                        <span className="text-[10px] text-amber-400 ml-2 uppercase tracking-wide">
+                          pre-release
+                        </span>
+                      )}
                       {rel.name !== rel.tag && (
                         <span className="text-xs text-zinc-500 ml-2">{rel.name}</span>
                       )}
@@ -574,7 +658,7 @@ export default function OtaManager() {
                     </span>
                   </div>
                   <div className="space-y-1.5">
-                    {rel.assets.map((asset) => (
+                    {rel.assets.filter((a) => !ghAssetFilter.trim() || a.name.toLowerCase().includes(ghAssetFilter.trim().toLowerCase())).map((asset) => (
                       <div key={asset.name} className="flex items-center justify-between">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <Download size={12} className="text-zinc-500 flex-shrink-0" />
@@ -604,7 +688,8 @@ export default function OtaManager() {
                 </div>
               ))}
             </div>
-          )}
+            );
+          })()}
         </div>
       )}
 

@@ -877,7 +877,11 @@
         toast('Permission denied — this action requires an admin token', 'error');
         throw new Error('403 Forbidden');
       }
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      if (!res.ok) {
+        var errMsg = res.status + ' ' + res.statusText;
+        try { var errBody = JSON.parse(await res.text()); if (errBody.error) errMsg = errBody.error; } catch (_) {}
+        throw new Error(errMsg);
+      }
       const text = await res.text();
       return text ? JSON.parse(text) : null;
     }
@@ -2200,6 +2204,9 @@
               style="font-size:0.8rem;" onkeydown="if(event.key==='Enter')checkGhReleases('${esc(dev.id)}')">
             <button class="btn btn-sm" onclick="checkGhReleases('${esc(dev.id)}')" id="ghOtaCheckBtn">Check</button>
           </div>
+          <input type="text" class="input-text" id="ghOtaFilter" placeholder="Filter assets (e.g. esp32)"
+            style="font-size:0.75rem;margin-bottom:0.5rem;display:none;"
+            oninput="if(window._ghFilterAssets)window._ghFilterAssets()">
           <div id="ghOtaStatus" style="font-size:0.75rem;color:var(--text-faint);"></div>
           <div id="ghOtaReleases"></div>
         </div>`;
@@ -2453,26 +2460,51 @@
         var dev = devices.find(function(d) { return d.id === deviceId; });
         var currentFw = dev ? dev.firmware : '';
 
-        var html = '';
-        releases.forEach(function(rel) {
-          var tagClean = rel.tag.replace(/^v/, '');
-          var isCurrent = currentFw && tagClean === currentFw;
-          html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.6rem;margin-top:0.4rem;">';
-          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">';
-          html += '<span style="font-family:monospace;font-size:0.8rem;color:var(--text);">' + esc(rel.tag) + '</span>';
-          if (isCurrent) html += '<span style="font-size:0.65rem;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;">current</span>';
-          else html += '<span style="font-size:0.7rem;color:var(--text-faint);">' + (rel.published_at ? new Date(rel.published_at).toLocaleDateString() : '') + '</span>';
-          html += '</div>';
-          rel.assets.forEach(function(asset) {
-            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.2rem 0;">';
-            html += '<span style="font-size:0.75rem;color:var(--text-faint);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' + esc(asset.name) + '</span>';
-            html += '<span style="font-size:0.7rem;color:var(--text-faint);margin:0 0.5rem;flex-shrink:0;">' + formatBytes(asset.size) + '</span>';
-            html += '<button class="btn btn-sm" style="flex-shrink:0;" onclick="flashGhOta(\'' + esc(deviceId) + '\',\'' + esc(asset.download_url) + '\',\'' + esc(rel.tag) + '\',\'' + esc(asset.name) + '\')">Flash</button>';
-            html += '</div>';
+        var hasPrerelease = releases.some(function(r) { return r.prerelease; });
+        var ghShowPre = false;
+        var filterEl = document.getElementById('ghOtaFilter');
+        if (filterEl) filterEl.style.display = '';
+
+        function renderGhReleases() {
+          var filterText = filterEl ? filterEl.value.trim().toLowerCase() : '';
+          var shown = (ghShowPre ? releases : releases.filter(function(r) { return !r.prerelease; }))
+            .filter(function(r) { return !filterText || r.assets.some(function(a) { return a.name.toLowerCase().indexOf(filterText) >= 0; }); });
+          var h = '';
+          if (hasPrerelease) {
+            h += '<label style="display:flex;align-items:center;gap:0.4rem;font-size:0.75rem;color:var(--text-faint);cursor:pointer;margin-bottom:0.3rem;">'
+              + '<input type="checkbox" ' + (ghShowPre ? 'checked ' : '') + 'onchange="window._ghTogglePre()" style="accent-color:var(--accent);">'
+              + 'Show pre-releases (' + releases.filter(function(r) { return r.prerelease; }).length + ')</label>';
+          }
+          if (shown.length === 0) {
+            h += '<div style="font-size:0.75rem;color:var(--text-faint);">No stable releases with firmware assets.</div>';
+          }
+          shown.forEach(function(rel) {
+            var tagClean = rel.tag.replace(/^v/, '');
+            var isCurrent = currentFw && tagClean === currentFw;
+            h += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.6rem;margin-top:0.4rem;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">';
+            h += '<span style="font-family:monospace;font-size:0.8rem;color:var(--text);">' + esc(rel.tag);
+            if (rel.prerelease) h += ' <span style="font-size:0.65rem;color:#f59e0b;text-transform:uppercase;letter-spacing:0.05em;">pre-release</span>';
+            h += '</span>';
+            if (isCurrent) h += '<span style="font-size:0.65rem;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;">current</span>';
+            else h += '<span style="font-size:0.7rem;color:var(--text-faint);">' + (rel.published_at ? new Date(rel.published_at).toLocaleDateString() : '') + '</span>';
+            h += '</div>';
+            var shownAssets = filterText ? rel.assets.filter(function(a) { return a.name.toLowerCase().indexOf(filterText) >= 0; }) : rel.assets;
+            shownAssets.forEach(function(asset) {
+              h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.2rem 0;">';
+              h += '<span style="font-size:0.75rem;color:var(--text-faint);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' + esc(asset.name) + '</span>';
+              h += '<span style="font-size:0.7rem;color:var(--text-faint);margin:0 0.5rem;flex-shrink:0;">' + formatBytes(asset.size) + '</span>';
+              h += '<button class="btn btn-sm" style="flex-shrink:0;" onclick="flashGhOta(\'' + esc(deviceId) + '\',\'' + esc(asset.download_url) + '\',\'' + esc(rel.tag) + '\',\'' + esc(asset.name) + '\')">Flash</button>';
+              h += '</div>';
+            });
+            h += '</div>';
           });
-          html += '</div>';
-        });
-        listEl.innerHTML = html;
+          listEl.innerHTML = h;
+        }
+
+        window._ghTogglePre = function() { ghShowPre = !ghShowPre; renderGhReleases(); };
+        window._ghFilterAssets = renderGhReleases;
+        renderGhReleases();
       } catch (e) {
         statusEl.textContent = 'Error: ' + (e.message || e);
       } finally {
@@ -3132,6 +3164,16 @@
         var p = msg.payload || {};
         if (p.severity === 'error' && shouldNotify('log_error', dev.id)) {
           maybeNotify('Error from ' + (dev.name || dev.id), p.message || 'Device reported an error', 'log-error-' + dev.id, dev.id);
+        }
+      } else if (msg.event_type === 'gh_download_progress') {
+        var statusEl = document.getElementById('ghOtaStatus');
+        if (statusEl && msg.payload && msg.device_id === currentLogDeviceId) {
+          var dp = msg.payload;
+          var dpPct = dp.percent || 0;
+          statusEl.innerHTML = '<div style="font-size:0.75rem;color:var(--text-faint);">Downloading from GitHub\u2026 ' + dpPct + '%'
+            + (dp.total > 0 ? ' \u00b7 ' + formatBytes(dp.total) : '') + '</div>'
+            + '<div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden;">'
+            + '<div style="height:100%;background:var(--accent);border-radius:2px;width:' + dpPct + '%;transition:width 0.3s;"></div></div>';
         }
       }
     }

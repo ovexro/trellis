@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::io::Read as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub discovery: Arc<Discovery>,
@@ -231,6 +231,7 @@ pub struct GithubRelease {
     pub tag: String,
     pub name: String,
     pub published_at: String,
+    pub prerelease: bool,
     pub assets: Vec<GithubAsset>,
 }
 
@@ -249,7 +250,12 @@ pub async fn check_github_releases(
             .set("Accept", "application/vnd.github+json")
             .timeout(std::time::Duration::from_secs(10))
             .call()
-            .map_err(|e| format!("GitHub API error: {}", e))?;
+            .map_err(|e| match e {
+                ureq::Error::Status(404, _) => "Repository not found. Check the owner/repo format. Private repositories are not supported.".to_string(),
+                ureq::Error::Status(403, _) => "GitHub API rate limit reached (60 requests/hour). Wait a few minutes and try again.".to_string(),
+                ureq::Error::Status(code, _) => format!("GitHub returned HTTP {}.", code),
+                ureq::Error::Transport(_) => "Could not reach GitHub. Check your internet connection.".to_string(),
+            })?;
 
         let releases: Vec<serde_json::Value> = resp
             .into_json()
@@ -260,6 +266,7 @@ pub async fn check_github_releases(
             let tag = rel["tag_name"].as_str().unwrap_or("").to_string();
             let name = rel["name"].as_str().unwrap_or(&tag).to_string();
             let published = rel["published_at"].as_str().unwrap_or("").to_string();
+            let prerelease = rel["prerelease"].as_bool().unwrap_or(false);
 
             let mut assets = Vec::new();
             if let Some(arr) = rel["assets"].as_array() {
@@ -283,6 +290,7 @@ pub async fn check_github_releases(
                     tag,
                     name,
                     published_at: published,
+                    prerelease,
                     assets,
                 });
             }
@@ -326,19 +334,60 @@ pub async fn start_github_ota(
     let dl_dest = dest_path.clone();
     let dl_url = download_url.clone();
     let is_gzipped = asset_name.ends_with(".bin.gz");
+    let progress_handle = app_handle.clone();
+    let progress_device_id = device_id.clone();
     let file_size = tokio::task::spawn_blocking(move || {
         log::info!("[OTA] Downloading {} from GitHub...", asset_name);
         let resp = ureq::get(&dl_url)
             .set("User-Agent", "Trellis-Desktop")
             .timeout(std::time::Duration::from_secs(120))
             .call()
-            .map_err(|e| format!("Download failed: {}", e))?;
+            .map_err(|e| match e {
+                ureq::Error::Status(404, _) => "Firmware file not found — the asset may have been removed from the release.".to_string(),
+                ureq::Error::Status(403, _) => "Download blocked by GitHub — rate limit or authentication required.".to_string(),
+                ureq::Error::Status(code, _) => format!("Download failed with HTTP {}.", code),
+                ureq::Error::Transport(_) => "Download failed — network error. Check your internet connection.".to_string(),
+            })?;
+
+        let content_length = resp
+            .header("Content-Length")
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
 
         let mut reader = resp.into_reader();
-        let mut compressed = Vec::new();
-        reader
-            .read_to_end(&mut compressed)
-            .map_err(|e| format!("Read failed: {}", e))?;
+        let mut compressed = Vec::with_capacity(
+            if content_length > 0 { content_length as usize } else { 512 * 1024 },
+        );
+        let mut buf = [0u8; 8192];
+        let mut downloaded: u64 = 0;
+        let mut last_pct: u64 = 0;
+
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("Read failed: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            compressed.extend_from_slice(&buf[..n]);
+            downloaded += n as u64;
+
+            if content_length > 0 {
+                let pct = (downloaded * 100 / content_length).min(100);
+                if pct >= last_pct + 2 || downloaded >= content_length {
+                    let _ = progress_handle.emit(
+                        "gh-download-progress",
+                        serde_json::json!({
+                            "device_id": progress_device_id,
+                            "downloaded": downloaded,
+                            "total": content_length,
+                            "percent": pct,
+                        }),
+                    );
+                    last_pct = pct;
+                }
+            }
+        }
 
         let data = if is_gzipped {
             log::info!("[OTA] Decompressing .bin.gz ({} bytes compressed)", compressed.len());
