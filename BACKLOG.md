@@ -36,11 +36,11 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   - ~~Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.~~ — ✅ **shipped** (ca8b632). Expand-on-hover deferred — the tooltip shows transition count + timespan which is sufficient.
   - ~~Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.~~ — ✅ **shipped** (4d1a6ca). Compact 10px ribbon per device with online % label, reuses existing annotation fetch.
 
-- **Polish-pass sweep of the detail panel on a real phone** — filter chip mobile layout, uptime strip mobile layout, uptime stat line mobile wrapping, tab-key focus order, keyboard shortcut to open the panel from the device list, ensure chip/strip/stat-line state clears correctly on device switch. Requires real phone testing.
+- ~~**Polish-pass sweep of the detail panel on a real phone**~~ — ✅ **shipped** (9408006). Chart touch-scrolling fix (`touch-action: pan-y pinch-zoom`), mobile touch target bump (`min-height: 2rem`), stat line separator grouping (`white-space: nowrap`). Verified via headless Chrome at 375px and 320px. Remaining: tab-key focus trap (detail panel doesn't trap focus), keyboard shortcut to open panel from device list.
 
-- **Second skill crystallization: `session-start-gate`** — the kickoff prompt is ~140 lines of mechanical verification. A skill would let the kickoff shrink to "Continuing Trellis. <last-session bullets>" with the verification list living in a skill file. Prerequisite met (first skill at routine, runs=5). **Propose + get explicit go/no-go — DO NOT write autonomously** because it touches the session-start flow.
+- ~~**Second skill crystallization: `session-start-gate`**~~ — ✅ **shipped**. `skill_session_start_gate.md` written, confidence `unverified`. Next session fires it for the first time under observation.
 
-- **Third skill crystallization: `release-cut`** — the v0.4.6 release walked through 11 steps (hardware test → version bump → Cargo.lock → CHANGELOG → commit+push → CI wait → release-library.sh → manual pio publish → registry verify → rebuild-install skill → FEATURES.md retag). Two steps need the user (hardware test, pio publish) so it wouldn't fire fully autonomously. **Propose + get explicit go/no-go.**
+- ~~**Third skill crystallization: `release-cut`**~~ — ✅ **shipped**. `skill_release_cut.md` written, confidence `unverified`. Next release fires it for the first time under observation.
 
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 
