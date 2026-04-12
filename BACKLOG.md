@@ -32,7 +32,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
   **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). ~~N+4 = (d)+(e)+(f) cleanup~~ (done). **All P1+P2 sub-tasks shipped. Only P3 out-of-scope items remain.**
 
-- **Add LED brightness slider polish to AutoConnect.ino** — the brightness slider is now live on the ESP32 but hasn't been hardened. Candidates: (1) persist value across reboots to NVS so brightness resumes, (2) sync initial value to the dashboard on discovery (currently shows whatever PWM duty is active), (3) confirm/document how it shares GPIO 2 with the existing LED switch. Needs an ESP32 re-flash.
+- **NVS persistence for switch values** — `addSlider` now persists to NVS; `addSwitch` does not. Switch persistence has safety implications for actuators (pump/heater auto-restarting after reboot). Consider opt-in via a `persist` flag on `addSwitch`, or persist by default with documentation. Separate task from slider persistence.
 
 - **Uptime timeline polish pass — remaining candidates**:
   - Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.
