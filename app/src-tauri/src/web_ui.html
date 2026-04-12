@@ -2191,6 +2191,20 @@
         <div id="detailFwList"></div>
       </div>`;
 
+      // GitHub OTA section (ESP32 + admin only)
+      if (dev.platform === 'esp32' && !isViewer && online) {
+        html += `<div class="detail-section" id="detailGhOta">
+          <div class="detail-section-title">Update from GitHub</div>
+          <div class="input-row" style="margin-bottom:0.5rem;">
+            <input type="text" class="input-text" id="ghOtaRepo" placeholder="owner/repo"
+              style="font-size:0.8rem;" onkeydown="if(event.key==='Enter')checkGhReleases('${esc(dev.id)}')">
+            <button class="btn btn-sm" onclick="checkGhReleases('${esc(dev.id)}')" id="ghOtaCheckBtn">Check</button>
+          </div>
+          <div id="ghOtaStatus" style="font-size:0.75rem;color:var(--text-faint);"></div>
+          <div id="ghOtaReleases"></div>
+        </div>`;
+      }
+
       // Logs placeholder — loading. Chip row above the list lets the
       // user filter by severity without needing an annotation click.
       // 'Events' maps to state+error+warn (the annotation set) and is
@@ -2276,6 +2290,14 @@
 
       // Load metric charts
       loadDetailCharts(id, dev.capabilities);
+
+      // Restore saved GitHub OTA repo binding
+      var ghInput = document.getElementById('ghOtaRepo');
+      if (ghInput) {
+        api('/api/settings/github_ota_' + encodeURIComponent(id))
+          .then(function(r) { if (r && r.value) ghInput.value = r.value; })
+          .catch(function() {});
+      }
     }
 
     function closeDeviceDetail() {
@@ -2393,6 +2415,86 @@
       e.stopPropagation();
       const input = document.getElementById(`txt-${deviceId}-${capId}`);
       if (input) sendCommand(deviceId, capId, input.value);
+    }
+
+    /* ────────────────────── GitHub OTA ──────────────────────────── */
+
+    async function checkGhReleases(deviceId) {
+      var input = document.getElementById('ghOtaRepo');
+      var statusEl = document.getElementById('ghOtaStatus');
+      var listEl = document.getElementById('ghOtaReleases');
+      var btn = document.getElementById('ghOtaCheckBtn');
+      if (!input || !statusEl || !listEl) return;
+
+      var raw = input.value.trim();
+      if (!raw) { statusEl.textContent = 'Enter owner/repo'; return; }
+      var parts = raw.replace(/^https?:\/\/github\.com\//, '').replace(/\/$/, '').split('/');
+      if (parts.length < 2) { statusEl.textContent = 'Format: owner/repo'; return; }
+      var owner = parts[0], repo = parts[1];
+
+      btn.disabled = true;
+      statusEl.textContent = 'Checking…';
+      listEl.innerHTML = '';
+
+      try {
+        var releases = await api('/api/github/releases?owner=' + encodeURIComponent(owner) + '&repo=' + encodeURIComponent(repo));
+        if (!releases || !releases.length) {
+          statusEl.textContent = 'No releases with .bin or .bin.gz assets found.';
+          return;
+        }
+        statusEl.textContent = releases.length + ' release(s) with firmware';
+
+        // Save repo binding for this device
+        api('/api/settings/github_ota_' + encodeURIComponent(deviceId), {
+          method: 'PUT', body: { value: raw }
+        }).catch(function() {});
+
+        // Find device's current firmware for version comparison
+        var dev = devices.find(function(d) { return d.id === deviceId; });
+        var currentFw = dev ? dev.firmware : '';
+
+        var html = '';
+        releases.forEach(function(rel) {
+          var tagClean = rel.tag.replace(/^v/, '');
+          var isCurrent = currentFw && tagClean === currentFw;
+          html += '<div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.6rem;margin-top:0.4rem;">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem;">';
+          html += '<span style="font-family:monospace;font-size:0.8rem;color:var(--text);">' + esc(rel.tag) + '</span>';
+          if (isCurrent) html += '<span style="font-size:0.65rem;color:var(--accent);text-transform:uppercase;letter-spacing:0.05em;">current</span>';
+          else html += '<span style="font-size:0.7rem;color:var(--text-faint);">' + (rel.published_at ? new Date(rel.published_at).toLocaleDateString() : '') + '</span>';
+          html += '</div>';
+          rel.assets.forEach(function(asset) {
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.2rem 0;">';
+            html += '<span style="font-size:0.75rem;color:var(--text-faint);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' + esc(asset.name) + '</span>';
+            html += '<span style="font-size:0.7rem;color:var(--text-faint);margin:0 0.5rem;flex-shrink:0;">' + formatBytes(asset.size) + '</span>';
+            html += '<button class="btn btn-sm" style="flex-shrink:0;" onclick="flashGhOta(\'' + esc(deviceId) + '\',\'' + esc(asset.download_url) + '\',\'' + esc(rel.tag) + '\',\'' + esc(asset.name) + '\')">Flash</button>';
+            html += '</div>';
+          });
+          html += '</div>';
+        });
+        listEl.innerHTML = html;
+      } catch (e) {
+        statusEl.textContent = 'Error: ' + (e.message || e);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function flashGhOta(deviceId, downloadUrl, releaseTag, assetName) {
+      if (!confirm('Flash ' + assetName + ' (' + releaseTag + ') to this device? The device will reboot.')) return;
+      var statusEl = document.getElementById('ghOtaStatus');
+      if (statusEl) statusEl.textContent = 'Downloading and flashing…';
+      try {
+        await api('/api/github/ota', {
+          method: 'POST',
+          body: { device_id: deviceId, download_url: downloadUrl, release_tag: releaseTag, asset_name: assetName },
+        });
+        if (statusEl) statusEl.textContent = 'OTA triggered — device is downloading firmware and will reboot.';
+        toast('OTA triggered for ' + releaseTag, 'success');
+      } catch (e) {
+        if (statusEl) statusEl.textContent = 'Flash failed: ' + (e.message || e);
+        toast('OTA failed: ' + (e.message || e), 'error');
+      }
     }
 
     /* ────────────────────────── Automation ────────────────────────── */
