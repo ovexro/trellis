@@ -72,7 +72,7 @@ Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anyt
 
 - **OTA annotation click-through may silently fail on devices with long firmware history.** The annotation click fallback re-fetches `GET /logs?severity=state,error,warn` when the initial 200-log load didn't include the target row. OTA annotations come from `firmware_history`, not `device_logs`, so the fallback doesn't apply. If the target OTA row is older than what the detail panel already rendered, clicking the marker might do nothing. Verification step: check whether `openDeviceDetail` always fetches the full firmware history or slices it; if sliced, add a fallback equivalent for the firmware-history path.
 
-- **`cssEscape` on uptime ribbon segment click not verified.** Annotation click-through uses `cssEscape` to guard the query selector against unusual device IDs. The uptime ribbon segment click re-uses the annotation click-through pattern ("activates State filter chip + flash-highlights matching log row") but it's not confirmed that the segment's DOM-patch path also goes through `cssEscape`. Low-impact until someone uses a device ID with CSS-special characters, but worth a quick audit.
+- ~~**`cssEscape` on uptime ribbon segment click not verified.**~~ — ✅ **audited** (2026-04-12). Both paths escape the timestamp via `cssEscape(ts)` in the selector; `deviceId` never enters a `querySelector` in either path. No issue.
 
 ### Backend & infrastructure
 
@@ -80,9 +80,9 @@ Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anyt
 
 - **State transitions only captured going forward** from the 2026-04-11 chart annotations commit — no backfill for pre-existing devices.
 
-- **Data retention scope unknown for `firmware_history` and `alerts` tables.** The `data_retention_days` setting is documented as "metrics and device logs cleanup period." Chart annotations come from a union of `firmware_history` + `device_logs`, so log pruning implicitly trims the annotation view — that's fine. But `firmware_history` and `alerts` tables: are they pruned by the same setting, pruned separately, or never pruned? If never pruned, firmware history and acknowledged alerts grow unboundedly. Verification step: grep the cleanup loop in `db.rs` to see which tables it actually touches.
+- ~~**Data retention scope unknown for `firmware_history` and `alerts` tables.**~~ — ✅ **audited** (2026-04-12). Cleanup loop (`lib.rs:167-183`) prunes `metrics` + `device_logs` only. `firmware_history` grows at ~1 row/OTA/device (negligible) and pruning it would break rollback + OTA annotations. `alerts` are user-created rule definitions, not data — zero automatic growth. Current scope is correct; no changes needed.
 
-- **WebSocket push rate limiting parity not verified.** The REST API path (`/api/*`) has per-IP rate limiting with exponential backoff (v0.4.4). The WebSocket push endpoint (`/ws?token=...`) passes through the token auth gate per v0.4.5 but it's unclear whether it also passes through the rate limiter. If a viewer token can open unlimited WS connections without backoff, that's a low-severity DoS vector accessible to any token holder. Verification step: check `api.rs::handle_connection` WS branch against the rate-limit guard.
+- ~~**WebSocket push rate limiting parity not verified.**~~ — ✅ **audited** (2026-04-12). The `/ws` upgrade hits the same `rate_limiter.check()` at `api.rs:411` and the same auth gate as every REST endpoint. Success clears failure state; denial records failure with exponential backoff. Full parity confirmed.
 
 - **OTA 100% duplicate event** — `httpUpdate.onProgress` fires 100% twice. Cosmetic, not fixed.
 
