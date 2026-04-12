@@ -265,7 +265,7 @@ pub async fn check_github_releases(
             if let Some(arr) = rel["assets"].as_array() {
                 for asset in arr {
                     let aname = asset["name"].as_str().unwrap_or("");
-                    if aname.ends_with(".bin") {
+                    if aname.ends_with(".bin") || aname.ends_with(".bin.gz") {
                         assets.push(GithubAsset {
                             name: aname.to_string(),
                             size: asset["size"].as_i64().unwrap_or(0),
@@ -322,9 +322,10 @@ pub async fn start_github_ota(
     let dest_path = fw_dir.join(&dest_name);
     let dest_str = dest_path.to_string_lossy().to_string();
 
-    // Download firmware from GitHub
+    // Download firmware from GitHub (auto-decompress .bin.gz)
     let dl_dest = dest_path.clone();
     let dl_url = download_url.clone();
+    let is_gzipped = asset_name.ends_with(".bin.gz");
     let file_size = tokio::task::spawn_blocking(move || {
         log::info!("[OTA] Downloading {} from GitHub...", asset_name);
         let resp = ureq::get(&dl_url)
@@ -334,16 +335,29 @@ pub async fn start_github_ota(
             .map_err(|e| format!("Download failed: {}", e))?;
 
         let mut reader = resp.into_reader();
-        let mut data = Vec::new();
+        let mut compressed = Vec::new();
         reader
-            .read_to_end(&mut data)
+            .read_to_end(&mut compressed)
             .map_err(|e| format!("Read failed: {}", e))?;
+
+        let data = if is_gzipped {
+            log::info!("[OTA] Decompressing .bin.gz ({} bytes compressed)", compressed.len());
+            let mut decoder = flate2::read::GzDecoder::new(&compressed[..]);
+            let mut decompressed = Vec::new();
+            decoder
+                .read_to_end(&mut decompressed)
+                .map_err(|e| format!("Gzip decompression failed: {}", e))?;
+            log::info!("[OTA] Decompressed to {} bytes", decompressed.len());
+            decompressed
+        } else {
+            compressed
+        };
 
         let size = data.len() as i64;
         std::fs::write(&dl_dest, &data)
             .map_err(|e| format!("Failed to save firmware: {}", e))?;
 
-        log::info!("[OTA] Downloaded {} bytes to {:?}", size, dl_dest);
+        log::info!("[OTA] Saved {} bytes to {:?}", size, dl_dest);
         Ok::<i64, String>(size)
     })
     .await

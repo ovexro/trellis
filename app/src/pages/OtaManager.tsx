@@ -227,7 +227,7 @@ export default function OtaManager() {
       const releases = await invoke<GithubRelease[]>("check_github_releases", { owner, repo });
       setGhReleases(releases);
       if (releases.length === 0) {
-        setGhError("No releases with .bin firmware assets found.");
+        setGhError("No releases with .bin or .bin.gz firmware assets found. This feature works with repos that publish compiled ESP32 firmware in their GitHub Releases.");
       }
       // Save repo binding for this device
       if (selectedDevice) {
@@ -523,7 +523,8 @@ export default function OtaManager() {
             <h2 className="text-sm font-semibold text-zinc-200">Update from GitHub Release</h2>
           </div>
           <p className="text-xs text-zinc-500 mb-4">
-            Point to a GitHub repository that publishes .bin firmware files in its releases.
+            Point to a GitHub repository that publishes .bin or .bin.gz firmware files in its releases.
+            Compressed .bin.gz files are automatically decompressed before flashing.
           </p>
 
           <div className="flex gap-2 mb-4">

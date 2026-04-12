@@ -28,6 +28,7 @@ serialport = "4"
 tungstenite = "0.24"
 ureq = { version = "2", features = ["json"] }
 chrono = "0.4"
+flate2 = "1"
 cron = "0.13"
 log = "0.4"
 env_logger = "0.11"

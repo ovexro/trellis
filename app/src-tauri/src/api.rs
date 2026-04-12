@@ -1551,7 +1551,7 @@ fn fetch_github_releases(owner: &str, repo: &str) -> Result<serde_json::Value, S
         if let Some(arr) = rel["assets"].as_array() {
             for asset in arr {
                 let aname = asset["name"].as_str().unwrap_or("");
-                if aname.ends_with(".bin") {
+                if aname.ends_with(".bin") || aname.ends_with(".bin.gz") {
                     assets.push(serde_json::json!({
                         "name": aname,
                         "size": asset["size"].as_i64().unwrap_or(0),
@@ -1612,10 +1612,23 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
         Err(e) => return json_error(502, &format!("Download failed: {}", e)),
     };
 
-    let mut data = Vec::new();
-    if let Err(e) = resp.into_reader().read_to_end(&mut data) {
+    let mut raw = Vec::new();
+    if let Err(e) = resp.into_reader().read_to_end(&mut raw) {
         return json_error(502, &format!("Read failed: {}", e));
     }
+
+    // Auto-decompress .bin.gz files so the device gets raw firmware
+    let data = if asset_name.ends_with(".bin.gz") {
+        let mut decoder = flate2::read::GzDecoder::new(&raw[..]);
+        let mut decompressed = Vec::new();
+        if let Err(e) = decoder.read_to_end(&mut decompressed) {
+            return json_error(502, &format!("Gzip decompression failed: {}", e));
+        }
+        log::info!("[OTA] Decompressed .bin.gz: {} -> {} bytes", raw.len(), decompressed.len());
+        decompressed
+    } else {
+        raw
+    };
     let file_size = data.len() as i64;
 
     // Save to firmware directory (same path as Tauri desktop OTA)

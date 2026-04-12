@@ -5617,6 +5617,7 @@ dependencies = [
  "chrono",
  "cron",
  "env_logger",
+ "flate2",
  "keyring",
  "log",
  "mdns-sd",
