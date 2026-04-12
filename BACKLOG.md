@@ -32,8 +32,6 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
   **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). ~~N+4 = (d)+(e)+(f) cleanup~~ (done). **All P1+P2 sub-tasks shipped. Only P3 out-of-scope items remain.**
 
-- **NVS persistence for switch values** — `addSlider` now persists to NVS; `addSwitch` does not. Switch persistence has safety implications for actuators (pump/heater auto-restarting after reboot). Consider opt-in via a `persist` flag on `addSwitch`, or persist by default with documentation. Separate task from slider persistence.
-
 - **Uptime timeline polish pass — remaining candidates**:
   - Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.
   - Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.
