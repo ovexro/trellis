@@ -2057,9 +2057,15 @@
       return String(s).replace(/[^a-zA-Z0-9_-]/g, function(c) { return '\\' + c; });
     }
 
+    // Focus-trap state for the detail panel
+    var detailPanelTrigger = null;
+
     async function openDeviceDetail(id) {
       const dev = devices.find(d => d.id === id);
       if (!dev) return;
+
+      // Remember what opened the panel so we can return focus on close
+      detailPanelTrigger = document.activeElement;
 
       // Reset log filter state for the new device. Without this, a
       // filter set on the previous device would carry over to the new
@@ -2076,6 +2082,12 @@
       panel.style.display = 'flex';
       panel.classList.remove('hidden');
       overlay.classList.remove('hidden');
+
+      // A11y: hide main content from assistive tech while panel is open.
+      // aria-modal on the panel handles modern AT; this covers older readers.
+      document.querySelectorAll('body > :not(#detailPanel):not(#detailOverlay)').forEach(function(el) {
+        el.setAttribute('aria-hidden', 'true');
+      });
 
       const online = dev.online !== false;
       const sys = dev.system || {};
@@ -2202,6 +2214,15 @@
 
       body.innerHTML = html;
 
+      // Move focus into the panel (close button) so keyboard users
+      // start inside the trap. Delay one frame so the browser has
+      // painted the panel visible — focusing a display:none element
+      // is a no-op.
+      requestAnimationFrame(function() {
+        var closeBtn = panel.querySelector('.detail-close');
+        if (closeBtn) closeBtn.focus();
+      });
+
       // Fetch logs, firmware history, and sparklines in parallel.
       // Logs limit matches the annotation cap (200) so any clicked
       // annotation is guaranteed to find its underlying row in view.
@@ -2259,11 +2280,48 @@
       // deviceId no longer matches.
       currentLogDeviceId = null;
       currentLogFilter = '';
+
+      // A11y: restore main content visibility and return focus
+      document.querySelectorAll('body > [aria-hidden]').forEach(function(el) {
+        el.removeAttribute('aria-hidden');
+      });
+      if (detailPanelTrigger && typeof detailPanelTrigger.focus === 'function') {
+        detailPanelTrigger.focus();
+        detailPanelTrigger = null;
+      }
     }
 
     document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && !document.getElementById('detailOverlay').classList.contains('hidden')) {
+      var panelOpen = !document.getElementById('detailOverlay').classList.contains('hidden');
+      if (!panelOpen) return;
+
+      if (e.key === 'Escape') {
         closeDeviceDetail();
+        return;
+      }
+
+      // Focus trap: cycle Tab/Shift+Tab within the detail panel
+      if (e.key === 'Tab') {
+        var panel = document.getElementById('detailPanel');
+        var focusable = panel.querySelectorAll(
+          'button:not([disabled]):not([style*="display:none"]), ' +
+          'a[href], input:not([disabled]), select:not([disabled]), ' +
+          'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length === 0) return;
+        var first = focusable[0];
+        var last = focusable[focusable.length - 1];
+        if (e.shiftKey) {
+          if (document.activeElement === first || !panel.contains(document.activeElement)) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (document.activeElement === last || !panel.contains(document.activeElement)) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }
     });
 
@@ -3145,7 +3203,7 @@
 
   <!-- Device Detail Panel -->
   <div class="detail-overlay hidden" id="detailOverlay" onclick="closeDeviceDetail()"></div>
-  <div class="detail-panel hidden" id="detailPanel" style="display:none;" onclick="event.stopPropagation()">
+  <div class="detail-panel hidden" id="detailPanel" role="dialog" aria-modal="true" aria-labelledby="detailTitle" style="display:none;" onclick="event.stopPropagation()">
     <div class="detail-header">
       <h2 id="detailTitle"></h2>
       <button class="detail-close" onclick="closeDeviceDetail()" title="Close">&times;</button>
