@@ -7,6 +7,7 @@ import Slider from "@/components/controls/Slider";
 import Sensor from "@/components/controls/Sensor";
 import ColorPicker from "@/components/controls/ColorPicker";
 import MetricChart from "@/components/charts/MetricChart";
+import UptimeTimeline from "@/components/charts/UptimeTimeline";
 import DeviceNickname from "@/components/DeviceNickname";
 import DeviceLogs from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
@@ -237,6 +238,10 @@ export default function DeviceDetail() {
           )}
         </div>
       </div>
+
+      {/* Uptime History */}
+      <SectionHeader title="Uptime History" />
+      <UptimeTimeline deviceId={device.id} />
 
       {/* Charts */}
       {hasSensors && (
