@@ -36,7 +36,9 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   - ~~Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.~~ — ✅ **shipped** (ca8b632). Expand-on-hover deferred — the tooltip shows transition count + timespan which is sufficient.
   - ~~Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.~~ — ✅ **shipped** (4d1a6ca). Compact 10px ribbon per device with online % label, reuses existing annotation fetch.
 
-- ~~**Polish-pass sweep of the detail panel on a real phone**~~ — ✅ **shipped** (9408006). Chart touch-scrolling fix (`touch-action: pan-y pinch-zoom`), mobile touch target bump (`min-height: 2rem`), stat line separator grouping (`white-space: nowrap`). Verified via headless Chrome at 375px and 320px. Remaining: tab-key focus trap (detail panel doesn't trap focus), keyboard shortcut to open panel from device list.
+- ~~**Polish-pass sweep of the detail panel on a real phone**~~ — ✅ **shipped** (9408006). Chart touch-scrolling fix (`touch-action: pan-y pinch-zoom`), mobile touch target bump (`min-height: 2rem`), stat line separator grouping (`white-space: nowrap`). Verified via headless Chrome at 375px and 320px. Remaining: keyboard shortcut to open panel from device list.
+
+- ~~**Tab-key focus trap in detail panel**~~ — ✅ **shipped** (0c6207b). Tab/Shift+Tab trapped inside panel, Escape returns focus to trigger, `aria-hidden` on background, `role="dialog" aria-modal="true"` on panel. Verified via headless Chrome (desktop 1280px + mobile 320px) with 20 automated assertions.
 
 - ~~**Second skill crystallization: `session-start-gate`**~~ — ✅ **shipped**. `skill_session_start_gate.md` written, confidence `unverified`. Next session fires it for the first time under observation.
 
