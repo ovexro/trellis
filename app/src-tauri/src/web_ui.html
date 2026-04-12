@@ -1598,7 +1598,10 @@
         });
       }
 
-      container.innerHTML = buildUptimeStatLine(segments) + renderUptimeSvg(segments, windowStart, now, hours);
+      var statHtml = buildUptimeStatLine(segments);
+      var windowMs = now - windowStart;
+      var displaySegs = clusterUptimeSegments(segments, windowMs);
+      container.innerHTML = statHtml + renderUptimeSvg(displaySegs, windowStart, now, hours);
 
       // Wire click-through on non-inferred segments. The leading
       // inferred segment has no matching log row so it's non-clickable.
@@ -1680,12 +1683,67 @@
       if (kind === 'online') return 'Online';
       if (kind === 'offline') return 'Offline';
       if (kind === 'unknown') return 'Unknown';
+      if (kind === 'cluster') return 'Clustered';
       return kind;
+    }
+
+    // Collapse consecutive narrow segments into a single striped "cluster"
+    // segment so dense transition regions render as a readable bar.
+    function clusterUptimeSegments(segs, windowMs) {
+      var CLUSTER_MIN_PX = 6; // SVG viewBox units
+      var CLUSTER_MIN_COUNT = 3;
+      var DATA_W = 348; // W(400) - pad.left(42) - pad.right(10)
+      var result = [];
+      var run = [];
+
+      function flush() {
+        if (run.length >= CLUSTER_MIN_COUNT) {
+          result.push({
+            kind: 'cluster',
+            start: run[0].start,
+            end: run[run.length - 1].end,
+            inferred: false,
+            startTsRaw: run.find(function(s) { return s.startTsRaw; })
+              ? run.find(function(s) { return s.startTsRaw; }).startTsRaw
+              : null,
+            clustered: true,
+            clusterCount: run.length,
+          });
+        } else {
+          for (var j = 0; j < run.length; j++) result.push(run[j]);
+        }
+        run = [];
+      }
+
+      for (var i = 0; i < segs.length; i++) {
+        var s = segs[i];
+        if (s.inferred) {
+          if (run.length > 0) flush();
+          result.push(s);
+          continue;
+        }
+        var pxWidth = ((s.end - s.start) / windowMs) * DATA_W;
+        if (pxWidth < CLUSTER_MIN_PX) {
+          run.push(s);
+        } else {
+          if (run.length > 0) flush();
+          result.push(s);
+        }
+      }
+      if (run.length > 0) flush();
+      return result;
     }
 
     function uptimeTooltip(s) {
       var durationMs = s.end - s.start;
       var human = formatUptime(Math.max(0, Math.floor(durationMs / 1000)));
+      if (s.clustered) {
+        var startHuman = fmtTooltipTime(formatSqliteUtc(s.start));
+        var endHuman = (Date.now() - s.end < 2000)
+          ? 'now'
+          : fmtTooltipTime(formatSqliteUtc(s.end));
+        return s.clusterCount + ' transitions in ' + human + ' (' + startHuman + ' → ' + endHuman + ')';
+      }
       if (s.inferred) {
         return 'Unknown — no state transition recorded before this point (' + human + ')';
       }
@@ -1715,7 +1773,7 @@
         var x1 = x(s.start);
         var x2 = x(s.end);
         var w = Math.max(0.5, x2 - x1);
-        var color = uptimeColor(s);
+        var fill = s.clustered ? 'url(#uptime-cluster-stripes)' : uptimeColor(s);
         var tip = uptimeTooltip(s);
         return '<g class="uptime-segment"'
           + ' data-kind="' + esc(s.kind) + '"'
@@ -1723,13 +1781,16 @@
           + (s.startTsRaw ? (' data-start-ts="' + esc(s.startTsRaw) + '"') : '')
           + '>'
           + '<title>' + esc(tip) + '</title>'
-          + '<rect x="' + x1.toFixed(1) + '" y="0" width="' + w.toFixed(1) + '" height="' + STRIP_H + '" fill="' + color + '"/>'
+          + '<rect x="' + x1.toFixed(1) + '" y="0" width="' + w.toFixed(1) + '" height="' + STRIP_H + '" fill="' + fill + '"/>'
           + '</g>';
       }).join('');
 
       var startLabel = fmtChartTime(formatSqliteUtc(windowStart), hours);
 
       var svg = '<svg class="uptime-svg" viewBox="0 0 ' + W + ' ' + TOTAL_H + '" preserveAspectRatio="xMidYMid meet">'
+        + '<defs><pattern id="uptime-cluster-stripes" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+        + '<rect width="3" height="6" fill="#10b981"/><rect x="3" width="3" height="6" fill="#ef4444"/>'
+        + '</pattern></defs>'
         + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="var(--border)" opacity="0.3"/>'
         + segHtml
         + '<rect x="' + pad.left + '" y="0" width="' + pw + '" height="' + STRIP_H + '" fill="none" stroke="var(--border)" stroke-width="0.5"/>'
@@ -1740,11 +1801,13 @@
       // Legend row — only kinds present, in stable order.
       var kindsPresent = {};
       segments.forEach(function(s) {
-        kindsPresent[s.inferred ? 'unknown' : s.kind] = true;
+        kindsPresent[s.clustered ? 'cluster' : s.inferred ? 'unknown' : s.kind] = true;
       });
-      var legendOrder = ['online', 'offline', 'unknown'];
+      var legendOrder = ['online', 'offline', 'unknown', 'cluster'];
       var items = legendOrder.filter(function(k) { return kindsPresent[k]; }).map(function(k) {
-        var swatchColor = uptimeColor({ kind: k, inferred: k === 'unknown' });
+        var swatchColor = k === 'cluster'
+          ? 'linear-gradient(135deg, #10b981 50%, #ef4444 50%)'
+          : uptimeColor({ kind: k, inferred: k === 'unknown' });
         return '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + swatchColor + ';"></span>' + esc(uptimeKindLabel(k)) + '</span>';
       }).join('');
       var legendHtml = items ? '<div class="chart-legend" style="margin-top:0;">' + items + '</div>' : '';

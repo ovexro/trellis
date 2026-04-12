@@ -14,6 +14,8 @@ interface Segment {
   end: number;
   inferred: boolean;
   annotationTs?: string;
+  clustered?: boolean;
+  clusterCount?: number;
 }
 
 interface UptimeTimelineProps {
@@ -37,7 +39,7 @@ const PAD_L = 42;
 const PAD_R = 10;
 const DATA_W = W - PAD_L - PAD_R;
 
-const LEGEND_ORDER = ["online", "offline", "unknown"];
+const LEGEND_ORDER = ["online", "offline", "unknown", "cluster"];
 
 function parseUtcMs(ts: string): number {
   return new Date(ts + "Z").getTime();
@@ -54,6 +56,7 @@ function kindLabel(kind: string): string {
   if (kind === "online") return "Online";
   if (kind === "offline") return "Offline";
   if (kind === "unknown") return "Unknown";
+  if (kind === "cluster") return "Clustered";
   return kind;
 }
 
@@ -88,6 +91,60 @@ function segTooltip(seg: Segment): string {
     Date.now() - seg.end < 2000 ? "now" : new Date(seg.end).toLocaleString();
   const word = seg.kind === "online" ? "Online" : "Offline";
   return `${word} for ${human} (${startStr} \u2192 ${endStr})`;
+}
+
+// Minimum segment width (in SVG viewBox units) before clustering kicks in.
+// Below this, individual segments are too narrow to distinguish or tap.
+const CLUSTER_MIN_PX = 6;
+const CLUSTER_MIN_COUNT = 3;
+
+function clusterSegments(segs: Segment[], windowMs: number): Segment[] {
+  const result: Segment[] = [];
+  let run: Segment[] = [];
+
+  const flush = () => {
+    if (run.length >= CLUSTER_MIN_COUNT) {
+      result.push({
+        kind: "cluster",
+        start: run[0].start,
+        end: run[run.length - 1].end,
+        inferred: false,
+        annotationTs: run.find((s) => s.annotationTs)?.annotationTs,
+        clustered: true,
+        clusterCount: run.length,
+      });
+    } else {
+      result.push(...run);
+    }
+    run = [];
+  };
+
+  for (const seg of segs) {
+    if (seg.inferred) {
+      if (run.length > 0) flush();
+      result.push(seg);
+      continue;
+    }
+    const pxWidth = ((seg.end - seg.start) / windowMs) * DATA_W;
+    if (pxWidth < CLUSTER_MIN_PX) {
+      run.push(seg);
+    } else {
+      if (run.length > 0) flush();
+      result.push(seg);
+    }
+  }
+  if (run.length > 0) flush();
+
+  return result;
+}
+
+function clusterTooltip(seg: Segment): string {
+  const durSec = Math.max(0, Math.floor((seg.end - seg.start) / 1000));
+  const human = fmtDuration(durSec);
+  const startStr = new Date(seg.start).toLocaleString();
+  const endStr =
+    Date.now() - seg.end < 2000 ? "now" : new Date(seg.end).toLocaleString();
+  return `${seg.clusterCount} transitions in ${human} (${startStr} \u2192 ${endStr})`;
 }
 
 function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
@@ -183,12 +240,19 @@ function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
       };
     }
 
+    // Cluster narrow segments so dense transition regions render as a single
+    // striped bar instead of unreadable sub-pixel hairlines.
+    const windowMs = now - windowStart;
+    const displaySegs = clusterSegments(segs, windowMs);
+
     const present = new Set(
-      segs.map((s) => (s.inferred ? "unknown" : s.kind))
+      displaySegs.map((s) =>
+        s.clustered ? "cluster" : s.inferred ? "unknown" : s.kind
+      )
     );
     const legendKinds = LEGEND_ORDER.filter((k) => present.has(k));
 
-    return { segments: segs, statLine, legendKinds, now, windowStart };
+    return { segments: displaySegs, statLine, legendKinds, now, windowStart };
   }, [annotations, hours]);
 
   const { segments, statLine, legendKinds, now, windowStart } = derived;
@@ -242,6 +306,20 @@ function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
         preserveAspectRatio="xMidYMid meet"
         className="w-full block"
       >
+        <defs>
+          {/* Diagonal stripe pattern for clustered transition regions */}
+          <pattern
+            id="uptime-cluster-stripes"
+            width="6"
+            height="6"
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <rect width="3" height="6" fill="#10b981" />
+            <rect x="3" width="3" height="6" fill="#ef4444" />
+          </pattern>
+        </defs>
+
         {/* Background track */}
         <rect
           x={PAD_L}
@@ -268,13 +346,19 @@ function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
                   : undefined
               }
             >
-              <title>{segTooltip(seg)}</title>
+              <title>
+                {seg.clustered ? clusterTooltip(seg) : segTooltip(seg)}
+              </title>
               <rect
                 x={x1}
                 y={0}
                 width={w}
                 height={STRIP_H}
-                fill={segColor(seg.kind, seg.inferred)}
+                fill={
+                  seg.clustered
+                    ? "url(#uptime-cluster-stripes)"
+                    : segColor(seg.kind, seg.inferred)
+                }
                 className={clickable ? "uptime-seg-hover" : undefined}
               />
             </g>
@@ -333,7 +417,12 @@ function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
             <span key={k} className="inline-flex items-center gap-1.5">
               <span
                 className="inline-block w-2 h-2 rounded-full"
-                style={{ background: segColor(k, k === "unknown") }}
+                style={{
+                  background:
+                    k === "cluster"
+                      ? "linear-gradient(135deg, #10b981 50%, #ef4444 50%)"
+                      : segColor(k, k === "unknown"),
+                }}
               />
               {kindLabel(k)}
             </span>
