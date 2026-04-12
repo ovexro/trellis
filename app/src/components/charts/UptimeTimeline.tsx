@@ -13,10 +13,12 @@ interface Segment {
   start: number;
   end: number;
   inferred: boolean;
+  annotationTs?: string;
 }
 
 interface UptimeTimelineProps {
   deviceId: string;
+  onSegmentClick?: (timestamp: string) => void;
 }
 
 const TIME_RANGES = [
@@ -88,7 +90,7 @@ function segTooltip(seg: Segment): string {
   return `${word} for ${human} (${startStr} \u2192 ${endStr})`;
 }
 
-function UptimeTimelineImpl({ deviceId }: UptimeTimelineProps) {
+function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [hours, setHours] = useState(1);
 
@@ -151,6 +153,7 @@ function UptimeTimelineImpl({ deviceId }: UptimeTimelineProps) {
         start: states[i].ts,
         end: nextTs,
         inferred: false,
+        annotationTs: states[i].timestamp,
       });
     }
 
@@ -254,8 +257,17 @@ function UptimeTimelineImpl({ deviceId }: UptimeTimelineProps) {
           const x1 = xPos(seg.start);
           const x2 = xPos(seg.end);
           const w = Math.max(0.5, x2 - x1);
+          const clickable = !seg.inferred && onSegmentClick && seg.annotationTs;
           return (
-            <g key={i}>
+            <g
+              key={i}
+              style={clickable ? { cursor: "pointer" } : undefined}
+              onClick={
+                clickable
+                  ? () => onSegmentClick(seg.annotationTs!)
+                  : undefined
+              }
+            >
               <title>{segTooltip(seg)}</title>
               <rect
                 x={x1}
@@ -263,6 +275,7 @@ function UptimeTimelineImpl({ deviceId }: UptimeTimelineProps) {
                 width={w}
                 height={STRIP_H}
                 fill={segColor(seg.kind, seg.inferred)}
+                className={clickable ? "uptime-seg-hover" : undefined}
               />
             </g>
           );

@@ -79,3 +79,17 @@
 .animate-page-enter {
   animation: pageEnter 150ms ease-out;
 }
+
+/* Annotation / uptime click-through flash highlight */
+@keyframes annFlash {
+  0%   { background-color: rgba(245, 158, 11, 0.35); }
+  100% { background-color: transparent; }
+}
+.annotation-flash {
+  animation: annFlash 1.5s ease-out;
+}
+
+/* Uptime segment hover brightness */
+.uptime-seg-hover:hover {
+  filter: brightness(1.3);
+}

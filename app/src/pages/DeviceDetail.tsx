@@ -1,3 +1,4 @@
+import { useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Wifi, Trash2, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -9,7 +10,7 @@ import ColorPicker from "@/components/controls/ColorPicker";
 import MetricChart from "@/components/charts/MetricChart";
 import UptimeTimeline from "@/components/charts/UptimeTimeline";
 import DeviceNickname from "@/components/DeviceNickname";
-import DeviceLogs from "@/components/DeviceLogs";
+import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import type { Capability } from "@/lib/types";
 
@@ -29,6 +30,22 @@ export default function DeviceDetail() {
   const navigate = useNavigate();
   const { devices, updateCapability } = useDeviceStore();
   const device = devices.find((d) => d.id === id);
+  const logsRef = useRef<DeviceLogsHandle>(null);
+
+  const handleAnnotationClick = useCallback(
+    (ann: { timestamp: string; kind: string; label: string }) => {
+      if (ann.kind === "ota") return;
+      logsRef.current?.scrollToLog(ann.timestamp, "events");
+    },
+    []
+  );
+
+  const handleSegmentClick = useCallback(
+    (timestamp: string) => {
+      logsRef.current?.scrollToLog(timestamp, "state");
+    },
+    []
+  );
 
   if (!device) {
     return (
@@ -241,7 +258,7 @@ export default function DeviceDetail() {
 
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />
-      <UptimeTimeline deviceId={device.id} />
+      <UptimeTimeline deviceId={device.id} onSegmentClick={handleSegmentClick} />
 
       {/* Charts */}
       {hasSensors && (
@@ -257,6 +274,7 @@ export default function DeviceDetail() {
                   metricId={cap.id}
                   label={cap.label}
                   unit={cap.unit}
+                  onAnnotationClick={handleAnnotationClick}
                 />
               ))}
           </div>
@@ -272,6 +290,7 @@ export default function DeviceDetail() {
           label="WiFi Signal"
           unit="dBm"
           color="#f59e0b"
+          onAnnotationClick={handleAnnotationClick}
         />
         <MetricChart
           deviceId={device.id}
@@ -279,6 +298,7 @@ export default function DeviceDetail() {
           label="Free Heap"
           unit="bytes"
           color="#3b82f6"
+          onAnnotationClick={handleAnnotationClick}
         />
       </div>
 
@@ -293,7 +313,7 @@ export default function DeviceDetail() {
 
       {/* Device Logs */}
       <SectionHeader title="Logs" />
-      <DeviceLogs key={device.id} deviceId={device.id} />
+      <DeviceLogs key={device.id} deviceId={device.id} ref={logsRef} />
 
       {/* Remove Device */}
       <div className="mt-12 pt-6 border-t border-zinc-800/50">

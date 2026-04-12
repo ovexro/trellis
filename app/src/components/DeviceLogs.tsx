@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { ScrollText } from "lucide-react";
@@ -11,6 +11,10 @@ interface LogEntry {
 
 interface DeviceLogsProps {
   deviceId: string;
+}
+
+export interface DeviceLogsHandle {
+  scrollToLog: (timestamp: string, targetFilter: string) => void;
 }
 
 // Chip row mirrors the :9090 dashboard's Recent Logs filter set. `events`
@@ -38,128 +42,184 @@ function liveLogMatchesChip(chipKey: string, severity: string): boolean {
   return chipKey === severity;
 }
 
-export default function DeviceLogs({ deviceId }: DeviceLogsProps) {
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [filter, setFilter] = useState<string>("all");
-  // Stale-fetch guard: increment before each fetch, capture locally, drop
-  // the result if another fetch started mid-await. Mirrors the
-  // `currentLogDeviceId` pattern in web_ui.html.
-  const fetchGenRef = useRef(0);
-  // Lets the WS listener closure read the latest filter without
-  // re-subscribing on every chip click.
-  const filterRef = useRef(filter);
-  useEffect(() => {
-    filterRef.current = filter;
-  }, [filter]);
+function flashRow(el: HTMLElement) {
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.remove("annotation-flash");
+  void el.offsetWidth;
+  el.classList.add("annotation-flash");
+  setTimeout(() => el.classList.remove("annotation-flash"), 1700);
+}
 
-  // Fetch on deviceId / filter change.
-  useEffect(() => {
-    const gen = ++fetchGenRef.current;
-    const chip = CHIPS.find((c) => c.key === filter) ?? CHIPS[0];
-    (async () => {
-      try {
-        const entries = await invoke<LogEntry[]>("get_device_logs", {
-          deviceId,
-          limit: 200,
-          severity: chip.severity,
-        });
-        if (fetchGenRef.current !== gen) return;
-        setLogs(entries);
-      } catch (err) {
-        console.error("Failed to load logs:", err);
-      }
-    })();
-  }, [deviceId, filter]);
+const DeviceLogs = forwardRef<DeviceLogsHandle, DeviceLogsProps>(
+  function DeviceLogs({ deviceId }, ref) {
+    const [logs, setLogs] = useState<LogEntry[]>([]);
+    const [filter, setFilter] = useState<string>("all");
+    // Stale-fetch guard: increment before each fetch, capture locally, drop
+    // the result if another fetch started mid-await. Mirrors the
+    // `currentLogDeviceId` pattern in web_ui.html.
+    const fetchGenRef = useRef(0);
+    // Lets the WS listener closure read the latest filter without
+    // re-subscribing on every chip click.
+    const filterRef = useRef(filter);
+    const containerRef = useRef<HTMLDivElement>(null);
+    const pendingScrollRef = useRef<{ timestamp: string } | null>(null);
 
-  // Live log listener — resubscribes only on device change.
-  useEffect(() => {
-    const unlisten = listen<{ device_id: string; event_type: string; payload: { severity?: string; message?: string } }>(
-      "device-event",
-      (e) => {
-        if (e.payload.device_id !== deviceId) return;
-        if (e.payload.event_type !== "log") return;
+    useEffect(() => {
+      filterRef.current = filter;
+    }, [filter]);
 
-        const severity = e.payload.payload.severity || "info";
-        const message = e.payload.payload.message || "";
+    // Fetch on deviceId / filter change.
+    useEffect(() => {
+      const gen = ++fetchGenRef.current;
+      const chip = CHIPS.find((c) => c.key === filter) ?? CHIPS[0];
+      (async () => {
+        try {
+          const entries = await invoke<LogEntry[]>("get_device_logs", {
+            deviceId,
+            limit: 200,
+            severity: chip.severity,
+          });
+          if (fetchGenRef.current !== gen) return;
+          setLogs(entries);
+        } catch (err) {
+          console.error("Failed to load logs:", err);
+        }
+      })();
+    }, [deviceId, filter]);
 
-        // Always persist — a filtered view shouldn't hide writes to disk.
-        invoke("store_log_entry", {
-          deviceId,
-          severity,
-          message,
-        }).catch((err: unknown) => console.error("Failed to store log:", err));
+    // After logs update, handle any pending scroll-to-log request.
+    useEffect(() => {
+      if (!pendingScrollRef.current) return;
+      const { timestamp } = pendingScrollRef.current;
+      requestAnimationFrame(() => {
+        const row = containerRef.current?.querySelector(
+          `[data-ann-ts="${CSS.escape(timestamp)}"]`
+        );
+        if (row) flashRow(row as HTMLElement);
+        pendingScrollRef.current = null;
+      });
+    }, [logs]);
 
-        // Only append to the visible list if it matches the active chip.
-        if (!liveLogMatchesChip(filterRef.current, severity)) return;
+    // Live log listener — resubscribes only on device change.
+    useEffect(() => {
+      const unlisten = listen<{ device_id: string; event_type: string; payload: { severity?: string; message?: string } }>(
+        "device-event",
+        (e) => {
+          if (e.payload.device_id !== deviceId) return;
+          if (e.payload.event_type !== "log") return;
 
-        const entry: LogEntry = {
-          severity,
-          message,
-          timestamp: new Date().toISOString(),
-        };
-        setLogs((prev) => [...prev.slice(-499), entry]);
-      },
+          const severity = e.payload.payload.severity || "info";
+          const message = e.payload.payload.message || "";
+
+          // Always persist — a filtered view shouldn't hide writes to disk.
+          invoke("store_log_entry", {
+            deviceId,
+            severity,
+            message,
+          }).catch((err: unknown) => console.error("Failed to store log:", err));
+
+          // Only append to the visible list if it matches the active chip.
+          if (!liveLogMatchesChip(filterRef.current, severity)) return;
+
+          const entry: LogEntry = {
+            severity,
+            message,
+            timestamp: new Date().toISOString(),
+          };
+          setLogs((prev) => [...prev.slice(-499), entry]);
+        },
+      );
+
+      return () => { unlisten.then((fn) => fn()); };
+    }, [deviceId]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        scrollToLog(timestamp: string, targetFilter: string) {
+          // Try current DOM first.
+          const row = containerRef.current?.querySelector(
+            `[data-ann-ts="${CSS.escape(timestamp)}"]`
+          );
+          if (row) {
+            flashRow(row as HTMLElement);
+            return;
+          }
+          // Switch filter and scroll after the refetch lands.
+          pendingScrollRef.current = { timestamp };
+          if (filterRef.current !== targetFilter) {
+            setFilter(targetFilter);
+          } else {
+            // Already on the target filter — row not in the 200-entry window.
+            pendingScrollRef.current = null;
+          }
+        },
+      }),
+      []
     );
 
-    return () => { unlisten.then((fn) => fn()); };
-  }, [deviceId]);
+    const severityColor = (s: string) => {
+      switch (s) {
+        case "error": return "text-red-400";
+        case "warn": return "text-amber-400";
+        case "info": return "text-blue-400";
+        case "state": return "text-emerald-400";
+        case "debug": return "text-zinc-500";
+        default: return "text-zinc-400";
+      }
+    };
 
-  const severityColor = (s: string) => {
-    switch (s) {
-      case "error": return "text-red-400";
-      case "warn": return "text-amber-400";
-      case "info": return "text-blue-400";
-      case "state": return "text-emerald-400";
-      case "debug": return "text-zinc-500";
-      default: return "text-zinc-400";
-    }
-  };
+    return (
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+        <div className="mb-3">
+          <h3 className="text-sm font-semibold text-zinc-300 flex items-center gap-2 mb-2">
+            <ScrollText size={14} />
+            Device Logs
+          </h3>
+          <div className="flex flex-wrap gap-1">
+            {CHIPS.map((chip) => (
+              <button
+                key={chip.key}
+                onClick={() => setFilter(chip.key)}
+                className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
+                  filter === chip.key
+                    ? "bg-trellis-500/20 text-trellis-400"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {chip.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-  return (
-    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-      <div className="mb-3">
-        <h3 className="text-sm font-semibold text-zinc-300 flex items-center gap-2 mb-2">
-          <ScrollText size={14} />
-          Device Logs
-        </h3>
-        <div className="flex flex-wrap gap-1">
-          {CHIPS.map((chip) => (
-            <button
-              key={chip.key}
-              onClick={() => setFilter(chip.key)}
-              className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
-                filter === chip.key
-                  ? "bg-trellis-500/20 text-trellis-400"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {chip.label}
-            </button>
-          ))}
+        <div
+          ref={containerRef}
+          className="max-h-72 overflow-auto font-mono text-xs space-y-0.5"
+        >
+          {logs.length === 0 ? (
+            <p className="text-zinc-600 text-center py-4">
+              {filter === "all"
+                ? 'No logs yet. Use trellis.logInfo("message") in your firmware.'
+                : "No matching log entries in the last 200."}
+            </p>
+          ) : (
+            logs.map((log, i) => (
+              <div key={i} className="flex gap-2" data-ann-ts={log.timestamp}>
+                <span className="text-zinc-600 flex-shrink-0">
+                  {new Date(log.timestamp + "Z").toLocaleTimeString()}
+                </span>
+                <span className={`flex-shrink-0 uppercase w-10 ${severityColor(log.severity)}`}>
+                  {log.severity}
+                </span>
+                <span className="text-zinc-300">{log.message}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
+    );
+  }
+);
 
-      <div className="max-h-72 overflow-auto font-mono text-xs space-y-0.5">
-        {logs.length === 0 ? (
-          <p className="text-zinc-600 text-center py-4">
-            {filter === "all"
-              ? 'No logs yet. Use trellis.logInfo("message") in your firmware.'
-              : "No matching log entries in the last 200."}
-          </p>
-        ) : (
-          logs.map((log, i) => (
-            <div key={i} className="flex gap-2">
-              <span className="text-zinc-600 flex-shrink-0">
-                {new Date(log.timestamp + "Z").toLocaleTimeString()}
-              </span>
-              <span className={`flex-shrink-0 uppercase w-10 ${severityColor(log.severity)}`}>
-                {log.severity}
-              </span>
-              <span className="text-zinc-300">{log.message}</span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
+export default DeviceLogs;

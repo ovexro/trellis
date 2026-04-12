@@ -41,6 +41,7 @@ interface MetricChartProps {
   label: string;
   unit?: string;
   color?: string;
+  onAnnotationClick?: (ann: { timestamp: string; kind: string; label: string }) => void;
 }
 
 const TIME_RANGES = [
@@ -112,6 +113,7 @@ function MetricChartImpl({
   label,
   unit,
   color = "#22c55e",
+  onAnnotationClick,
 }: MetricChartProps) {
   const [data, setData] = useState<ChartPoint[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
@@ -388,6 +390,17 @@ function MetricChartImpl({
                     stroke="#0a0a0a"
                     strokeWidth={1}
                     ifOverflow="extendDomain"
+                    className={onAnnotationClick ? "cursor-pointer" : ""}
+                    onClick={
+                      onAnnotationClick
+                        ? () =>
+                            onAnnotationClick({
+                              timestamp: a.timestamp,
+                              kind: a.kind,
+                              label: a.label,
+                            })
+                        : undefined
+                    }
                   />
                 );
               })}
