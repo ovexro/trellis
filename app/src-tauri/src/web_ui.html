@@ -1071,7 +1071,7 @@
       if (uptime) metaHtml += `<span class="meta-item"><span class="meta-label">Up</span> ${uptime}</span>`;
       if (chip) metaHtml += `<span class="meta-item"><span class="meta-label">Chip</span> ${esc(chip)}</span>`;
       if (online && dev.id) metaHtml += `<a class="meta-item" href="/proxy/${encodeURIComponent(dev.id)}/" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;">Dashboard ↗</a>`;
-      metaHtml += `<a class="meta-item" onclick="event.stopPropagation();openDeviceDetail('${esc(dev.id)}')" style="color:var(--accent);text-decoration:none;cursor:pointer;">Details</a>`;
+      metaHtml += `<a class="meta-item" href="#" onclick="event.preventDefault();event.stopPropagation();openDeviceDetail('${esc(dev.id)}')" style="color:var(--accent);text-decoration:none;cursor:pointer;">Details</a>`;
 
       let controlsHtml = '';
       if (expanded && dev.capabilities && dev.capabilities.length) {
@@ -2526,7 +2526,7 @@
           var dotColor = online ? 'var(--green)' : 'var(--red)';
           var safeId = dev.id.replace(/[^a-zA-Z0-9_-]/g, '_');
 
-          section.innerHTML = '<div class="metrics-device-header" onclick="openDeviceDetail(\'' + esc(dev.id) + '\')">'
+          section.innerHTML = '<div class="metrics-device-header" tabindex="0" role="button" onclick="openDeviceDetail(\'' + esc(dev.id) + '\')" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();openDeviceDetail(\'' + esc(dev.id) + '\');}">'
             + '<div class="metrics-device-name"><span class="metrics-status-dot" style="background:' + dotColor + ';"></span>' + esc(name) + '</div>'
             + '<span class="metrics-detail-link">Details &#8594;</span>'
             + '</div>'
