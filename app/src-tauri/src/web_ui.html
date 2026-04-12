@@ -1502,6 +1502,10 @@
       var results = await Promise.all(fetches);
       var annotations = await annFetch;
 
+      // Stale-fetch guard: if a newer loadDetailCharts call arrived
+      // while we were fetching, this device is no longer current.
+      if (id !== detailChartDeviceId) return;
+
       container.innerHTML = '';
       var hasData = false;
       results.forEach(function(pts, i) {
@@ -2233,6 +2237,10 @@
 
       const [logs, fwHist, rssiPts, heapPts] = await Promise.all([logsP, fwP, rssiP, heapP]);
 
+      // Stale-fetch guard: the user may have opened a different device
+      // while we were fetching. If so, bail — the newer call will render.
+      if (id !== currentLogDeviceId) return;
+
       // Render logs (via the shared helper that setLogFilter also uses)
       const logsEl = document.getElementById('detailLogs');
       if (logsEl) {
@@ -2275,11 +2283,12 @@
       const panel = document.getElementById('detailPanel');
       panel.classList.add('hidden');
       setTimeout(function() { panel.style.display = 'none'; }, 200);
-      // Stop any in-flight loadDeviceLogs from writing into the closed
-      // panel's DOM. The stale-check in loadDeviceLogs bails when the
-      // deviceId no longer matches.
+      // Stop any in-flight fetches from writing into the closed panel's
+      // DOM. The stale-check guards in loadDeviceLogs and loadDetailCharts
+      // bail when the deviceId no longer matches.
       currentLogDeviceId = null;
       currentLogFilter = '';
+      detailChartDeviceId = null;
 
       // A11y: restore main content visibility and return focus
       document.querySelectorAll('body > [aria-hidden]').forEach(function(el) {
