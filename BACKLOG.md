@@ -33,7 +33,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
   **Suggested session breakdown:** ~~N+1 = (b) chip row~~ (done). ~~N+2 = (a) chart annotations~~ (done). ~~N+3 = (c) uptime timeline~~ (done). ~~N+4 = (d)+(e)+(f) cleanup~~ (done). **All P1+P2 sub-tasks shipped. Only P3 out-of-scope items remain.**
 
 - **Uptime timeline polish pass — remaining candidates**:
-  - Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.
+  - ~~Clustering when >5 transitions collapse to <10px each, render as striped "noisy" bar with expand-on-hover detail view.~~ — ✅ **shipped** (ca8b632). Expand-on-hover deferred — the tooltip shows transition count + timespan which is sufficient.
   - Extend to the Metrics tab so every device shows its strip side-by-side for at-a-glance fleet health.
 
 - **Polish-pass sweep of the detail panel on a real phone** — filter chip mobile layout, uptime strip mobile layout, uptime stat line mobile wrapping, tab-key focus order, keyboard shortcut to open the panel from the device list, ensure chip/strip/stat-line state clears correctly on device switch. Requires real phone testing.
