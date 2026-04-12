@@ -9,6 +9,7 @@ use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
 use serde::Serialize;
 use serde_json::Value;
+use std::io::Read as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
@@ -210,6 +211,156 @@ pub async fn rollback_firmware(
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
         log::info!("[OTA] Rollback triggered for device {}", device_id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+// ─── GitHub OTA ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct GithubAsset {
+    pub name: String,
+    pub size: i64,
+    pub download_url: String,
+}
+
+#[derive(Serialize)]
+pub struct GithubRelease {
+    pub tag: String,
+    pub name: String,
+    pub published_at: String,
+    pub assets: Vec<GithubAsset>,
+}
+
+#[tauri::command]
+pub async fn check_github_releases(
+    owner: String,
+    repo: String,
+) -> Result<Vec<GithubRelease>, String> {
+    tokio::task::spawn_blocking(move || {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/releases",
+            owner, repo
+        );
+        let resp = ureq::get(&url)
+            .set("User-Agent", "Trellis-Desktop")
+            .set("Accept", "application/vnd.github+json")
+            .timeout(std::time::Duration::from_secs(10))
+            .call()
+            .map_err(|e| format!("GitHub API error: {}", e))?;
+
+        let releases: Vec<serde_json::Value> = resp
+            .into_json()
+            .map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let mut result = Vec::new();
+        for rel in releases.iter().take(20) {
+            let tag = rel["tag_name"].as_str().unwrap_or("").to_string();
+            let name = rel["name"].as_str().unwrap_or(&tag).to_string();
+            let published = rel["published_at"].as_str().unwrap_or("").to_string();
+
+            let mut assets = Vec::new();
+            if let Some(arr) = rel["assets"].as_array() {
+                for asset in arr {
+                    let aname = asset["name"].as_str().unwrap_or("");
+                    if aname.ends_with(".bin") {
+                        assets.push(GithubAsset {
+                            name: aname.to_string(),
+                            size: asset["size"].as_i64().unwrap_or(0),
+                            download_url: asset["browser_download_url"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+
+            if !assets.is_empty() {
+                result.push(GithubRelease {
+                    tag,
+                    name,
+                    published_at: published,
+                    assets,
+                });
+            }
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn start_github_ota(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    app_handle: AppHandle,
+    device_id: String,
+    ip: String,
+    port: u16,
+    download_url: String,
+    release_tag: String,
+    asset_name: String,
+) -> Result<(), String> {
+    let conn_mgr = state.connection_manager.clone();
+    let ws_port = port + 1;
+
+    // Prepare firmware storage directory
+    let fw_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No app dir: {}", e))?
+        .join("firmware");
+    std::fs::create_dir_all(&fw_dir)
+        .map_err(|e| format!("Failed to create firmware dir: {}", e))?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let dest_name = format!("{}_gh_{}_{}.bin", device_id, release_tag, timestamp);
+    let dest_path = fw_dir.join(&dest_name);
+    let dest_str = dest_path.to_string_lossy().to_string();
+
+    // Download firmware from GitHub
+    let dl_dest = dest_path.clone();
+    let dl_url = download_url.clone();
+    let file_size = tokio::task::spawn_blocking(move || {
+        log::info!("[OTA] Downloading {} from GitHub...", asset_name);
+        let resp = ureq::get(&dl_url)
+            .set("User-Agent", "Trellis-Desktop")
+            .timeout(std::time::Duration::from_secs(120))
+            .call()
+            .map_err(|e| format!("Download failed: {}", e))?;
+
+        let mut reader = resp.into_reader();
+        let mut data = Vec::new();
+        reader
+            .read_to_end(&mut data)
+            .map_err(|e| format!("Read failed: {}", e))?;
+
+        let size = data.len() as i64;
+        std::fs::write(&dl_dest, &data)
+            .map_err(|e| format!("Failed to save firmware: {}", e))?;
+
+        log::info!("[OTA] Downloaded {} bytes to {:?}", size, dl_dest);
+        Ok::<i64, String>(size)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))??;
+
+    // Store firmware record for history/rollback
+    db.store_firmware_record(&device_id, &release_tag, &dest_str, file_size)?;
+
+    // Serve firmware to device via existing OTA flow
+    let serve_handle = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let (url, _stop_flag) =
+            ota::serve_firmware(&dest_str, serve_handle, device_id.clone())?;
+        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+        let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
+        conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
+        log::info!("[OTA] GitHub OTA triggered for device {}", device_id);
         Ok(())
     })
     .await

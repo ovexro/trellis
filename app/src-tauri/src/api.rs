@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use serde_json::Value;
 
+use tauri::Manager as _;
+
 use crate::auth::{self, AuthResult, RateLimiter, Role, REQUIRE_AUTH_LOCALHOST_KEY};
 use crate::connection::ConnectionManager;
 use crate::db::Database;
@@ -57,6 +59,7 @@ struct ApiContext {
     secret_store: Arc<SecretStore>,
     rate_limiter: RateLimiter,
     ws_broadcaster: Arc<WsBroadcaster>,
+    app_handle: tauri::AppHandle,
 }
 
 /// Setting keys whose raw values must NEVER be returned by — or written
@@ -86,6 +89,7 @@ pub fn start_api_server(
     mqtt_bridge: Arc<MqttBridge>,
     secret_store: Arc<SecretStore>,
     ws_broadcaster: Arc<WsBroadcaster>,
+    app_handle: tauri::AppHandle,
 ) {
     std::thread::spawn(move || {
         let conn = match Connection::open(&db_path) {
@@ -102,6 +106,7 @@ pub fn start_api_server(
             mqtt_bridge,
             secret_store,
             rate_limiter: RateLimiter::new(),
+            app_handle,
             ws_broadcaster,
         });
 
@@ -1268,6 +1273,27 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        // ─── GitHub OTA ──────────────────────────────────────────────
+        ("GET", "/api/github/releases") => {
+            let owner = match req.query.get("owner") {
+                Some(o) => o.clone(),
+                None => return json_error(400, "Missing ?owner= parameter"),
+            };
+            let repo = match req.query.get("repo") {
+                Some(r) => r.clone(),
+                None => return json_error(400, "Missing ?repo= parameter"),
+            };
+            match fetch_github_releases(&owner, &repo) {
+                Ok(releases) => json_ok(&releases),
+                Err(e) => json_error(502, &e),
+            }
+        }
+
+        ("POST", "/api/github/ota") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_github_ota(ctx, &req.body)
+        }
+
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
     }
@@ -1497,6 +1523,151 @@ fn handle_create_token(ctx: &ApiContext, body: &str) -> (u16, String) {
             (201, resp.to_string())
         }
         Err(e) => json_error(500, &e),
+    }
+}
+
+// ─── GitHub OTA handlers ────────────────────────────────────────────────────
+
+fn fetch_github_releases(owner: &str, repo: &str) -> Result<serde_json::Value, String> {
+    let url = format!("https://api.github.com/repos/{}/{}/releases", owner, repo);
+    let resp = ureq::get(&url)
+        .set("User-Agent", "Trellis-Desktop")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| format!("GitHub API error: {}", e))?;
+
+    let releases: Vec<serde_json::Value> = resp
+        .into_json()
+        .map_err(|e| format!("JSON parse error: {}", e))?;
+
+    let mut result = Vec::new();
+    for rel in releases.iter().take(20) {
+        let tag = rel["tag_name"].as_str().unwrap_or("").to_string();
+        let name = rel["name"].as_str().unwrap_or(&tag).to_string();
+        let published = rel["published_at"].as_str().unwrap_or("").to_string();
+
+        let mut assets = Vec::new();
+        if let Some(arr) = rel["assets"].as_array() {
+            for asset in arr {
+                let aname = asset["name"].as_str().unwrap_or("");
+                if aname.ends_with(".bin") {
+                    assets.push(serde_json::json!({
+                        "name": aname,
+                        "size": asset["size"].as_i64().unwrap_or(0),
+                        "download_url": asset["browser_download_url"].as_str().unwrap_or(""),
+                    }));
+                }
+            }
+        }
+
+        if !assets.is_empty() {
+            result.push(serde_json::json!({
+                "tag": tag,
+                "name": name,
+                "published_at": published,
+                "assets": assets,
+            }));
+        }
+    }
+    Ok(serde_json::json!(result))
+}
+
+fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+
+    let device_id = match parsed["device_id"].as_str() {
+        Some(id) => id,
+        None => return json_error(400, "Missing device_id"),
+    };
+    let download_url = match parsed["download_url"].as_str() {
+        Some(u) => u,
+        None => return json_error(400, "Missing download_url"),
+    };
+    let release_tag = parsed["release_tag"].as_str().unwrap_or("unknown");
+    let asset_name = parsed["asset_name"].as_str().unwrap_or("firmware.bin");
+
+    // Find the device
+    let devices = ctx.discovery.get_devices();
+    let device = match devices.iter().find(|d| d.id == device_id) {
+        Some(d) => d.clone(),
+        None => return json_error(404, "Device not found or offline"),
+    };
+
+    if !device.online {
+        return json_error(400, "Device is offline");
+    }
+
+    // Download the firmware
+    log::info!("[OTA] Downloading {} from GitHub for device {}", asset_name, device_id);
+    let resp = match ureq::get(download_url)
+        .set("User-Agent", "Trellis-Desktop")
+        .timeout(std::time::Duration::from_secs(120))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => return json_error(502, &format!("Download failed: {}", e)),
+    };
+
+    let mut data = Vec::new();
+    if let Err(e) = resp.into_reader().read_to_end(&mut data) {
+        return json_error(502, &format!("Read failed: {}", e));
+    }
+    let file_size = data.len() as i64;
+
+    // Save to firmware directory (same path as Tauri desktop OTA)
+    let fw_dir = match ctx.app_handle.path().app_data_dir() {
+        Ok(p) => p.join("firmware"),
+        Err(_) => {
+            // Fallback if path resolution fails
+            std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+            )
+            .join(".trellis")
+            .join("data")
+            .join("firmware")
+        }
+    };
+    let _ = std::fs::create_dir_all(&fw_dir);
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+    let dest_name = format!("{}_gh_{}_{}.bin", device_id, release_tag, timestamp);
+    let dest_path = fw_dir.join(&dest_name);
+    if let Err(e) = std::fs::write(&dest_path, &data) {
+        return json_error(500, &format!("Failed to save firmware: {}", e));
+    }
+
+    let dest_str = dest_path.to_string_lossy().to_string();
+    if let Err(e) = ctx.db.store_firmware_record(device_id, release_tag, &dest_str, file_size) {
+        return json_error(500, &e);
+    }
+
+    // Serve and trigger OTA
+    let ws_port = device.port + 1;
+    let conn_mgr = ctx.connection_manager.clone();
+    let app_handle = ctx.app_handle.clone();
+    let did = device_id.to_string();
+    let ip = device.ip.clone();
+
+    match crate::ota::serve_firmware(&dest_str, app_handle, did.clone()) {
+        Ok((url, _stop_flag)) => {
+            let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+            let msg = serde_json::to_string(&ota_cmd).unwrap_or_default();
+            if let Err(e) = conn_mgr.send_to_device(&did, &ip, ws_port, &msg) {
+                return json_error(500, &format!("Failed to send OTA command: {}", e));
+            }
+            log::info!("[OTA] GitHub OTA triggered for device {} via REST", did);
+            json_ok(&serde_json::json!({
+                "status": "ota_triggered",
+                "device_id": did,
+                "release_tag": release_tag,
+                "file_size": file_size,
+            }))
+        }
+        Err(e) => json_error(500, &format!("Failed to serve firmware: {}", e)),
     }
 }
 

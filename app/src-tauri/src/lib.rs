@@ -126,6 +126,8 @@ pub fn run() {
             revoke_api_token,
             probe_remote_url,
             reorder_devices,
+            check_github_releases,
+            start_github_ota,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
@@ -288,6 +290,7 @@ pub fn run() {
                 mqtt_bridge.clone(),
                 secret_store.clone(),
                 ws_broadcaster.clone(),
+                app.handle().clone(),
             );
 
             // Restore saved MQTT bridge config and start it if it was

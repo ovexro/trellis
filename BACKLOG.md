@@ -10,7 +10,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
   **Confirmed gaps** vs `:9090` detail panel (which has all 6 v0.4.6 surfaces):
   1. ~~Chart event annotations (OTA/state/error/warn)~~ — ✅ **shipped** as P1(a); Recharts `<ReferenceLine>` + `<ReferenceDot>` pair per annotation, numeric-time XAxis, kind-present-only legend below chart, native SVG `<title>` tooltip. New Rust `get_device_annotations` Tauri command wraps existing `Database::get_annotations`.
-  2. Annotation click-through (marker → scroll+highlight log row) — missing; depends on #3 first
+  2. ~~Annotation click-through (marker → scroll+highlight log row)~~ — ✅ **shipped** as P2(d); `MetricChart.tsx` `onAnnotationClick` → `DeviceLogs.tsx` `scrollToLog` with flash-highlight
   3. ~~Recent Logs chip row~~ — ✅ **shipped** as P1(b); 7-chip row (All/Events/State/Error/Warn/Info/Debug) with server-side re-fetch, stale-fetch guard, live-log filter guard, `key={device.id}` remount on device switch for filter reset parity. Rust `get_device_logs` now takes optional comma-separated `severity` arg.
   4. ~~Uptime timeline ribbon~~ — ✅ **shipped** as P1(c); SVG ribbon + stat line + legend via `UptimeTimeline.tsx`
   5. ~~Uptime stat line~~ — ✅ **shipped** as part of P1(c); included in `UptimeTimeline.tsx` stat line row

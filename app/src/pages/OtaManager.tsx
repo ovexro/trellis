@@ -2,8 +2,21 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload, Loader2 } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload, Loader2, Github, RefreshCw, Download } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
+
+interface GithubAsset {
+  name: string;
+  size: number;
+  download_url: string;
+}
+
+interface GithubRelease {
+  tag: string;
+  name: string;
+  published_at: string;
+  assets: GithubAsset[];
+}
 
 // How long to wait after the desktop has flushed the firmware bytes before
 // we give up watching for the device's uptime to reset. The device has to:
@@ -36,6 +49,13 @@ export default function OtaManager() {
   const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
+
+  // GitHub OTA state
+  const [ghRepo, setGhRepo] = useState("");
+  const [ghReleases, setGhReleases] = useState<GithubRelease[]>([]);
+  const [ghChecking, setGhChecking] = useState(false);
+  const [ghError, setGhError] = useState("");
+  const [ghDownloading, setGhDownloading] = useState<string | null>(null);
 
   // Tracks the in-flight OTA so events from a different selected device
   // don't get mis-routed and so the reboot watcher knows what uptime
@@ -179,7 +199,76 @@ export default function OtaManager() {
 
   useEffect(() => {
     loadFirmwareHistory(selectedDevice);
+    // Restore per-device GitHub repo binding
+    if (selectedDevice) {
+      invoke<{ value: string }>("get_setting", { key: `github_ota_${selectedDevice}` })
+        .then((r) => { if (r?.value) setGhRepo(r.value); else setGhRepo(""); })
+        .catch(() => setGhRepo(""));
+    } else {
+      setGhRepo("");
+    }
+    setGhReleases([]);
+    setGhError("");
   }, [selectedDevice]);
+
+  const handleCheckGithub = async () => {
+    const trimmed = ghRepo.trim();
+    if (!trimmed) return;
+    const parts = trimmed.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "").split("/");
+    if (parts.length < 2) {
+      setGhError("Enter a repo as owner/repo (e.g. ovexro/trellis)");
+      return;
+    }
+    const [owner, repo] = parts;
+    setGhChecking(true);
+    setGhError("");
+    setGhReleases([]);
+    try {
+      const releases = await invoke<GithubRelease[]>("check_github_releases", { owner, repo });
+      setGhReleases(releases);
+      if (releases.length === 0) {
+        setGhError("No releases with .bin firmware assets found.");
+      }
+      // Save repo binding for this device
+      if (selectedDevice) {
+        invoke("set_setting", { key: `github_ota_${selectedDevice}`, value: trimmed }).catch(() => {});
+      }
+    } catch (err) {
+      setGhError(String(err));
+    } finally {
+      setGhChecking(false);
+    }
+  };
+
+  const handleGithubFlash = async (release: GithubRelease, asset: GithubAsset) => {
+    const device = devices.find((d) => d.id === selectedDevice);
+    if (!device) return;
+    setGhDownloading(asset.download_url);
+    setStatus("uploading");
+    setErrorMsg("");
+    setOtaProgress(0);
+    inFlightRef.current = {
+      deviceId: device.id,
+      uptimeBaseline: device.system.uptime_s,
+    };
+    try {
+      await invoke("start_github_ota", {
+        deviceId: device.id,
+        ip: device.ip,
+        port: device.port,
+        downloadUrl: asset.download_url,
+        releaseTag: release.tag,
+        assetName: asset.name,
+      });
+      loadFirmwareHistory(selectedDevice);
+    } catch (err) {
+      setStatus("error");
+      setErrorMsg(String(err));
+      inFlightRef.current = null;
+    } finally {
+      setGhDownloading(null);
+    }
+  };
 
   const handleRollback = async (record: FirmwareRecord) => {
     const device = devices.find((d) => d.id === selectedDevice);
@@ -425,6 +514,98 @@ export default function OtaManager() {
           </div>
         )}
       </div>
+
+      {/* GitHub Release OTA */}
+      {selectedDevice && selectedDeviceObj?.platform === "esp32" && (
+        <div className="mt-6 bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Github size={16} className="text-zinc-400" />
+            <h2 className="text-sm font-semibold text-zinc-200">Update from GitHub Release</h2>
+          </div>
+          <p className="text-xs text-zinc-500 mb-4">
+            Point to a GitHub repository that publishes .bin firmware files in its releases.
+          </p>
+
+          <div className="flex gap-2 mb-4">
+            <input
+              type="text"
+              value={ghRepo}
+              onChange={(e) => setGhRepo(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCheckGithub(); }}
+              placeholder="owner/repo (e.g. ovexro/trellis)"
+              className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder:text-zinc-600"
+            />
+            <button
+              onClick={handleCheckGithub}
+              disabled={ghChecking || !ghRepo.trim()}
+              className="flex items-center gap-1.5 px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors disabled:opacity-50"
+            >
+              {ghChecking ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Check
+            </button>
+          </div>
+
+          {ghError && (
+            <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-500/10 p-3 rounded-lg mb-4">
+              <AlertCircle size={16} className="flex-shrink-0" />
+              {ghError}
+            </div>
+          )}
+
+          {ghReleases.length > 0 && (
+            <div className="space-y-2">
+              {ghReleases.map((rel) => (
+                <div key={rel.tag} className="bg-zinc-800/50 border border-zinc-700/50 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <span className="text-sm font-mono text-zinc-200">{rel.tag}</span>
+                      {rel.name !== rel.tag && (
+                        <span className="text-xs text-zinc-500 ml-2">{rel.name}</span>
+                      )}
+                      {selectedDeviceObj?.firmware && rel.tag.replace(/^v/, "") === selectedDeviceObj.firmware && (
+                        <span className="text-[10px] text-trellis-400 ml-2 uppercase tracking-wide">
+                          current
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs text-zinc-600">
+                      {new Date(rel.published_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {rel.assets.map((asset) => (
+                      <div key={asset.name} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <Download size={12} className="text-zinc-500 flex-shrink-0" />
+                          <span className="text-xs text-zinc-400 font-mono truncate">{asset.name}</span>
+                          <span className="text-xs text-zinc-600">{formatFileSize(asset.size)}</span>
+                        </div>
+                        <button
+                          onClick={() => handleGithubFlash(rel, asset)}
+                          disabled={
+                            status === "uploading" ||
+                            status === "delivered" ||
+                            ghDownloading !== null ||
+                            !selectedDeviceObj?.online
+                          }
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-trellis-500/10 text-trellis-400 hover:bg-trellis-500/20 rounded-md transition-colors disabled:opacity-40 ml-3 flex-shrink-0"
+                        >
+                          {ghDownloading === asset.download_url ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Upload size={12} />
+                          )}
+                          Flash
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Firmware History */}
       {selectedDevice && (
