@@ -6,8 +6,6 @@ Forward-looking list: candidate next tasks, speculative enhancements, and known 
 
 Concrete enough to pick up in a future session. Each has scope + what it unblocks. Not a priority order.
 
-- **Desktop `DeviceDetail` React page — remaining parity gap** — replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
-
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 
 - **Voice assistant integration research** — investigate Sinric Pro or direct Alexa/Google Home paths. Requires MQTT bridge (already shipped) as prerequisite.
