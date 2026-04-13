@@ -278,6 +278,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device-online check before dispatching inbound voice commands
 - [x] Web dashboard Sinric status section (connection dot, message counters, mapping breakdown)
 - [x] User guide §22 — complete setup walkthrough
+- [x] **Scene triggering via voice (post-v0.8.0)** — map a Sinric virtual device to a Trellis scene so "Alexa, turn on Movie Mode" fires `run_scene`. `scene_id` field on `SinricDeviceMapping` (`serde(default)` for backward compat). `setPowerState(On)` runs all scene actions sequentially via ConnectionManager; `setPowerState(Off)` responds success (no-op). Settings UI has a Device/Scene type toggle per mapping row with scene dropdown. Scene execution uses same DB + ConnectionManager path as REST API and desktop app.
 
 ## Automation
 
