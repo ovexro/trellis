@@ -279,7 +279,8 @@ Single source of truth for all features. Check items as they are implemented and
 
 ## Automation
 
-- [x] Scheduled actions (cron-based: "turn on pump at 6am daily")
+- [x] Scheduled actions (cron-based: "turn on pump at 6am daily") — supports both single device/capability actions and full scene execution
+- [x] **Scene scheduling (post-v0.7.0)** — schedules can fire entire scenes on a cron schedule. Schedule creation form has a type toggle (Single Action / Scene). `scene_id` column on `schedules` table. Scheduler loads all scene actions and executes sequentially. Scene name shown in schedule cards in both desktop app and web dashboard.
 - [x] Conditional rules ("if temp > 30, turn on fan")
 - [x] Rule evaluation engine (checks on sensor updates, 30s debounce)
 - [x] Webhooks (POST to URL on device_offline, device_online, alert_triggered, sensor_update)

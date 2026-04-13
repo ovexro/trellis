@@ -11,7 +11,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Floor plan v2: snap-to-grid**~~ — SHIPPED (post-v0.7.0, commit 84a1b95).
 - ~~**Floor plan v2: compact labels**~~ — SHIPPED (post-v0.7.0, commit cea5728).
 - ~~**Floor plan v2: undo last move**~~ — SHIPPED (post-v0.7.0, commit ae92d4f).
-- **Scene scheduling** — extend scheduler.rs to fire entire scenes on a cron schedule, not just single capabilities. Add scene_id column to schedules table.
+- ~~**Scene scheduling**~~ — SHIPPED (post-v0.7.0, commit 650b302).
 - **Floor plan v2: remaining enhancements** — room/wall drawing tools, auto-placement.
 
 ## Known follow-ups
