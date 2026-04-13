@@ -1797,8 +1797,9 @@ fn handle_create_schedule(ctx: &ApiContext, body: &str) -> (u16, String) {
     let value = v["value"].as_str().unwrap_or("");
     let cron = v["cron"].as_str().unwrap_or("");
     let label = v["label"].as_str().unwrap_or("Schedule");
+    let scene_id = v["scene_id"].as_i64();
 
-    match ctx.db.create_schedule(device_id, capability_id, value, cron, label) {
+    match ctx.db.create_schedule(device_id, capability_id, value, cron, label, scene_id) {
         Ok(id) => json_created(&serde_json::json!({"id": id})),
         Err(e) => json_error(500, &e),
     }

@@ -457,13 +457,13 @@ impl Database {
 
     pub fn create_schedule(
         &self, device_id: &str, capability_id: &str, value: &str,
-        cron: &str, label: &str,
+        cron: &str, label: &str, scene_id: Option<i64>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO schedules (device_id, capability_id, value, cron, label, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
-            rusqlite::params![device_id, capability_id, value, cron, label],
+            "INSERT INTO schedules (device_id, capability_id, value, cron, label, enabled, scene_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
+            rusqlite::params![device_id, capability_id, value, cron, label, scene_id],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -471,13 +471,13 @@ impl Database {
     pub fn get_schedules(&self) -> Result<Vec<Schedule>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, device_id, capability_id, value, cron, label, enabled, last_run FROM schedules"
+            "SELECT id, device_id, capability_id, value, cron, label, enabled, last_run, scene_id FROM schedules"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(Schedule {
                 id: row.get(0)?, device_id: row.get(1)?, capability_id: row.get(2)?,
                 value: row.get(3)?, cron: row.get(4)?, label: row.get(5)?,
-                enabled: row.get(6)?, last_run: row.get(7)?,
+                enabled: row.get(6)?, last_run: row.get(7)?, scene_id: row.get(8)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -1253,6 +1253,7 @@ pub struct Schedule {
     pub label: String,
     pub enabled: bool,
     pub last_run: Option<String>,
+    pub scene_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1598,6 +1599,9 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             FOREIGN KEY (device_id) REFERENCES devices(id)
         );
     ").map_err(|e| e.to_string())?;
+
+    // Add scene_id column to schedules if it doesn't exist (scene scheduling)
+    let _ = conn.execute("ALTER TABLE schedules ADD COLUMN scene_id INTEGER REFERENCES scenes(id)", []);
 
     app.manage(Database {
         conn: Mutex::new(conn),

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2 } from "lucide-react";
+import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface Schedule {
@@ -12,6 +12,14 @@ interface Schedule {
   label: string;
   enabled: boolean;
   last_run: string | null;
+  scene_id: number | null;
+}
+
+interface SceneRef {
+  id: number;
+  name: string;
+  actions: { device_id: string; capability_id: string; value: string }[];
+  created_at: string;
 }
 
 interface Rule {
@@ -47,13 +55,17 @@ export default function Automation() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+  const [scenes, setScenes] = useState<SceneRef[]>([]);
+
   // Schedule form
   const [showScheduleForm, setShowScheduleForm] = useState(false);
+  const [sType, setSType] = useState<"action" | "scene">("action");
   const [sDevice, setSDevice] = useState("");
   const [sCap, setSCap] = useState("");
   const [sValue, setSValue] = useState("");
   const [sCron, setSCron] = useState("0 6 * * *");
   const [sLabel, setSLabel] = useState("");
+  const [sSceneId, setSSceneId] = useState<number | null>(null);
 
   // Rule form
   const [showRuleForm, setShowRuleForm] = useState(false);
@@ -83,14 +95,16 @@ export default function Automation() {
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [s, r, w] = await Promise.all([
+      const [s, r, w, sc] = await Promise.all([
         invoke<Schedule[]>("get_schedules"),
         invoke<Rule[]>("get_rules"),
         invoke<WebhookDef[]>("get_webhooks"),
+        invoke<SceneRef[]>("get_scenes"),
       ]);
       setSchedules(s);
       setRules(r);
       setWebhooks(w);
+      setScenes(sc);
     } catch (err) {
       console.error("Failed to load automation data:", err);
     } finally {
@@ -99,15 +113,24 @@ export default function Automation() {
   };
 
   const createSchedule = async () => {
-    if (!sDevice || !sCap || !sValue || !sLabel) return;
+    if (!sLabel || !sCron) return;
+    if (sType === "action" && (!sDevice || !sCap || !sValue)) return;
+    if (sType === "scene" && !sSceneId) return;
     setActionLoading("create-schedule");
     try {
       await invoke("create_schedule", {
-        deviceId: sDevice, capabilityId: sCap, value: sValue, cron: sCron, label: sLabel,
+        deviceId: sType === "action" ? sDevice : "",
+        capabilityId: sType === "action" ? sCap : "",
+        value: sType === "action" ? sValue : "",
+        cron: sCron,
+        label: sLabel,
+        sceneId: sType === "scene" ? sSceneId : null,
       });
       setShowScheduleForm(false);
       setSLabel("");
       setSValue("");
+      setSType("action");
+      setSSceneId(null);
       await loadAll();
     } catch (err) {
       console.error("Failed to create schedule:", err);
@@ -251,26 +274,56 @@ export default function Automation() {
             <div className="mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl space-y-3">
               <input value={sLabel} onChange={(e) => setSLabel(e.target.value)} placeholder="Schedule name (e.g., Morning pump)"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" autoFocus />
-              <div className="grid grid-cols-2 gap-2">
-                <select value={sDevice} onChange={(e) => { setSDevice(e.target.value); setSCap(""); }}
-                  className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Select device...</option>
-                  {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
-                </select>
-                <select value={sCap} onChange={(e) => setSCap(e.target.value)}
-                  className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Select capability...</option>
-                  {selectedDevice(sDevice)?.capabilities.filter((c) => c.type !== "sensor").map((c) => (
-                    <option key={c.id} value={c.id}>{c.label}</option>
-                  ))}
-                </select>
+
+              {/* Type toggle */}
+              <div className="flex gap-1 bg-zinc-800 rounded-lg p-0.5 w-fit">
+                <button onClick={() => setSType("action")}
+                  className={`px-3 py-1 rounded-md text-xs transition-colors ${sType === "action" ? "bg-zinc-700 text-zinc-200" : "text-zinc-500"}`}>
+                  Single Action
+                </button>
+                <button onClick={() => setSType("scene")} disabled={scenes.length === 0}
+                  className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs transition-colors ${sType === "scene" ? "bg-zinc-700 text-zinc-200" : "text-zinc-500"} disabled:opacity-30`}>
+                  <Zap size={10} /> Scene
+                </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <input value={sValue} onChange={(e) => setSValue(e.target.value)} placeholder="Value (true/false/number)"
-                  className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" />
-                <input value={sCron} onChange={(e) => setSCron(e.target.value)} placeholder="Cron (e.g., 0 6 * * *)"
-                  className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 font-mono" />
-              </div>
+
+              {sType === "action" ? (
+                <>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select value={sDevice} onChange={(e) => { setSDevice(e.target.value); setSCap(""); }}
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                      <option value="">Select device...</option>
+                      {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
+                    </select>
+                    <select value={sCap} onChange={(e) => setSCap(e.target.value)}
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                      <option value="">Select capability...</option>
+                      {selectedDevice(sDevice)?.capabilities.filter((c) => c.type !== "sensor").map((c) => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input value={sValue} onChange={(e) => setSValue(e.target.value)} placeholder="Value (true/false/number)"
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" />
+                    <input value={sCron} onChange={(e) => setSCron(e.target.value)} placeholder="Cron (e.g., 0 6 * * *)"
+                      className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 font-mono" />
+                  </div>
+                </>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <select value={sSceneId ?? ""} onChange={(e) => setSSceneId(e.target.value ? Number(e.target.value) : null)}
+                    className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                    <option value="">Select scene...</option>
+                    {scenes.map((sc) => (
+                      <option key={sc.id} value={sc.id}>{sc.name} ({sc.actions.length} actions)</option>
+                    ))}
+                  </select>
+                  <input value={sCron} onChange={(e) => setSCron(e.target.value)} placeholder="Cron (e.g., 0 6 * * *)"
+                    className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 font-mono" />
+                </div>
+              )}
+
               <p className="text-[11px] text-zinc-600">Cron format: minute hour day month weekday. Examples: "0 6 * * *" = 6am daily, "*/5 * * * *" = every 5 min</p>
               <div className="flex gap-2">
                 <button onClick={createSchedule} disabled={actionLoading === "create-schedule"}
@@ -293,8 +346,15 @@ export default function Automation() {
               {schedules.map((s) => (
                 <div key={s.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!s.enabled ? "opacity-50" : ""}`}>
                   <div>
-                    <p className="text-sm font-medium text-zinc-200">{s.label}</p>
-                    <p className="text-xs text-zinc-500 font-mono mt-0.5">{s.cron} → {selectedDevice(s.device_id)?.name || s.device_id}.{s.capability_id} = {s.value}</p>
+                    <p className="text-sm font-medium text-zinc-200">
+                      {s.scene_id != null && <Zap size={12} className="inline mr-1 text-trellis-400" />}
+                      {s.label}
+                    </p>
+                    <p className="text-xs text-zinc-500 font-mono mt-0.5">
+                      {s.cron} → {s.scene_id != null
+                        ? `Scene: ${scenes.find((sc) => sc.id === s.scene_id)?.name ?? `#${s.scene_id}`}`
+                        : `${selectedDevice(s.device_id)?.name || s.device_id}.${s.capability_id} = ${s.value}`}
+                    </p>
                     {s.last_run && <p className="text-[11px] text-zinc-600 mt-0.5">Last run: {s.last_run}</p>}
                   </div>
                   <div className="flex items-center gap-1.5">

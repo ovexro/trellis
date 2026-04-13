@@ -560,9 +560,9 @@ pub fn store_log_entry(
 #[tauri::command]
 pub fn create_schedule(
     db: State<'_, Database>, device_id: String, capability_id: String,
-    value: String, cron: String, label: String,
+    value: String, cron: String, label: String, scene_id: Option<i64>,
 ) -> Result<i64, String> {
-    db.create_schedule(&device_id, &capability_id, &value, &cron, &label)
+    db.create_schedule(&device_id, &capability_id, &value, &cron, &label, scene_id)
 }
 
 #[tauri::command]

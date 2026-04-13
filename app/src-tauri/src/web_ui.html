@@ -2972,11 +2972,15 @@
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
-        const [schedules, rules, webhooks] = await Promise.all([
+        const [schedules, rules, webhooks, scenes] = await Promise.all([
           api('/api/schedules').catch(() => []),
           api('/api/rules').catch(() => []),
           api('/api/webhooks').catch(() => []),
+          api('/api/scenes').catch(() => []),
         ]);
+
+        const sceneMap = {};
+        if (scenes) scenes.forEach(s => { sceneMap[s.id] = s.name; });
 
         let html = '';
 
@@ -2985,15 +2989,15 @@
           <div class="section-title">Schedules</div>`;
         if (schedules && schedules.length) {
           html += schedules.map(s => {
-            const devName = getDeviceNameById(s.device_id);
+            const isScene = s.scene_id != null;
+            const detail = isScene
+              ? `&#9889; Scene: ${esc(sceneMap[s.scene_id] || '#' + s.scene_id)} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>`
+              : `${esc(getDeviceNameById(s.device_id))} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>${s.capability_id ? ` &middot; ${esc(s.capability_id)} = ${esc(String(s.value != null ? s.value : ''))}` : ''}`;
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
-                  <div class="auto-card-title">${esc(s.label || devName)}</div>
-                  <div class="auto-card-detail">
-                    ${esc(devName)} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>
-                    ${s.capability_id ? ` &middot; ${esc(s.capability_id)} = ${esc(String(s.value != null ? s.value : ''))}` : ''}
-                  </div>
+                  <div class="auto-card-title">${esc(s.label || getDeviceNameById(s.device_id))}</div>
+                  <div class="auto-card-detail">${detail}</div>
                 </div>
                 <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
               </div>

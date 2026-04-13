@@ -94,40 +94,43 @@ fn evaluate_schedules(app_handle: &AppHandle, conn_mgr: &ConnectionManager) {
             continue;
         }
 
-        log::info!(
-            "[Scheduler] Firing schedule '{}': {}.{} = {}",
-            schedule.label,
-            schedule.device_id,
-            schedule.capability_id,
-            schedule.value
-        );
-
-        // Find the device IP and port from the discovery state
-        // We need to get it from the in-memory device list
-        let device_info = get_device_info(app_handle, &schedule.device_id);
-
-        if let Some((ip, port)) = device_info {
-            // Parse value
-            let value: serde_json::Value = if schedule.value == "true" {
-                serde_json::Value::Bool(true)
-            } else if schedule.value == "false" {
-                serde_json::Value::Bool(false)
-            } else if let Ok(n) = schedule.value.parse::<f64>() {
-                serde_json::json!(n)
-            } else {
-                serde_json::Value::String(schedule.value.clone())
-            };
-
-            let cmd = serde_json::json!({
-                "command": "set",
-                "id": schedule.capability_id,
-                "value": value
-            });
-
-            let msg = serde_json::to_string(&cmd).unwrap_or_default();
-            let ws_port = port + 1;
-
-            match conn_mgr.send_to_device(&schedule.device_id, &ip, ws_port, &msg) {
+        if let Some(scene_id) = schedule.scene_id {
+            // Scene schedule — execute all actions in the scene
+            log::info!(
+                "[Scheduler] Firing scene schedule '{}': scene_id={}",
+                schedule.label, scene_id
+            );
+            match db.get_scene(scene_id) {
+                Ok(Some(scene)) => {
+                    let mut ok = true;
+                    for action in &scene.actions {
+                        if let Err(e) = send_action(app_handle, conn_mgr, &action.device_id, &action.capability_id, &action.value) {
+                            log::warn!("[Scheduler] Scene action failed for {}: {}", action.device_id, e);
+                            ok = false;
+                        }
+                    }
+                    if ok {
+                        log::info!("[Scheduler] Scene '{}' executed ({} actions)", scene.name, scene.actions.len());
+                    }
+                    let _ = db.update_schedule_last_run(schedule.id);
+                }
+                Ok(None) => {
+                    log::warn!("[Scheduler] Scene {} not found for schedule '{}'", scene_id, schedule.label);
+                }
+                Err(e) => {
+                    log::warn!("[Scheduler] Failed to load scene {}: {}", scene_id, e);
+                }
+            }
+        } else {
+            // Single-action schedule
+            log::info!(
+                "[Scheduler] Firing schedule '{}': {}.{} = {}",
+                schedule.label,
+                schedule.device_id,
+                schedule.capability_id,
+                schedule.value
+            );
+            match send_action(app_handle, conn_mgr, &schedule.device_id, &schedule.capability_id, &schedule.value) {
                 Ok(_) => {
                     log::info!("[Scheduler] Action sent successfully");
                     let _ = db.update_schedule_last_run(schedule.id);
@@ -136,13 +139,35 @@ fn evaluate_schedules(app_handle: &AppHandle, conn_mgr: &ConnectionManager) {
                     log::warn!("[Scheduler] Failed to send action: {}", e);
                 }
             }
-        } else {
-            log::warn!(
-                "[Scheduler] Device {} not found or offline, skipping",
-                schedule.device_id
-            );
         }
     }
+}
+
+fn send_action(
+    app_handle: &AppHandle, conn_mgr: &ConnectionManager,
+    device_id: &str, capability_id: &str, value_str: &str,
+) -> Result<(), String> {
+    let (ip, port) = get_device_info(app_handle, device_id)
+        .ok_or_else(|| format!("Device {} not found or offline", device_id))?;
+
+    let value: serde_json::Value = if value_str == "true" {
+        serde_json::Value::Bool(true)
+    } else if value_str == "false" {
+        serde_json::Value::Bool(false)
+    } else if let Ok(n) = value_str.parse::<f64>() {
+        serde_json::json!(n)
+    } else {
+        serde_json::Value::String(value_str.to_string())
+    };
+
+    let cmd = serde_json::json!({
+        "command": "set",
+        "id": capability_id,
+        "value": value
+    });
+    let msg = serde_json::to_string(&cmd).unwrap_or_default();
+    let ws_port = port + 1;
+    conn_mgr.send_to_device(device_id, &ip, ws_port, &msg)
 }
 
 fn get_device_info(app_handle: &AppHandle, device_id: &str) -> Option<(String, u16)> {
