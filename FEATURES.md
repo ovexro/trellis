@@ -249,6 +249,22 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] **Encrypted password at rest with age (v0.3.3)** — `secret_store.rs` wraps an x25519 identity in the OS keyring (with 0600 file fallback). Wire format `enc:v1:<base64>` for stored passwords. Lazy migration of legacy plaintext blobs on first launch.
 - [x] **Empty-password-preserves on save + explicit Clear (v0.3.3)** — `merge_preserving_password()` so the form load+save round-trip doesn't blank the stored password; `clear_mqtt_password` Tauri/REST endpoint and a Clear button in the Settings UI for the explicit-clear UX.
 
+## Sinric Pro Bridge (v0.6.0)
+
+- [x] WebSocket bridge to `wss://ws.sinric.pro` with HMAC-SHA256 signing, worker-thread design (mirrors MQTT bridge architecture)
+- [x] Settings UI: API key, secret (encrypted at rest), device mappings with capability selector, test connection
+- [x] Tauri commands: get_sinric_config, set_sinric_config, clear_sinric_secret, get_sinric_status, test_sinric_connection
+- [x] REST API: GET/PUT /api/settings/sinric, POST /api/sinric/clear-secret, GET /api/sinric/status
+- [x] Bidirectional switch mapping (setPowerState)
+- [x] Bidirectional slider mapping (setRangeValue / adjustRangeValue)
+- [x] Bidirectional color mapping (setColor)
+- [x] Outbound sensor reporting (currentTemperature, with humidity auto-discovery)
+- [x] Per-capability mapping — optional explicit capability targeting with type-safe resolution (falls back to auto-discovery on type mismatch)
+- [x] Secret encrypted at rest (same `enc:v1:` format as MQTT password)
+- [x] Device-online check before dispatching inbound voice commands
+- [x] Web dashboard Sinric status section (connection dot, message counters, mapping breakdown)
+- [x] User guide §22 — complete setup walkthrough
+
 ## Automation
 
 - [x] Scheduled actions (cron-based: "turn on pump at 6am daily")

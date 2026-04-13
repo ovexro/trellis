@@ -2,6 +2,25 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.6.0] — 2026-04-13
+
+Sinric Pro voice assistant bridge. Control your Trellis devices with Alexa and Google Home via the Sinric Pro cloud.
+
+### Added
+
+- **Sinric Pro bridge.** WebSocket bridge to `wss://ws.sinric.pro` with HMAC-SHA256 message signing. Runs as a worker thread inside the desktop app, mirrors the MQTT bridge architecture (config in SQLite, secret encrypted at rest, exponential-backoff reconnect).
+- **Bidirectional capability mapping.** Switches map to `setPowerState`, sliders to `setRangeValue`/`adjustRangeValue`, color pickers to `setColor`, sensors report `currentTemperature`. Inbound voice commands route through `ConnectionManager::send_to_device`; outbound state changes update the Sinric cloud shadow.
+- **Per-capability mapping.** Optional `trellis_capability_id` field on each device mapping lets users target a specific capability instead of relying on auto-discovery (first-match heuristic). Type-safe resolution: the bridge validates that the explicit capability matches the expected action type before using it, falling back to auto-discovery on mismatch.
+- **Settings panel** (desktop app). API key, secret (encrypted at rest), device mappings with Trellis device and capability dropdowns, connection test, status indicator.
+- **Web dashboard Sinric section.** Read-only connection status, message counters, and mapping breakdown (per-cap vs auto) in the Settings tab at `:9090`.
+- **REST API endpoints.** `GET/PUT /api/settings/sinric`, `GET /api/sinric/status`, `POST /api/sinric/clear-secret`.
+- **Tauri commands.** `get_sinric_config`, `set_sinric_config`, `get_sinric_status`, `test_sinric_connection`, `clear_sinric_secret`.
+- **User guide §22.** Complete Sinric Pro walkthrough: account setup, device creation, bridge configuration, per-capability mapping, sensor naming conventions, monitoring, and limitations.
+
+### Library
+
+- No library changes in this release (Sinric bridge is desktop-only).
+
 ## [0.5.0] — 2026-04-13
 
 Desktop Metrics page release. New top-level monitoring overview in the desktop app, plus polish fixes for chart loading states and CSV exports.
