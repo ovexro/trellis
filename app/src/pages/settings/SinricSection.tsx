@@ -283,7 +283,7 @@ export default function SinricSection() {
           Create devices on{" "}
           <a href="https://sinric.pro" target="_blank" rel="noopener" className="text-trellis-500 hover:underline">sinric.pro</a>,
           copy the APP_KEY and APP_SECRET from the dashboard, then map each Sinric device to a Trellis device above.
-          Switches map to power on/off, sensors report temperature readings.
+          Switches map to power on/off, sliders to dimmer range, color pickers to RGB light, and sensors report temperature readings.
         </p>
       </div>
     </div>

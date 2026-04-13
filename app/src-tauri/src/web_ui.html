@@ -2757,9 +2757,11 @@
     async function loadSettings() {
       const container = document.getElementById('settingsContent');
       try {
-        const [ntfyRes, grps] = await Promise.all([
+        const [ntfyRes, grps, sinricStatusRes, sinricCfgRes] = await Promise.all([
           api('/api/settings/ntfy_topic').catch(() => ({ value: '' })),
           api('/api/groups').catch(() => []),
+          api('/api/sinric/status').catch(() => null),
+          api('/api/settings/sinric').catch(() => null),
         ]);
 
         groups = grps || [];
@@ -2879,6 +2881,39 @@
             <div class="setting-desc">Choosing &ldquo;Forever&rdquo; disables cleanup but the database will grow over time.</div>
           </div>
         </div>`;
+
+        // Sinric Pro
+        if (sinricStatusRes) {
+          const ss = sinricStatusRes;
+          const sc = sinricCfgRes;
+          const sinricDot = ss.connected ? 'var(--green)' : (ss.enabled ? 'var(--amber, #f59e0b)' : 'var(--text-faint)');
+          const sinricLabel = ss.connected ? 'Connected'
+                            : ss.enabled ? ('Enabled — ' + (ss.last_error || 'connecting…'))
+                            : 'Disabled';
+          const mappingCount = sc && sc.device_mappings ? sc.device_mappings.length : 0;
+          html += `<div class="settings-section">
+            <div class="settings-title">Sinric Pro (Alexa / Google Home)</div>
+            <div class="setting-row">
+              <div class="setting-label-block">
+                <div class="setting-label" style="display:flex;align-items:center;gap:0.5rem;">
+                  <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${sinricDot};"></span>
+                  ${esc(sinricLabel)}
+                </div>
+                <div class="setting-desc">Voice assistant bridge via Sinric Pro</div>
+              </div>
+            </div>`;
+          if (ss.enabled) {
+            html += `<div class="setting-row" style="padding-top:0;">
+              <div class="setting-desc">
+                ${ss.messages_sent} sent / ${ss.messages_received} received · ${mappingCount} device mapping${mappingCount !== 1 ? 's' : ''}
+              </div>
+            </div>`;
+          }
+          html += `<div class="setting-row" style="padding-top:0;">
+              <div class="setting-desc">Configure in the desktop app under Settings &rarr; Sinric Pro.</div>
+            </div>
+          </div>`;
+        }
 
         // Groups
         html += `<div class="settings-section">

@@ -142,6 +142,16 @@ enum OutgoingEvent {
         temperature: f64,
         humidity: Option<f64>,
     },
+    RangeValue {
+        sinric_device_id: String,
+        value: i64,
+    },
+    Color {
+        sinric_device_id: String,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
 }
 
 // ─── Bridge ──────────────────────────────────────────────────────────────────
@@ -345,7 +355,31 @@ impl SinricBridge {
                         humidity: None,
                     }
                 }
-                _ => continue, // Slider/color/text deferred to session 2
+                "slider" => {
+                    let v = match value.as_i64() {
+                        Some(v) => v,
+                        None => value.as_f64().map(|f| f as i64).unwrap_or(0),
+                    };
+                    OutgoingEvent::RangeValue {
+                        sinric_device_id: sinric_id,
+                        value: v,
+                    }
+                }
+                "color" => {
+                    // Trellis color values are "#RRGGBB" hex strings
+                    let hex = value.as_str().unwrap_or("#000000");
+                    let hex = hex.trim_start_matches('#');
+                    let r = u8::from_str_radix(&hex.get(0..2).unwrap_or("00"), 16).unwrap_or(0);
+                    let g = u8::from_str_radix(&hex.get(2..4).unwrap_or("00"), 16).unwrap_or(0);
+                    let b = u8::from_str_radix(&hex.get(4..6).unwrap_or("00"), 16).unwrap_or(0);
+                    OutgoingEvent::Color {
+                        sinric_device_id: sinric_id,
+                        r,
+                        g,
+                        b,
+                    }
+                }
+                _ => continue,
             };
 
             let _ = tx.send(event);
@@ -733,6 +767,98 @@ fn handle_incoming(
                 }),
             )
         }
+        "setRangeValue" | "adjustRangeValue" => {
+            let range_value = payload
+                .get("value")
+                .and_then(|v| v.get("rangeValue"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            if !device_online {
+                log::warn!("[Sinric] Trellis device {} is offline", trellis_device_id);
+                (false, json!({"rangeValue": range_value}))
+            } else {
+                let cap_id = find_first_capability(&trellis_device_id, "slider", discovery);
+                match cap_id {
+                    Some(cap_id) => {
+                        let cmd = json!({
+                            "command": "set",
+                            "id": cap_id,
+                            "value": range_value,
+                        });
+                        let msg = match serde_json::to_string(&cmd) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                log::warn!("[Sinric] Failed to serialize command: {}", e);
+                                return;
+                            }
+                        };
+                        match conn_mgr.send_to_device(&trellis_device_id, "", 0, &msg) {
+                            Ok(()) => (true, json!({"rangeValue": range_value})),
+                            Err(e) => {
+                                log::warn!("[Sinric] Failed to dispatch setRangeValue to {}: {}", trellis_device_id, e);
+                                (false, json!({"rangeValue": range_value}))
+                            }
+                        }
+                    }
+                    None => {
+                        log::warn!(
+                            "[Sinric] No slider capability on Trellis device {}",
+                            trellis_device_id
+                        );
+                        (false, json!({"rangeValue": range_value}))
+                    }
+                }
+            }
+        }
+        "setColor" => {
+            let empty = json!({});
+            let color = payload
+                .get("value")
+                .and_then(|v| v.get("color"))
+                .unwrap_or(&empty);
+            let r = color.get("r").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let g = color.get("g").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let b = color.get("b").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let hex = format!("#{:02x}{:02x}{:02x}", r, g, b);
+
+            if !device_online {
+                log::warn!("[Sinric] Trellis device {} is offline", trellis_device_id);
+                (false, json!({"color": {"r": r, "g": g, "b": b}}))
+            } else {
+                let cap_id = find_first_capability(&trellis_device_id, "color", discovery);
+                match cap_id {
+                    Some(cap_id) => {
+                        let cmd = json!({
+                            "command": "set",
+                            "id": cap_id,
+                            "value": hex,
+                        });
+                        let msg = match serde_json::to_string(&cmd) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                log::warn!("[Sinric] Failed to serialize command: {}", e);
+                                return;
+                            }
+                        };
+                        match conn_mgr.send_to_device(&trellis_device_id, "", 0, &msg) {
+                            Ok(()) => (true, json!({"color": {"r": r, "g": g, "b": b}})),
+                            Err(e) => {
+                                log::warn!("[Sinric] Failed to dispatch setColor to {}: {}", trellis_device_id, e);
+                                (false, json!({"color": {"r": r, "g": g, "b": b}}))
+                            }
+                        }
+                    }
+                    None => {
+                        log::warn!(
+                            "[Sinric] No color capability on Trellis device {}",
+                            trellis_device_id
+                        );
+                        (false, json!({"color": {"r": r, "g": g, "b": b}}))
+                    }
+                }
+            }
+        }
         _ => {
             log::info!("[Sinric] Unhandled action: {}", action);
             (false, json!({}))
@@ -784,6 +910,30 @@ fn build_outgoing_event(event: &OutgoingEvent, secret: &str) -> Option<String> {
             }
             ("currentTemperature", sinric_device_id.as_str(), val)
         }
+        OutgoingEvent::RangeValue {
+            sinric_device_id,
+            value,
+        } => (
+            "setRangeValue",
+            sinric_device_id.as_str(),
+            json!({"rangeValue": value}),
+        ),
+        OutgoingEvent::Color {
+            sinric_device_id,
+            r,
+            g,
+            b,
+        } => (
+            "setColor",
+            sinric_device_id.as_str(),
+            json!({
+                "color": {
+                    "r": r,
+                    "g": g,
+                    "b": b,
+                }
+            }),
+        ),
     };
 
     let now = std::time::SystemTime::now()
