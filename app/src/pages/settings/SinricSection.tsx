@@ -108,7 +108,31 @@ export default function SinricSection() {
   const updateMapping = (index: number, field: keyof SinricDeviceMapping, value: string) => {
     const updated = [...config.device_mappings];
     updated[index] = { ...updated[index], [field]: value };
+    // Clear capability selection when device changes
+    if (field === "trellis_device_id") {
+      delete updated[index].trellis_capability_id;
+    }
+    // Treat empty capability as "auto" (omit from payload)
+    if (field === "trellis_capability_id" && !value) {
+      delete updated[index].trellis_capability_id;
+    }
     setConfig({ ...config, device_mappings: updated });
+  };
+
+  /** Capabilities on a given Trellis device that Sinric can map to. */
+  const getMappableCapabilities = (trellisDeviceId: string) => {
+    const device = devices.find((d) => d.id === trellisDeviceId);
+    if (!device) return [];
+    return device.capabilities.filter((c) =>
+      ["switch", "slider", "sensor", "color"].includes(c.type)
+    );
+  };
+
+  const capTypeBadge: Record<string, string> = {
+    switch: "SW",
+    slider: "SL",
+    sensor: "SN",
+    color: "CL",
   };
 
   const removeMapping = (index: number) => {
@@ -216,43 +240,62 @@ export default function SinricSection() {
               No mappings yet. Create devices on sinric.pro, then map them to your Trellis devices here.
             </p>
           )}
-          {config.device_mappings.map((mapping, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_auto] gap-2 items-end">
-              <div>
-                <label className="text-xs text-zinc-600 block mb-1">Sinric Device ID</label>
-                <input
-                  type="text"
-                  value={mapping.sinric_device_id}
-                  onChange={(e) => updateMapping(i, "sinric_device_id", e.target.value)}
-                  className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 font-mono"
-                  placeholder="Sinric device ID"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-zinc-600 block mb-1">Trellis Device</label>
-                <select
-                  value={mapping.trellis_device_id}
-                  onChange={(e) => updateMapping(i, "trellis_device_id", e.target.value)}
-                  className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+          {config.device_mappings.map((mapping, i) => {
+            const caps = getMappableCapabilities(mapping.trellis_device_id);
+            return (
+              <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-end">
+                <div>
+                  <label className="text-xs text-zinc-600 block mb-1">Sinric Device ID</label>
+                  <input
+                    type="text"
+                    value={mapping.sinric_device_id}
+                    onChange={(e) => updateMapping(i, "sinric_device_id", e.target.value)}
+                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 font-mono"
+                    placeholder="Sinric device ID"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-600 block mb-1">Trellis Device</label>
+                  <select
+                    value={mapping.trellis_device_id}
+                    onChange={(e) => updateMapping(i, "trellis_device_id", e.target.value)}
+                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+                  >
+                    <option value="">— select —</option>
+                    {devices.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.id})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-600 block mb-1">Capability</label>
+                  <select
+                    value={mapping.trellis_capability_id ?? ""}
+                    onChange={(e) => updateMapping(i, "trellis_capability_id", e.target.value)}
+                    disabled={!mapping.trellis_device_id}
+                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 disabled:opacity-40"
+                  >
+                    <option value="">Auto (first match)</option>
+                    {caps.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        [{capTypeBadge[c.type] ?? c.type}] {c.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeMapping(i)}
+                  className="px-2 py-1.5 bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 rounded text-xs transition-colors"
+                  title="Remove mapping"
                 >
-                  <option value="">— select —</option>
-                  {devices.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} ({d.id})
-                    </option>
-                  ))}
-                </select>
+                  ×
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => removeMapping(i)}
-                className="px-2 py-1.5 bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 rounded text-xs transition-colors"
-                title="Remove mapping"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="flex gap-2">
@@ -283,6 +326,7 @@ export default function SinricSection() {
           Create devices on{" "}
           <a href="https://sinric.pro" target="_blank" rel="noopener" className="text-trellis-500 hover:underline">sinric.pro</a>,
           copy the APP_KEY and APP_SECRET from the dashboard, then map each Sinric device to a Trellis device above.
+          Optionally pick a specific capability — otherwise the bridge auto-discovers the first match.
           Switches map to power on/off, sliders to dimmer range, color pickers to RGB light, and sensors report temperature readings.
         </p>
       </div>

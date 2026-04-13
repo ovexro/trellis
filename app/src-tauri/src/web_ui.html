@@ -2890,7 +2890,10 @@
           const sinricLabel = ss.connected ? 'Connected'
                             : ss.enabled ? ('Enabled — ' + (ss.last_error || 'connecting…'))
                             : 'Disabled';
-          const mappingCount = sc && sc.device_mappings ? sc.device_mappings.length : 0;
+          const mappings = sc && sc.device_mappings ? sc.device_mappings : [];
+          const mappingCount = mappings.length;
+          const explicitCount = mappings.filter(m => m.trellis_capability_id).length;
+          const autoCount = mappingCount - explicitCount;
           html += `<div class="settings-section">
             <div class="settings-title">Sinric Pro (Alexa / Google Home)</div>
             <div class="setting-row">
@@ -2905,7 +2908,7 @@
           if (ss.enabled) {
             html += `<div class="setting-row" style="padding-top:0;">
               <div class="setting-desc">
-                ${ss.messages_sent} sent / ${ss.messages_received} received · ${mappingCount} device mapping${mappingCount !== 1 ? 's' : ''}
+                ${ss.messages_sent} sent / ${ss.messages_received} received · ${mappingCount} mapping${mappingCount !== 1 ? 's' : ''}${explicitCount ? ` (${explicitCount} per-cap, ${autoCount} auto)` : ''}
               </div>
             </div>`;
           }

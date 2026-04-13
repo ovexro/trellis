@@ -83,6 +83,11 @@ impl Default for SinricConfig {
 pub struct SinricDeviceMapping {
     pub sinric_device_id: String,
     pub trellis_device_id: String,
+    /// When set, the mapping targets a specific capability on the Trellis
+    /// device. When absent (or empty), the bridge auto-discovers the first
+    /// capability of the matching type (backward-compatible default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trellis_capability_id: Option<String>,
 }
 
 /// Public-facing config view. The api_secret is redacted — same pattern as
@@ -294,11 +299,19 @@ impl SinricBridge {
             return;
         }
 
-        // Find all Sinric device mappings for this Trellis device
+        // Find Sinric device mappings that should receive this state change.
+        // Mappings with an explicit capability_id only fire for that capability;
+        // mappings without one (auto) fire for every capability on the device.
         let sinric_ids: Vec<String> = cfg
             .device_mappings
             .iter()
-            .filter(|m| m.trellis_device_id == device_id)
+            .filter(|m| {
+                m.trellis_device_id == device_id
+                    && match &m.trellis_capability_id {
+                        Some(cap) if !cap.is_empty() => cap == capability_id,
+                        _ => true,
+                    }
+            })
             .map(|m| m.sinric_device_id.clone())
             .collect();
 
@@ -688,15 +701,21 @@ fn handle_incoming(
         return;
     }
 
-    // Look up the Trellis device for this Sinric device
-    let trellis_device_id = cfg
+    // Look up the Trellis device (and optional explicit capability) for this
+    // Sinric device.
+    let mapping = cfg
         .device_mappings
         .iter()
-        .find(|m| m.sinric_device_id == device_id)
-        .map(|m| m.trellis_device_id.clone());
+        .find(|m| m.sinric_device_id == device_id);
 
-    let trellis_device_id = match trellis_device_id {
-        Some(id) => id,
+    let (trellis_device_id, explicit_cap_id) = match mapping {
+        Some(m) => {
+            let cap = match &m.trellis_capability_id {
+                Some(id) if !id.is_empty() => Some(id.clone()),
+                _ => None,
+            };
+            (m.trellis_device_id.clone(), cap)
+        }
         None => {
             log::warn!(
                 "[Sinric] No mapping for Sinric device {}",
@@ -722,7 +741,9 @@ fn handle_incoming(
                 log::warn!("[Sinric] Trellis device {} is offline", trellis_device_id);
                 (false, json!({"state": state_str}))
             } else {
-                let cap_id = find_first_capability(&trellis_device_id, "switch", discovery);
+                let cap_id = resolve_capability_id(
+                    &explicit_cap_id, &trellis_device_id, "switch", discovery,
+                );
                 match cap_id {
                     Some(cap_id) => {
                         let cmd = json!({
@@ -756,8 +777,11 @@ fn handle_incoming(
             }
         }
         "currentTemperature" | "targetTemperature" => {
-            // Temperature query — just report the current value
-            let temp = find_sensor_value(&trellis_device_id, "temp", discovery);
+            // Temperature query — use explicit capability if it's a sensor,
+            // else fall back to the name-hint heuristic.
+            let temp = resolve_sensor_value(
+                &explicit_cap_id, &trellis_device_id, "temp", discovery,
+            );
             let humidity = find_sensor_value(&trellis_device_id, "humid", discovery);
             (
                 true,
@@ -778,7 +802,9 @@ fn handle_incoming(
                 log::warn!("[Sinric] Trellis device {} is offline", trellis_device_id);
                 (false, json!({"rangeValue": range_value}))
             } else {
-                let cap_id = find_first_capability(&trellis_device_id, "slider", discovery);
+                let cap_id = resolve_capability_id(
+                    &explicit_cap_id, &trellis_device_id, "slider", discovery,
+                );
                 match cap_id {
                     Some(cap_id) => {
                         let cmd = json!({
@@ -826,7 +852,9 @@ fn handle_incoming(
                 log::warn!("[Sinric] Trellis device {} is offline", trellis_device_id);
                 (false, json!({"color": {"r": r, "g": g, "b": b}}))
             } else {
-                let cap_id = find_first_capability(&trellis_device_id, "color", discovery);
+                let cap_id = resolve_capability_id(
+                    &explicit_cap_id, &trellis_device_id, "color", discovery,
+                );
                 match cap_id {
                     Some(cap_id) => {
                         let cmd = json!({
@@ -1076,4 +1104,63 @@ fn find_sensor_value(
                 .find(|c| c.cap_type == "sensor" && c.id.contains(hint))
                 .and_then(|c| c.value.as_f64())
         })
+}
+
+/// Resolve which capability ID to use for a given action type. If the mapping
+/// has an explicit `trellis_capability_id` AND that capability matches
+/// `expected_type`, use it. Otherwise fall back to auto-discovering the first
+/// capability of the expected type.
+///
+/// This prevents type mismatches: if a user maps to a switch but Sinric sends
+/// a setRangeValue request, the switch cap is skipped and auto-discovery
+/// finds the first slider instead.
+fn resolve_capability_id(
+    explicit: &Option<String>,
+    trellis_device_id: &str,
+    expected_type: &str,
+    discovery: &Arc<Mutex<Option<Arc<Discovery>>>>,
+) -> Option<String> {
+    if let Some(ref cap_id) = explicit {
+        let disc_lock = discovery.lock().unwrap();
+        let matches = disc_lock.as_ref().map_or(false, |disc| {
+            disc.get_devices()
+                .iter()
+                .find(|d| d.id == trellis_device_id)
+                .and_then(|d| d.capabilities.iter().find(|c| c.id == *cap_id))
+                .map_or(false, |c| c.cap_type == expected_type)
+        });
+        if matches {
+            return Some(cap_id.clone());
+        }
+    }
+    find_first_capability(trellis_device_id, expected_type, discovery)
+}
+
+/// Resolve a sensor value with type validation. If the explicit capability
+/// is a sensor, read its value. Otherwise fall back to the name-hint
+/// heuristic (e.g. "temp", "humid").
+fn resolve_sensor_value(
+    explicit: &Option<String>,
+    trellis_device_id: &str,
+    hint: &str,
+    discovery: &Arc<Mutex<Option<Arc<Discovery>>>>,
+) -> Option<f64> {
+    if let Some(ref cap_id) = explicit {
+        let disc_lock = discovery.lock().unwrap();
+        let val = disc_lock.as_ref().and_then(|disc| {
+            disc.get_devices()
+                .iter()
+                .find(|d| d.id == trellis_device_id)
+                .and_then(|d| {
+                    d.capabilities
+                        .iter()
+                        .find(|c| c.id == *cap_id && c.cap_type == "sensor")
+                        .and_then(|c| c.value.as_f64())
+                })
+        });
+        if val.is_some() {
+            return val;
+        }
+    }
+    find_sensor_value(trellis_device_id, hint, discovery)
 }

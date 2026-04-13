@@ -60,6 +60,7 @@ export type MqttStatus = {
 export type SinricDeviceMapping = {
   sinric_device_id: string;
   trellis_device_id: string;
+  trellis_capability_id?: string;
 };
 
 export type SinricConfig = {
