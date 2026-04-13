@@ -16,6 +16,7 @@ import {
   Pencil,
   Layers,
   Grid3x3,
+  Minimize2,
 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type { Capability, Device } from "@/lib/types";
@@ -139,12 +140,14 @@ function PlacedNode({
   device,
   pos,
   selected,
+  compact,
   onSelect,
   onDragStart,
 }: {
   device: Device;
   pos: DevicePosition;
   selected: boolean;
+  compact: boolean;
   onSelect: () => void;
   onDragStart: (e: React.MouseEvent) => void;
 }) {
@@ -169,7 +172,9 @@ function PlacedNode({
       }`}
     >
       <div
-        className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl border transition-all duration-150 ${
+        className={`flex flex-col items-center gap-0.5 rounded-xl border transition-all duration-150 ${
+          compact ? "px-2 py-1" : "px-3 py-2"
+        } ${
           selected
             ? "bg-zinc-800 border-trellis-500 shadow-lg shadow-trellis-500/10"
             : "bg-zinc-800/90 border-zinc-700/50 hover:border-zinc-600"
@@ -181,10 +186,10 @@ function PlacedNode({
               device.online ? "bg-emerald-400" : "bg-zinc-600"
             }`}
           />
-          {cap && <Icon size={13} className="text-trellis-400" />}
+          {cap && <Icon size={compact ? 11 : 13} className="text-trellis-400" />}
           {cap && (
             <span
-              className={`text-sm font-mono font-bold ${
+              className={`font-mono font-bold ${compact ? "text-xs" : "text-sm"} ${
                 device.online ? "text-zinc-100" : "text-zinc-500"
               }`}
             >
@@ -192,9 +197,11 @@ function PlacedNode({
             </span>
           )}
         </div>
-        <span className="text-[11px] text-zinc-400 max-w-[120px] truncate text-center">
-          {device.nickname || device.name}
-        </span>
+        {!compact && (
+          <span className="text-[11px] text-zinc-400 max-w-[120px] truncate text-center">
+            {device.nickname || device.name}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -451,6 +458,7 @@ export default function FloorPlan() {
     origY: number;
   } | null>(null);
   const [snapToGrid, setSnapToGrid] = useState(false);
+  const [compactNodes, setCompactNodes] = useState(false);
   const snapRef = useRef(false);
   snapRef.current = snapToGrid;
   const [renaming, setRenaming] = useState<FloorPlanEntry | null>(null);
@@ -828,6 +836,17 @@ export default function FloorPlan() {
               Snap to grid
             </button>
             <button
+              onClick={() => setCompactNodes((v) => !v)}
+              className={`flex items-center gap-2 w-full px-2.5 py-1.5 text-xs rounded-lg transition-colors ${
+                compactNodes
+                  ? "text-trellis-400 bg-trellis-500/10 hover:bg-trellis-500/15"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+              }`}
+            >
+              <Minimize2 size={13} />
+              Compact labels
+            </button>
+            <button
               onClick={handleBackgroundUpload}
               className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 rounded-lg transition-colors"
             >
@@ -917,6 +936,7 @@ export default function FloorPlan() {
                   device={device}
                   pos={pos}
                   selected={selected === pos.device_id}
+                  compact={compactNodes}
                   onSelect={() => setSelected(pos.device_id)}
                   onDragStart={(e) => handleNodeDragStart(pos.device_id, e)}
                 />

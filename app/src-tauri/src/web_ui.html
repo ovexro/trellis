@@ -767,6 +767,8 @@
     .fp-node { position: absolute; transform: translate(-50%, -50%); cursor: move; z-index: 10; user-select: none; }
     .fp-node.selected { z-index: 20; }
     .fp-node-body { display: flex; flex-direction: column; align-items: center; gap: 0.15rem; padding: 0.5rem 0.75rem; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--card); transition: border-color 0.15s, box-shadow 0.15s; }
+    .fp-node.compact .fp-node-body { padding: 0.25rem 0.5rem; }
+    .fp-node.compact .fp-node-val { font-size: 0.75rem; }
     .fp-node.selected .fp-node-body { border-color: var(--accent); box-shadow: 0 0 12px rgba(45,212,191,0.1); }
     .fp-node-body:hover { border-color: #52525b; }
     .fp-node-row { display: flex; align-items: center; gap: 0.35rem; }
@@ -3187,6 +3189,7 @@
     var fpSelected = null;
     var fpDragging = null;
     var fpSnapToGrid = false;
+    var fpCompactNodes = false;
     var FP_GRID_STEP = 4;
 
     function fpSnap(v) {
@@ -3435,6 +3438,11 @@
       snapBtn.innerHTML = '&#9638; Snap to grid';
       snapBtn.onclick = function() { fpSnapToGrid = !fpSnapToGrid; renderFloorPlan(); };
       footer.appendChild(snapBtn);
+      var compactBtn = document.createElement('button');
+      compactBtn.className = 'fp-bg-btn' + (fpCompactNodes ? ' snap-active' : '');
+      compactBtn.innerHTML = '&#9724; Compact labels';
+      compactBtn.onclick = function() { fpCompactNodes = !fpCompactNodes; renderFloorPlan(); };
+      footer.appendChild(compactBtn);
       var bgBtn = document.createElement('button');
       bgBtn.className = 'fp-bg-btn';
       bgBtn.innerHTML = '&#128444; ' + (fpBackground ? 'Change background' : 'Set background');
@@ -3462,7 +3470,7 @@
         if (!device) return;
         var cap = fpPrimaryCap(device);
         var node = document.createElement('div');
-        node.className = 'fp-node' + (fpSelected === pos.device_id ? ' selected' : '');
+        node.className = 'fp-node' + (fpSelected === pos.device_id ? ' selected' : '') + (fpCompactNodes ? ' compact' : '');
         node.style.left = pos.x + '%';
         node.style.top = pos.y + '%';
         node.innerHTML =
@@ -3471,7 +3479,7 @@
               '<span class="fp-dot ' + (device.online ? 'online' : 'offline') + '"></span>' +
               (cap ? '<span class="fp-node-val' + (device.online ? '' : ' offline') + '">' + esc(fpCapSummary(cap)) + '</span>' : '') +
             '</div>' +
-            '<span class="fp-node-name">' + esc(device.nickname || device.name) + '</span>' +
+            (fpCompactNodes ? '' : '<span class="fp-node-name">' + esc(device.nickname || device.name) + '</span>') +
           '</div>';
 
         node.addEventListener('mousedown', function(e) {
