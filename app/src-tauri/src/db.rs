@@ -600,6 +600,37 @@ impl Database {
         Ok(())
     }
 
+    // ─── Webhook delivery history ───────────────────────────────────────
+
+    pub fn log_webhook_delivery(
+        &self, webhook_id: i64, event_type: &str, status_code: Option<i32>,
+        success: bool, error: Option<&str>, attempt: i32,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+            rusqlite::params![webhook_id, event_type, status_code, success, error, attempt],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn get_webhook_deliveries(&self, webhook_id: i64, limit: i64) -> Result<Vec<WebhookDelivery>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, webhook_id, event_type, status_code, success, error, attempt, timestamp
+             FROM webhook_deliveries WHERE webhook_id = ?1 ORDER BY id DESC LIMIT ?2"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![webhook_id, limit], |row| {
+            Ok(WebhookDelivery {
+                id: row.get(0)?, webhook_id: row.get(1)?, event_type: row.get(2)?,
+                status_code: row.get(3)?, success: row.get(4)?, error: row.get(5)?,
+                attempt: row.get(6)?, timestamp: row.get(7)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     // ─── Device templates ────────────────────────────────────────────────
 
     pub fn create_template(
@@ -1310,6 +1341,18 @@ pub struct Webhook {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookDelivery {
+    pub id: i64,
+    pub webhook_id: i64,
+    pub event_type: String,
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub attempt: i32,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceTemplate {
     pub id: i64,
     pub name: String,
@@ -1635,6 +1678,23 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // Add compound conditions support to rules (post-v0.9.0 — AND/OR logic)
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN logic TEXT NOT NULL DEFAULT 'and'", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN conditions TEXT", []);
+
+    // Webhook delivery history (post-v0.9.0 — retry + delivery log)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS webhook_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            webhook_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            status_code INTEGER,
+            success INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (webhook_id) REFERENCES webhooks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
+            ON webhook_deliveries(webhook_id, id DESC);
+    ").map_err(|e| e.to_string())?;
 
     app.manage(Database {
         conn: Mutex::new(conn),

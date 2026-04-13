@@ -1190,6 +1190,19 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        // ─── Webhook deliveries ────────────────────────────────────
+        ("GET", p) if p.starts_with("/api/webhooks/") && p.ends_with("/deliveries") => {
+            let middle = &p["/api/webhooks/".len()..p.len()-"/deliveries".len()];
+            let wh_id: i64 = match middle.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid webhook ID"),
+            };
+            match ctx.db.get_webhook_deliveries(wh_id, 50) {
+                Ok(d) => json_ok(&d),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         // ─── Scenes ─────────────────────────────────────────────────
         ("GET", "/api/scenes") => {
             match ctx.db.get_scenes() {

@@ -98,6 +98,8 @@ pub fn run() {
             get_webhooks,
             delete_webhook,
             toggle_webhook,
+            log_webhook_delivery,
+            get_webhook_deliveries,
             create_template,
             get_templates,
             delete_template,

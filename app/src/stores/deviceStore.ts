@@ -175,10 +175,47 @@ async function checkRules(deviceId: string, metricId: string, _value: number, de
   }
 }
 
-// Fire webhooks for events
+// Fire webhooks for events with retry and delivery logging
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 2000;
+
+async function attemptWebhook(
+  webhookId: number, url: string, eventType: string, payload: string, attempt: number,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const success = resp.ok;
+    invoke("log_webhook_delivery", {
+      webhookId, eventType, statusCode: resp.status, success, error: null, attempt,
+    }).catch(() => {});
+    if (!success && attempt < MAX_RETRIES) {
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      setTimeout(() => attemptWebhook(webhookId, url, eventType, payload, attempt + 1), delay);
+    }
+  } catch (err) {
+    clearTimeout(timeout);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    invoke("log_webhook_delivery", {
+      webhookId, eventType, statusCode: null, success: false, error: errMsg, attempt,
+    }).catch(() => {});
+    if (attempt < MAX_RETRIES) {
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+      setTimeout(() => attemptWebhook(webhookId, url, eventType, payload, attempt + 1), delay);
+    }
+  }
+}
+
 async function fireWebhooks(eventType: string, deviceId: string, data: Record<string, unknown>) {
   try {
-    const webhooks = await invoke<Array<{ url: string; event_type: string; device_id: string | null; enabled: boolean }>>("get_webhooks");
+    const webhooks = await invoke<Array<{ id: number; url: string; event_type: string; device_id: string | null; enabled: boolean }>>("get_webhooks");
     for (const wh of webhooks) {
       if (!wh.enabled) continue;
       if (wh.event_type !== eventType) continue;
@@ -188,21 +225,11 @@ async function fireWebhooks(eventType: string, deviceId: string, data: Record<st
         const u = new URL(wh.url);
         if (u.protocol !== "http:" && u.protocol !== "https:") continue;
       } catch {
-        console.warn("Webhook has invalid URL:", wh.url);
         continue;
       }
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-
-      fetch(wh.url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event: eventType, device_id: deviceId, ...data, timestamp: new Date().toISOString() }),
-        signal: controller.signal,
-      })
-        .catch((err) => console.warn(`Webhook to ${wh.url.slice(0, 50)} failed:`, err.message))
-        .finally(() => clearTimeout(timeout));
+      const payload = JSON.stringify({ event: eventType, device_id: deviceId, ...data, timestamp: new Date().toISOString() });
+      attemptWebhook(wh.id, wh.url, eventType, payload, 1);
     }
   } catch (err) {
     console.error("Failed to fire webhooks:", err);

@@ -3112,12 +3112,19 @@
           <div class="section-title">Webhooks</div>`;
         if (webhooks && webhooks.length) {
           html += webhooks.map(w => {
+            var testBtn = isViewer ? '' : `<button onclick="testWebhookFromDash(${w.id}, '${esc(w.url)}')" style="font-size:0.7rem;padding:0.2rem 0.5rem;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;white-space:nowrap;">Test</button>`;
             return `<div class="auto-card">
-              <div>
-                <div class="auto-card-title">${esc(w.label || w.event_type || 'Webhook')}</div>
-                <div class="auto-card-detail">
-                  ${w.url ? `URL: <code style="font-size:0.75rem;color:var(--accent);">${esc(w.url)}</code>` : ''}
-                  ${w.event_type ? ` &middot; Event: ${esc(w.event_type)}` : ''}
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                  <div class="auto-card-title">${esc(w.label || w.event_type || 'Webhook')}</div>
+                  <div class="auto-card-detail">
+                    ${w.url ? `URL: <code style="font-size:0.75rem;color:var(--accent);">${esc(w.url)}</code>` : ''}
+                    ${w.event_type ? ` &middot; Event: ${esc(w.event_type)}` : ''}
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:0.5rem;">
+                  ${testBtn}
+                  <span class="auto-card-badge ${w.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${w.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                 </div>
               </div>
             </div>`;
@@ -3130,6 +3137,20 @@
         container.innerHTML = html;
       } catch (e) {
         container.innerHTML = renderEmpty('Could not load automation data', e.message);
+      }
+    }
+
+    async function testWebhookFromDash(webhookId, url) {
+      try {
+        var resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: 'test', device_id: null, message: 'Test delivery from Trellis', timestamp: new Date().toISOString() }),
+        });
+        await api('/api/webhooks/' + webhookId + '/deliveries').catch(function(){});
+        toast(resp.ok ? 'Test sent \u2714 (' + resp.status + ')' : 'Test failed (' + resp.status + ')', resp.ok ? 'success' : 'error');
+      } catch (e) {
+        toast('Test failed: ' + (e.message || e), 'error');
       }
     }
 

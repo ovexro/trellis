@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap } from "lucide-react";
+import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap, Send, ChevronDown, ChevronRight, CheckCircle, XCircle } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface Schedule {
@@ -53,6 +53,17 @@ interface WebhookDef {
   enabled: boolean;
 }
 
+interface WebhookDelivery {
+  id: number;
+  webhook_id: number;
+  event_type: string;
+  status_code: number | null;
+  success: boolean;
+  error: string | null;
+  attempt: number;
+  timestamp: string;
+}
+
 type Tab = "schedules" | "rules" | "webhooks";
 
 export default function Automation() {
@@ -94,6 +105,11 @@ export default function Automation() {
   const [wUrl, setWUrl] = useState("");
   const [wLabel, setWLabel] = useState("");
   const [wError, setWError] = useState("");
+
+  // Webhook delivery log
+  const [expandedWebhook, setExpandedWebhook] = useState<number | null>(null);
+  const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
 
   const onlineDevices = devices.filter((d) => d.online);
 
@@ -180,6 +196,61 @@ export default function Automation() {
       console.error("Failed to create rule:", err);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const testWebhook = async (wh: WebhookDef) => {
+    setActionLoading(`test-webhook-${wh.id}`);
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const payload = JSON.stringify({
+        event: "test", device_id: null,
+        message: "Test delivery from Trellis",
+        timestamp: new Date().toISOString(),
+      });
+      const resp = await fetch(wh.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      await invoke("log_webhook_delivery", {
+        webhookId: wh.id, eventType: "test", statusCode: resp.status,
+        success: resp.ok, error: null, attempt: 1,
+      });
+      if (expandedWebhook === wh.id) await loadDeliveries(wh.id);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await invoke("log_webhook_delivery", {
+        webhookId: wh.id, eventType: "test", statusCode: null,
+        success: false, error: errMsg, attempt: 1,
+      }).catch(() => {});
+      if (expandedWebhook === wh.id) await loadDeliveries(wh.id);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const loadDeliveries = async (webhookId: number) => {
+    setDeliveriesLoading(true);
+    try {
+      const d = await invoke<WebhookDelivery[]>("get_webhook_deliveries", { webhookId, limit: 20 });
+      setDeliveries(d);
+    } catch {
+      setDeliveries([]);
+    } finally {
+      setDeliveriesLoading(false);
+    }
+  };
+
+  const toggleDeliveryLog = async (webhookId: number) => {
+    if (expandedWebhook === webhookId) {
+      setExpandedWebhook(null);
+    } else {
+      setExpandedWebhook(webhookId);
+      await loadDeliveries(webhookId);
     }
   };
 
@@ -603,21 +674,55 @@ export default function Automation() {
           ) : (
             <div className="space-y-2">
               {webhooks.map((w) => (
-                <div key={w.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!w.enabled ? "opacity-50" : ""}`}>
-                  <div>
-                    <p className="text-sm font-medium text-zinc-200">{w.label}</p>
-                    <p className="text-xs text-zinc-500 mt-0.5">{w.event_type} → <span className="font-mono">{w.url.slice(0, 50)}{w.url.length > 50 ? "..." : ""}</span></p>
+                <div key={w.id} className={`bg-zinc-900 border border-zinc-800 rounded-xl ${!w.enabled ? "opacity-50" : ""}`}>
+                  <div className="flex items-center justify-between p-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-zinc-200">{w.label}</p>
+                      <p className="text-xs text-zinc-500 mt-0.5 truncate">{w.event_type} → <span className="font-mono">{w.url.slice(0, 50)}{w.url.length > 50 ? "..." : ""}</span></p>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+                      <button onClick={() => testWebhook(w)} title="Send test"
+                        disabled={actionLoading === `test-webhook-${w.id}`}
+                        className="text-zinc-500 hover:text-trellis-400 disabled:opacity-50 p-0.5">
+                        {actionLoading === `test-webhook-${w.id}` ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                      </button>
+                      <button onClick={() => toggleDeliveryLog(w.id)} title="Delivery log"
+                        className="text-zinc-500 hover:text-zinc-300 p-0.5">
+                        {expandedWebhook === w.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <button onClick={() => handleToggle("webhook", w.id, w.enabled)}
+                        disabled={actionLoading === `toggle-webhook-${w.id}`}
+                        className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
+                        {w.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
+                      </button>
+                      <button onClick={() => handleDelete("webhook", w.id, w.label)}
+                        disabled={actionLoading === `delete-webhook-${w.id}`}
+                        className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <button onClick={() => handleToggle("webhook", w.id, w.enabled)}
-                      disabled={actionLoading === `toggle-webhook-${w.id}`}
-                      className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
-                      {w.enabled ? <ToggleRight size={18} className="text-trellis-400" /> : <ToggleLeft size={18} />}
-                    </button>
-                    <button onClick={() => handleDelete("webhook", w.id, w.label)}
-                      disabled={actionLoading === `delete-webhook-${w.id}`}
-                      className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
-                  </div>
+                  {expandedWebhook === w.id && (
+                    <div className="border-t border-zinc-800 px-4 py-3">
+                      <p className="text-[11px] text-zinc-500 uppercase tracking-wider mb-2">Delivery Log</p>
+                      {deliveriesLoading ? (
+                        <Loader2 size={14} className="animate-spin text-zinc-500" />
+                      ) : deliveries.length === 0 ? (
+                        <p className="text-xs text-zinc-600">No deliveries yet</p>
+                      ) : (
+                        <div className="space-y-1 max-h-48 overflow-y-auto">
+                          {deliveries.map((d) => (
+                            <div key={d.id} className="flex items-center gap-2 text-xs">
+                              {d.success ? <CheckCircle size={12} className="text-green-500 flex-shrink-0" /> : <XCircle size={12} className="text-red-400 flex-shrink-0" />}
+                              <span className="text-zinc-400 font-mono w-10 flex-shrink-0">{d.status_code || "ERR"}</span>
+                              <span className="text-zinc-500">{d.event_type}</span>
+                              {d.attempt > 1 && <span className="text-amber-500 text-[10px]">retry #{d.attempt}</span>}
+                              <span className="text-zinc-600 ml-auto flex-shrink-0">{d.timestamp}</span>
+                              {d.error && <span className="text-red-400 truncate max-w-[150px]" title={d.error}>{d.error}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

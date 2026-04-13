@@ -634,6 +634,23 @@ pub fn toggle_webhook(db: State<'_, Database>, id: i64, enabled: bool) -> Result
     db.toggle_webhook(id, enabled)
 }
 
+// ─── Webhook delivery history ────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn log_webhook_delivery(
+    db: State<'_, Database>, webhook_id: i64, event_type: String,
+    status_code: Option<i32>, success: bool, error: Option<String>, attempt: i32,
+) -> Result<i64, String> {
+    db.log_webhook_delivery(webhook_id, &event_type, status_code, success, error.as_deref(), attempt)
+}
+
+#[tauri::command]
+pub fn get_webhook_deliveries(
+    db: State<'_, Database>, webhook_id: i64, limit: Option<i64>,
+) -> Result<Vec<crate::db::WebhookDelivery>, String> {
+    db.get_webhook_deliveries(webhook_id, limit.unwrap_or(20))
+}
+
 // ─── Device templates ───────────────────────────────────────────────────────
 
 #[tauri::command]
