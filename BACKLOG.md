@@ -8,7 +8,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 
-- **Voice assistant integration research** — investigate Sinric Pro or direct Alexa/Google Home paths. Requires MQTT bridge (already shipped) as prerequisite.
+- **Sinric Pro voice assistant bridge** — RESEARCHED: Sinric Pro wins over direct Alexa/Google skills (lower friction, covers both platforms, free tier 3 devices). Implementation: Rust WebSocket client to ws.sinric.pro with HMAC-SHA256 signing, Settings panel for API key/secret, bidirectional sync (Sinric commands → Trellis device commands, state changes → Sinric updates), capability mapping (switch→switch, slider→dimmer, sensor→temperature/humidity). Estimated 2-3 sessions. Also document HA path as "already works" in user guide.
 
 ## Known follow-ups
 
