@@ -292,6 +292,7 @@ Single source of truth for all features. Check items as they are implemented and
 ## Data Management
 
 - [x] Config import/export (full backup of devices, scenes, schedules, rules, webhooks, alerts, templates, groups)
+- [x] **Config import/export v2 (post-v0.8.0)** — export now includes backend-backed scenes (SQLite, not stale localStorage), floor plans, device positions, and favorite capabilities. Import remaps IDs across cross-referenced tables (groups, scenes, floor plans) so references survive the export/import round-trip. Schedule import preserves `scene_id` for scene-type schedules. Config version bumped to 2; backward-compatible with old v0.1.5 exports (missing sections silently skipped).
 - [x] **Configurable data retention (v0.4.6)** — metrics and device logs cleanup period selectable from Settings: 7 days, 30 days (default, backward-compatible), 90 days, 1 year, or forever (disables cleanup). Cleanup thread reads the setting each hourly cycle. Dropdown in both the desktop Settings page and the `:9090` web dashboard. Viewers can see but not change the setting.
 - [x] Device health diagnostics (RSSI warnings, heap warnings)
 

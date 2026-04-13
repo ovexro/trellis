@@ -13,7 +13,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Floor plan v2: undo last move**~~ — SHIPPED (post-v0.7.0, commit ae92d4f).
 - ~~**Scene scheduling**~~ — SHIPPED (post-v0.7.0, commit 650b302).
 - ~~**Scene editing**~~ — SHIPPED (post-v0.8.0, commit f100ef7).
-- **Config import/export update** — scenes + scene_actions + floor_plans tables may not be included in the export/import flow yet. Data integrity concern — users lose these on backup/restore.
+- ~~**Config import/export update**~~ — SHIPPED (post-v0.8.0, commit b02a7a9).
 - **Floor plan v2: remaining enhancements** — room/wall drawing tools, auto-placement.
 
 ## Known follow-ups
