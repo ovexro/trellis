@@ -9,8 +9,17 @@ pub struct Database {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct FloorPlan {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub background: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DevicePosition {
     pub device_id: String,
+    pub floor_id: i64,
     pub x: f64,
     pub y: f64,
 }
@@ -726,17 +735,18 @@ impl Database {
         Ok(result)
     }
 
-    // ─── Floor plan positions ────────────────────────────────────────────
+    // ─── Floor plans ─────────────────────────────────────────────────────
 
-    pub fn get_device_positions(&self) -> Result<Vec<DevicePosition>, String> {
+    pub fn get_floor_plans(&self) -> Result<Vec<FloorPlan>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT device_id, x, y FROM device_positions")
+        let mut stmt = conn.prepare("SELECT id, name, sort_order, background FROM floor_plans ORDER BY sort_order, id")
             .map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
-            Ok(DevicePosition {
-                device_id: row.get(0)?,
-                x: row.get(1)?,
-                y: row.get(2)?,
+            Ok(FloorPlan {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                sort_order: row.get(2)?,
+                background: row.get(3)?,
             })
         }).map_err(|e| e.to_string())?;
         let mut result = Vec::new();
@@ -746,12 +756,88 @@ impl Database {
         Ok(result)
     }
 
-    pub fn set_device_position(&self, device_id: &str, x: f64, y: f64) -> Result<(), String> {
+    pub fn create_floor_plan(&self, name: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        let next_order: i64 = conn
+            .query_row("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM floor_plans", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO floor_plans (name, sort_order) VALUES (?1, ?2)",
+            rusqlite::params![name, next_order],
+        ).map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_floor_plan(&self, id: i64, name: Option<&str>, background: Option<Option<&str>>) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(n) = name {
+            conn.execute("UPDATE floor_plans SET name = ?1 WHERE id = ?2", rusqlite::params![n, id])
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(bg) = background {
+            // Normalize empty string to NULL
+            let bg_val: Option<&str> = bg.filter(|s| !s.is_empty());
+            conn.execute("UPDATE floor_plans SET background = ?1 WHERE id = ?2", rusqlite::params![bg_val, id])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn delete_floor_plan(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM device_positions WHERE floor_id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM floor_plans WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ─── Floor plan positions ────────────────────────────────────────────
+
+    pub fn get_device_positions(&self, floor_id: i64) -> Result<Vec<DevicePosition>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT device_id, floor_id, x, y FROM device_positions WHERE floor_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![floor_id], |row| {
+            Ok(DevicePosition {
+                device_id: row.get(0)?,
+                floor_id: row.get(1)?,
+                x: row.get(2)?,
+                y: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(result)
+    }
+
+    pub fn get_all_device_positions(&self) -> Result<Vec<DevicePosition>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT device_id, floor_id, x, y FROM device_positions")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DevicePosition {
+                device_id: row.get(0)?,
+                floor_id: row.get(1)?,
+                x: row.get(2)?,
+                y: row.get(3)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(result)
+    }
+
+    pub fn set_device_position(&self, device_id: &str, floor_id: i64, x: f64, y: f64) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO device_positions (device_id, x, y) VALUES (?1, ?2, ?3)
-             ON CONFLICT(device_id) DO UPDATE SET x = ?2, y = ?3",
-            rusqlite::params![device_id, x, y],
+            "INSERT INTO device_positions (device_id, floor_id, x, y) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(device_id) DO UPDATE SET floor_id = ?2, x = ?3, y = ?4",
+            rusqlite::params![device_id, floor_id, x, y],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1317,15 +1403,73 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         );
     ").map_err(|e| e.to_string())?;
 
-    // Floor plan: device positions on the spatial canvas (post-v0.6.0)
+    // Floor plans table (v0.8.0 — multi-floor support)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS floor_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            background TEXT
+        );
+    ").map_err(|e| e.to_string())?;
+
+    // Floor plan: device positions on the spatial canvas.
+    // Fresh installs get floor_id in the CREATE; upgrades from v0.7.0 get it via ALTER below.
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS device_positions (
             device_id TEXT NOT NULL PRIMARY KEY,
             x REAL NOT NULL DEFAULT 0.0,
             y REAL NOT NULL DEFAULT 0.0,
+            floor_id INTEGER NOT NULL DEFAULT 1,
             FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
         );
     ").map_err(|e| e.to_string())?;
+
+    // Migrate device_positions: add floor_id column if missing (v0.8.0).
+    // Creates a default "Floor 1" and moves existing positions + background onto it.
+    {
+        let has_floor_id: bool = conn
+            .prepare("SELECT floor_id FROM device_positions LIMIT 0")
+            .is_ok();
+        if !has_floor_id {
+            // Ensure at least one floor exists for the migration
+            conn.execute(
+                "INSERT INTO floor_plans (name, sort_order) SELECT 'Floor 1', 0 WHERE NOT EXISTS (SELECT 1 FROM floor_plans)",
+                [],
+            ).map_err(|e| e.to_string())?;
+
+            // Move background from settings into the default floor
+            let bg: Option<String> = conn
+                .prepare("SELECT value FROM settings WHERE key = 'floor_plan_background'")
+                .ok()
+                .and_then(|mut s| s.query_row([], |r| r.get(0)).ok());
+            if let Some(ref bg_val) = bg {
+                let default_id: i64 = conn
+                    .query_row("SELECT id FROM floor_plans ORDER BY sort_order, id LIMIT 1", [], |r| r.get(0))
+                    .map_err(|e| e.to_string())?;
+                conn.execute(
+                    "UPDATE floor_plans SET background = ?1 WHERE id = ?2",
+                    rusqlite::params![bg_val, default_id],
+                ).map_err(|e| e.to_string())?;
+                let _ = conn.execute("DELETE FROM settings WHERE key = 'floor_plan_background'", []);
+            }
+
+            // Add floor_id column
+            conn.execute(
+                "ALTER TABLE device_positions ADD COLUMN floor_id INTEGER NOT NULL DEFAULT 1",
+                [],
+            ).map_err(|e| e.to_string())?;
+
+            // Point existing positions to the default floor
+            let default_id: i64 = conn
+                .query_row("SELECT id FROM floor_plans ORDER BY sort_order, id LIMIT 1", [], |r| r.get(0))
+                .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE device_positions SET floor_id = ?1",
+                rusqlite::params![default_id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
 
     app.manage(Database {
         conn: Mutex::new(conn),

@@ -1016,15 +1016,45 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_reorder_devices(ctx, &req.body)
         }
 
-        // ─── Floor plan ─────────────────────────────────────────────
-        ("GET", "/api/floor-plan") => {
-            match ctx.db.get_device_positions() {
-                Ok(positions) => {
-                    let bg = ctx.db.get_setting("floor_plan_background").unwrap_or(None);
-                    json_ok(&serde_json::json!({"positions": positions, "background": bg}))
-                }
+        // ─── Floor plans (multi-floor) ─────────────────────────────
+        ("GET", "/api/floor-plans") => {
+            match ctx.db.get_floor_plans() {
+                Ok(floors) => json_ok(&floors),
                 Err(e) => json_error(500, &e),
             }
+        }
+
+        ("POST", "/api/floor-plans") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_floor_plan(ctx, &req.body)
+        }
+
+        ("PUT", p) if p.starts_with("/api/floor-plans/") && !p["/api/floor-plans/".len()..].contains('/') => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/floor-plans/".len()..];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid floor plan id"),
+            };
+            handle_update_floor_plan(ctx, id, &req.body)
+        }
+
+        ("DELETE", p) if p.starts_with("/api/floor-plans/") && !p["/api/floor-plans/".len()..].contains('/') => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/floor-plans/".len()..];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid floor plan id"),
+            };
+            match ctx.db.delete_floor_plan(id) {
+                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        // ─── Floor plan positions ────────────────────────────────────
+        ("GET", "/api/floor-plan") => {
+            handle_get_floor_plan(ctx, &req.query)
         }
 
         ("PUT", "/api/floor-plan/position") => {
@@ -1040,11 +1070,6 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 Ok(()) => json_ok(&serde_json::json!({"removed": true})),
                 Err(e) => json_error(500, &e),
             }
-        }
-
-        ("PUT", "/api/floor-plan/background") => {
-            if let Some(denied) = require_admin(role) { return denied; }
-            handle_set_floor_plan_background(ctx, &req.body)
         }
 
         ("DELETE", p) if p.starts_with("/api/devices/") && !p["/api/devices/".len()..].contains('/') => {
@@ -1539,6 +1564,66 @@ fn handle_set_device_favorite(ctx: &ApiContext, device_id: &str, body: &str) -> 
     }
 }
 
+fn handle_get_floor_plan(ctx: &ApiContext, query: &HashMap<String, String>) -> (u16, String) {
+    // If floor_id is specified, use it; otherwise fall back to the first floor
+    let floor_id: i64 = if let Some(fid) = query.get("floor_id").and_then(|f| f.parse().ok()) {
+        fid
+    } else {
+        match ctx.db.get_floor_plans() {
+            Ok(floors) if !floors.is_empty() => floors[0].id,
+            Ok(_) => return json_ok(&serde_json::json!({"positions": [], "background": null, "floor_id": null})),
+            Err(e) => return json_error(500, &e),
+        }
+    };
+    match ctx.db.get_device_positions(floor_id) {
+        Ok(positions) => {
+            let bg = ctx.db.get_floor_plans().ok()
+                .and_then(|floors| floors.into_iter().find(|f| f.id == floor_id))
+                .and_then(|f| f.background);
+            json_ok(&serde_json::json!({"positions": positions, "background": bg, "floor_id": floor_id}))
+        }
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_create_floor_plan(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = match v["name"].as_str() {
+        Some(n) if !n.trim().is_empty() => n.trim(),
+        _ => return json_error(400, "missing or empty name"),
+    };
+    match ctx.db.create_floor_plan(name) {
+        Ok(id) => json_ok(&serde_json::json!({"id": id})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_update_floor_plan(ctx: &ApiContext, id: i64, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = v["name"].as_str().map(|n| n.trim()).filter(|n| !n.is_empty());
+    // background: if key is present and non-empty string → set; if key is present and null/empty → clear; if absent → no change
+    let background = if v.get("background").is_some() {
+        match v["background"].as_str() {
+            Some(bg) if !bg.is_empty() => Some(Some(bg)),
+            _ => Some(None),
+        }
+    } else {
+        None
+    };
+    // Convert Option<Option<&str>> to the right shape for the DB method
+    let bg_param: Option<Option<&str>> = background;
+    match ctx.db.update_floor_plan(id, name, bg_param) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
 fn handle_set_device_position(ctx: &ApiContext, body: &str) -> (u16, String) {
     let v: Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -1548,6 +1633,10 @@ fn handle_set_device_position(ctx: &ApiContext, body: &str) -> (u16, String) {
         Some(id) => id,
         None => return json_error(400, "missing device_id"),
     };
+    let floor_id = match v["floor_id"].as_i64() {
+        Some(id) => id,
+        None => return json_error(400, "missing floor_id"),
+    };
     let x = match v["x"].as_f64() {
         Some(x) => x.clamp(0.0, 100.0),
         None => return json_error(400, "missing x"),
@@ -1556,30 +1645,9 @@ fn handle_set_device_position(ctx: &ApiContext, body: &str) -> (u16, String) {
         Some(y) => y.clamp(0.0, 100.0),
         None => return json_error(400, "missing y"),
     };
-    match ctx.db.set_device_position(device_id, x, y) {
+    match ctx.db.set_device_position(device_id, floor_id, x, y) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
-    }
-}
-
-fn handle_set_floor_plan_background(ctx: &ApiContext, body: &str) -> (u16, String) {
-    let v: Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
-    };
-    match v["background"].as_str() {
-        Some(bg) if !bg.is_empty() => {
-            match ctx.db.set_setting("floor_plan_background", bg) {
-                Ok(()) => json_ok(&serde_json::json!({"updated": true})),
-                Err(e) => json_error(500, &e),
-            }
-        }
-        _ => {
-            match ctx.db.delete_setting("floor_plan_background") {
-                Ok(()) => json_ok(&serde_json::json!({"cleared": true})),
-                Err(e) => json_error(500, &e),
-            }
-        }
     }
 }
 

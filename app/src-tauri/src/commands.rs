@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -693,16 +693,45 @@ pub fn get_favorite_capabilities(db: State<'_, Database>) -> Result<Vec<(String,
     db.get_favorite_capabilities()
 }
 
-// ─── Floor plan ─────────────────────────────────────────────────────────────
+// ─── Floor plans ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_device_positions(db: State<'_, Database>) -> Result<Vec<DevicePosition>, String> {
-    db.get_device_positions()
+pub fn get_floor_plans(db: State<'_, Database>) -> Result<Vec<FloorPlan>, String> {
+    db.get_floor_plans()
 }
 
 #[tauri::command]
-pub fn set_device_position(db: State<'_, Database>, device_id: String, x: f64, y: f64) -> Result<(), String> {
-    db.set_device_position(&device_id, x, y)
+pub fn create_floor_plan(db: State<'_, Database>, name: String) -> Result<i64, String> {
+    db.create_floor_plan(&name)
+}
+
+#[tauri::command]
+pub fn update_floor_plan(db: State<'_, Database>, id: i64, name: Option<String>, background: Option<Option<String>>) -> Result<(), String> {
+    let name_ref = name.as_deref();
+    let bg_ref = background.as_ref().map(|b| b.as_deref());
+    db.update_floor_plan(id, name_ref, bg_ref)
+}
+
+#[tauri::command]
+pub fn delete_floor_plan(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_floor_plan(id)
+}
+
+// ─── Floor plan positions ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_device_positions(db: State<'_, Database>, floor_id: i64) -> Result<Vec<DevicePosition>, String> {
+    db.get_device_positions(floor_id)
+}
+
+#[tauri::command]
+pub fn get_all_device_positions(db: State<'_, Database>) -> Result<Vec<DevicePosition>, String> {
+    db.get_all_device_positions()
+}
+
+#[tauri::command]
+pub fn set_device_position(db: State<'_, Database>, device_id: String, floor_id: i64, x: f64, y: f64) -> Result<(), String> {
+    db.set_device_position(&device_id, floor_id, x, y)
 }
 
 #[tauri::command]

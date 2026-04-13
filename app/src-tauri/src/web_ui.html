@@ -732,7 +732,29 @@
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
     /* ── Floor Plan ────────────────────────────────────────────── */
-    .fp-layout { display: flex; height: calc(100vh - 120px); gap: 0; }
+    .fp-floor-tabs { display: flex; align-items: center; gap: 0.25rem; padding: 0.35rem 0.75rem; border-bottom: 1px solid var(--border); background: rgba(9,9,11,0.5); min-height: 36px; overflow-x: auto; }
+    .fp-floor-tab { padding: 0.25rem 0.75rem; font-size: 0.75rem; border-radius: 0.375rem; white-space: nowrap; cursor: pointer; border: 1px solid transparent; background: none; color: var(--text-dim); transition: all 0.15s; }
+    .fp-floor-tab:hover { color: var(--text); background: rgba(39,39,42,0.5); }
+    .fp-floor-tab.active { background: rgba(45,212,191,0.1); color: var(--accent); border-color: rgba(45,212,191,0.3); }
+    .fp-floor-add { display: flex; align-items: center; gap: 0.25rem; padding: 0.25rem 0.5rem; font-size: 0.75rem; color: var(--text-dim); background: none; border: none; border-radius: 0.375rem; cursor: pointer; transition: all 0.15s; flex-shrink: 0; margin-left: 0.25rem; }
+    .fp-floor-add:hover { color: var(--text); background: rgba(39,39,42,0.5); }
+    .fp-floor-ctx { position: fixed; z-index: 50; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 0.25rem 0; min-width: 140px; }
+    .fp-floor-ctx button { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.4rem 0.75rem; font-size: 0.75rem; color: var(--text); background: none; border: none; cursor: pointer; transition: background 0.15s; }
+    .fp-floor-ctx button:hover { background: rgba(39,39,42,0.8); }
+    .fp-floor-ctx button.danger { color: #f87171; }
+    .fp-modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); }
+    .fp-modal { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 48px rgba(0,0,0,0.5); padding: 1rem; width: 300px; }
+    .fp-modal h3 { font-size: 0.85rem; font-weight: 600; color: var(--text); margin-bottom: 0.75rem; }
+    .fp-modal input[type="text"] { width: 100%; padding: 0.5rem 0.75rem; font-size: 0.8rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); outline: none; margin-bottom: 0.75rem; box-sizing: border-box; }
+    .fp-modal input[type="text"]:focus { border-color: var(--accent); }
+    .fp-modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
+    .fp-modal-actions button { padding: 0.35rem 0.75rem; font-size: 0.75rem; border-radius: var(--radius-sm); cursor: pointer; border: none; transition: all 0.15s; }
+    .fp-modal-actions .cancel { background: none; color: var(--text-dim); }
+    .fp-modal-actions .cancel:hover { color: var(--text); }
+    .fp-modal-actions .confirm { background: rgba(45,212,191,0.15); color: var(--accent); border: 1px solid rgba(45,212,191,0.3); }
+    .fp-modal-actions .confirm:hover { background: rgba(45,212,191,0.25); }
+    .fp-modal-actions .confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+    .fp-layout { display: flex; height: calc(100vh - 156px); gap: 0; }
     .fp-sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg); }
     .fp-sidebar-header { padding: 0.75rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
     .fp-device-list { flex: 1; overflow-y: auto; padding: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
@@ -772,7 +794,8 @@
     @media (max-width: 640px) {
       .fp-layout { flex-direction: column; height: auto; }
       .fp-sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 180px; }
-      .fp-canvas-wrap { height: 60vh; }
+      .fp-canvas-wrap { height: 55vh; }
+      .fp-floor-tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     }
   </style>
 </head>
@@ -860,6 +883,8 @@
     <!-- Floor Plan Tab -->
     <div class="tab-panel" id="panel-floor-plan">
       <div id="floorPlanContent">
+        <!-- Floor tab bar -->
+        <div class="fp-floor-tabs" id="fpFloorTabs"></div>
         <div class="fp-layout">
           <div class="fp-sidebar" id="fpSidebar">
             <div class="fp-sidebar-header">
@@ -3153,21 +3178,183 @@
     }
 
     /* ────────────────────────── Floor Plan ────────────────────────── */
+    var fpFloors = [];
+    var fpActiveFloorId = null;
     var fpPositions = [];
+    var fpAllPositions = [];
     var fpBackground = null;
     var fpSelected = null;
     var fpDragging = null;
 
     async function loadFloorPlan() {
       try {
-        var data = await api('/api/floor-plan');
+        fpFloors = await api('/api/floor-plans');
+        if (fpFloors.length === 0) {
+          var created = await api('/api/floor-plans', { method: 'POST', body: JSON.stringify({ name: 'Floor 1' }) });
+          fpFloors = [{ id: created.id, name: 'Floor 1', sort_order: 0, background: null }];
+        }
+        if (fpActiveFloorId === null || !fpFloors.find(function(f) { return f.id === fpActiveFloorId; })) {
+          fpActiveFloorId = fpFloors[0].id;
+        }
+      } catch (e) {
+        fpFloors = [];
+      }
+      await fpLoadFloorData();
+      await fpLoadAllPositions();
+      renderFloorTabs();
+      renderFloorPlan();
+    }
+
+    async function fpLoadFloorData() {
+      if (fpActiveFloorId === null) { fpPositions = []; fpBackground = null; return; }
+      try {
+        var data = await api('/api/floor-plan?floor_id=' + fpActiveFloorId);
         fpPositions = data.positions || [];
         fpBackground = data.background || null;
       } catch (e) {
         fpPositions = [];
         fpBackground = null;
       }
+    }
+
+    async function fpLoadAllPositions() {
+      fpAllPositions = [];
+      for (var i = 0; i < fpFloors.length; i++) {
+        try {
+          var fd = await api('/api/floor-plan?floor_id=' + fpFloors[i].id);
+          fpAllPositions = fpAllPositions.concat(fd.positions || []);
+        } catch (e) { /* skip */ }
+      }
+    }
+
+    async function fpSwitchFloor(floorId) {
+      fpActiveFloorId = floorId;
+      fpSelected = null;
+      document.getElementById('fpPopup').classList.add('hidden');
+      await fpLoadFloorData();
+      renderFloorTabs();
       renderFloorPlan();
+    }
+
+    function renderFloorTabs() {
+      var container = document.getElementById('fpFloorTabs');
+      container.innerHTML = '';
+      fpFloors.forEach(function(floor) {
+        var btn = document.createElement('button');
+        btn.className = 'fp-floor-tab' + (fpActiveFloorId === floor.id ? ' active' : '');
+        btn.textContent = floor.name;
+        btn.onclick = function() { fpSwitchFloor(floor.id); };
+        btn.oncontextmenu = function(e) {
+          e.preventDefault();
+          fpShowFloorContextMenu(floor, e.clientX, e.clientY);
+        };
+        container.appendChild(btn);
+      });
+      var addBtn = document.createElement('button');
+      addBtn.className = 'fp-floor-add';
+      addBtn.innerHTML = '+';
+      addBtn.title = 'Add floor';
+      addBtn.onclick = function() { fpShowAddFloorModal(); };
+      container.appendChild(addBtn);
+    }
+
+    function fpShowFloorContextMenu(floor, x, y) {
+      fpCloseContextMenu();
+      var menu = document.createElement('div');
+      menu.className = 'fp-floor-ctx';
+      menu.id = 'fpFloorCtx';
+      menu.style.left = x + 'px';
+      menu.style.top = y + 'px';
+
+      var renameBtn = document.createElement('button');
+      renameBtn.innerHTML = '&#9998; Rename';
+      renameBtn.onclick = function(e) { e.stopPropagation(); fpCloseContextMenu(); fpShowRenameFloorModal(floor); };
+      menu.appendChild(renameBtn);
+
+      if (fpFloors.length > 1) {
+        var delBtn = document.createElement('button');
+        delBtn.className = 'danger';
+        delBtn.innerHTML = '&#128465; Delete';
+        delBtn.onclick = async function(e) {
+          e.stopPropagation();
+          fpCloseContextMenu();
+          try {
+            await api('/api/floor-plans/' + floor.id, { method: 'DELETE' });
+            if (fpActiveFloorId === floor.id) fpActiveFloorId = null;
+            await loadFloorPlan();
+          } catch (e) { console.error('Failed to delete floor:', e); }
+        };
+        menu.appendChild(delBtn);
+      }
+
+      document.body.appendChild(menu);
+      setTimeout(function() {
+        document.addEventListener('click', fpCloseContextMenu, { once: true });
+      }, 0);
+    }
+
+    function fpCloseContextMenu() {
+      var el = document.getElementById('fpFloorCtx');
+      if (el) el.remove();
+    }
+
+    function fpShowAddFloorModal() {
+      fpShowModal('Add Floor', 'e.g. Second Floor, Garage', '', async function(name) {
+        try {
+          var result = await api('/api/floor-plans', { method: 'POST', body: JSON.stringify({ name: name }) });
+          fpActiveFloorId = result.id;
+          await loadFloorPlan();
+        } catch (e) { console.error('Failed to create floor:', e); }
+      });
+    }
+
+    function fpShowRenameFloorModal(floor) {
+      fpShowModal('Rename Floor', '', floor.name, async function(name) {
+        try {
+          await api('/api/floor-plans/' + floor.id, { method: 'PUT', body: JSON.stringify({ name: name }) });
+          await loadFloorPlan();
+        } catch (e) { console.error('Failed to rename floor:', e); }
+      });
+    }
+
+    function fpShowModal(title, placeholder, initialValue, onConfirm) {
+      var existing = document.getElementById('fpModal');
+      if (existing) existing.remove();
+
+      var overlay = document.createElement('div');
+      overlay.className = 'fp-modal-overlay';
+      overlay.id = 'fpModal';
+      var modal = document.createElement('div');
+      modal.className = 'fp-modal';
+      modal.innerHTML =
+        '<h3>' + esc(title) + '</h3>' +
+        '<input type="text" id="fpModalInput" placeholder="' + esc(placeholder) + '" value="' + esc(initialValue) + '">' +
+        '<div class="fp-modal-actions">' +
+          '<button class="cancel" id="fpModalCancel">Cancel</button>' +
+          '<button class="confirm" id="fpModalConfirm">Save</button>' +
+        '</div>';
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+
+      var input = document.getElementById('fpModalInput');
+      input.focus();
+      input.select();
+
+      function close() { overlay.remove(); }
+      function confirm() {
+        var val = input.value.trim();
+        if (!val) return;
+        close();
+        onConfirm(val);
+      }
+
+      document.getElementById('fpModalCancel').onclick = close;
+      document.getElementById('fpModalConfirm').onclick = confirm;
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') confirm();
+        if (e.key === 'Escape') close();
+      });
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
     }
 
     function renderFloorPlan() {
@@ -3194,12 +3381,16 @@
       // Counter
       counter.textContent = fpPositions.length + ' / ' + devices.length + ' placed';
 
-      // Placed IDs
+      // All placed IDs (across all floors) for sidebar
+      var allPlacedIds = {};
+      fpAllPositions.forEach(function(p) { allPlacedIds[p.device_id] = true; });
+
+      // Placed IDs on current floor (for remove button)
       var placedIds = {};
       fpPositions.forEach(function(p) { placedIds[p.device_id] = true; });
 
-      // Unplaced devices in sidebar
-      var unplaced = devices.filter(function(d) { return !placedIds[d.id]; });
+      // Unplaced devices in sidebar (not on any floor)
+      var unplaced = devices.filter(function(d) { return !allPlacedIds[d.id]; });
       deviceList.innerHTML = '';
       if (unplaced.length === 0) {
         deviceList.innerHTML = '<div style="text-align:center;font-size:0.75rem;color:var(--text-dim);padding:1.5rem 0;">All devices placed</div>';
@@ -3304,15 +3495,17 @@
       canvas.addEventListener('drop', async function(e) {
         e.preventDefault();
         var deviceId = e.dataTransfer.getData('text/plain');
-        if (!deviceId) return;
+        if (!deviceId || fpActiveFloorId === null) return;
         var rect = canvas.getBoundingClientRect();
         var x = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
         var y = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
         fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
-        fpPositions.push({ device_id: deviceId, x: x, y: y });
+        fpPositions.push({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y });
+        fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== deviceId; });
+        fpAllPositions.push({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y });
         renderFloorPlan();
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: x, y: y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y }) });
         } catch (e) { loadFloorPlan(); }
       });
       canvas.addEventListener('click', function(e) {
@@ -3350,8 +3543,9 @@
           fpShowPopup(deviceId, e.clientX, e.clientY);
           return;
         }
+        if (fpActiveFloorId === null) return;
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: pos.x, y: pos.y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
         } catch (e) { loadFloorPlan(); }
       }
       window.addEventListener('mousemove', onMove);
@@ -3383,12 +3577,12 @@
         window.removeEventListener('touchmove', onMove);
         window.removeEventListener('touchend', onEnd);
         if (!moved) {
-          var rect = canvas.getBoundingClientRect();
           fpShowPopup(deviceId, sX, sY);
           return;
         }
+        if (fpActiveFloorId === null) return;
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: pos.x, y: pos.y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
         } catch (e) { loadFloorPlan(); }
       }
       window.addEventListener('touchmove', onMove, { passive: false });
@@ -3474,19 +3668,18 @@
     }
 
     function fpNavigateDevice(deviceId) {
-      // Switch to devices tab and open detail panel
       document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
       document.querySelectorAll('.tab-btn[data-tab="devices"]').forEach(function(b) { b.classList.add('active'); });
       document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
       document.getElementById('panel-devices').classList.add('active');
       currentTab = 'devices';
       loadDevices();
-      // Open the detail panel after a tick
       setTimeout(function() { if (typeof openDeviceDetail === 'function') openDeviceDetail(deviceId); }, 300);
     }
 
     async function fpRemoveDevice(deviceId) {
       fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
+      fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== deviceId; });
       fpSelected = null;
       document.getElementById('fpPopup').classList.add('hidden');
       renderFloorPlan();
@@ -3496,18 +3689,19 @@
     }
 
     function fpUploadBackground() {
+      if (fpActiveFloorId === null) return;
       var input = document.createElement('input');
       input.type = 'file';
       input.accept = 'image/*';
       input.onchange = async function() {
         var file = input.files[0];
-        if (!file) return;
+        if (!file || fpActiveFloorId === null) return;
         var reader = new FileReader();
         reader.onload = async function() {
           fpBackground = reader.result;
           renderFloorPlan();
           try {
-            await api('/api/floor-plan/background', { method: 'PUT', body: JSON.stringify({ background: fpBackground }) });
+            await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: JSON.stringify({ background: fpBackground }) });
           } catch (e) { console.error('Failed to save background:', e); }
         };
         reader.readAsDataURL(file);
@@ -3516,10 +3710,11 @@
     }
 
     async function fpClearBackground() {
+      if (fpActiveFloorId === null) return;
       fpBackground = null;
       renderFloorPlan();
       try {
-        await api('/api/floor-plan/background', { method: 'PUT', body: JSON.stringify({ background: '' }) });
+        await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: JSON.stringify({ background: '' }) });
       } catch (e) { console.error('Failed to clear background:', e); }
     }
 
