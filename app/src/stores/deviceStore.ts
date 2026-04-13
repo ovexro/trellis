@@ -73,6 +73,13 @@ async function checkAlerts(deviceId: string, metricId: string, value: number, de
 }
 
 // Check conditional rules and execute actions
+interface RuleCondition {
+  device_id: string;
+  metric_id: string;
+  operator: string;
+  threshold: number;
+}
+
 interface RuleDef {
   id: number;
   source_device_id: string;
@@ -83,20 +90,61 @@ interface RuleDef {
   target_capability_id: string;
   target_value: string;
   enabled: boolean;
+  logic: string;
+  conditions: string | null;
 }
 
 const firedRules = new Map<string, number>();
 
-async function checkRules(deviceId: string, metricId: string, value: number, devices: Device[]) {
+function evaluateCondition(cond: RuleCondition, devices: Device[]): boolean {
+  const dev = devices.find((d) => d.id === cond.device_id);
+  if (!dev || !dev.online) return false;
+  const cap = dev.capabilities.find((c) => c.id === cond.metric_id);
+  if (!cap || cap.value == null) return false;
+  const value = typeof cap.value === "number" ? cap.value
+    : typeof cap.value === "boolean" ? (cap.value ? 1 : 0)
+    : Number(cap.value);
+  if (isNaN(value)) return false;
+  switch (cond.operator) {
+    case "above": return value > cond.threshold;
+    case "below": return value < cond.threshold;
+    case "equals": return value === cond.threshold;
+    case "not_equals": return value !== cond.threshold;
+    default: return false;
+  }
+}
+
+function getConditions(rule: RuleDef): RuleCondition[] {
+  if (rule.conditions) {
+    try {
+      return JSON.parse(rule.conditions) as RuleCondition[];
+    } catch { /* fall through to legacy */ }
+  }
+  return [{
+    device_id: rule.source_device_id,
+    metric_id: rule.source_metric_id,
+    operator: rule.condition,
+    threshold: rule.threshold,
+  }];
+}
+
+async function checkRules(deviceId: string, metricId: string, _value: number, devices: Device[]) {
   try {
     const rules = await invoke<RuleDef[]>("get_rules");
     for (const rule of rules) {
       if (!rule.enabled) continue;
-      if (rule.source_device_id !== deviceId || rule.source_metric_id !== metricId) continue;
 
-      const triggered =
-        (rule.condition === "above" && value > rule.threshold) ||
-        (rule.condition === "below" && value < rule.threshold);
+      const conditions = getConditions(rule);
+
+      // Skip if no condition references the updated device+metric
+      if (!conditions.some((c) => c.device_id === deviceId && c.metric_id === metricId)) continue;
+
+      // Evaluate all conditions against current device states
+      const logic = rule.logic || "and";
+      const results = conditions.map((c) => evaluateCondition(c, devices));
+      const triggered = logic === "or"
+        ? results.some(Boolean)
+        : results.every(Boolean);
 
       if (!triggered) continue;
 

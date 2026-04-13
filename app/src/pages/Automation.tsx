@@ -22,6 +22,13 @@ interface SceneRef {
   created_at: string;
 }
 
+interface RuleCondition {
+  device_id: string;
+  metric_id: string;
+  operator: string;
+  threshold: string;
+}
+
 interface Rule {
   id: number;
   source_device_id: string;
@@ -33,6 +40,8 @@ interface Rule {
   target_value: string;
   label: string;
   enabled: boolean;
+  logic: string;
+  conditions: string | null;
 }
 
 interface WebhookDef {
@@ -69,10 +78,10 @@ export default function Automation() {
 
   // Rule form
   const [showRuleForm, setShowRuleForm] = useState(false);
-  const [rSrcDevice, setRSrcDevice] = useState("");
-  const [rSrcMetric, setRSrcMetric] = useState("");
-  const [rCondition, setRCondition] = useState("above");
-  const [rThreshold, setRThreshold] = useState("");
+  const [rConditions, setRConditions] = useState<RuleCondition[]>([
+    { device_id: "", metric_id: "", operator: "above", threshold: "" },
+  ]);
+  const [rLogic, setRLogic] = useState<"and" | "or">("and");
   const [rTgtDevice, setRTgtDevice] = useState("");
   const [rTgtCap, setRTgtCap] = useState("");
   const [rTgtValue, setRTgtValue] = useState("");
@@ -140,17 +149,32 @@ export default function Automation() {
   };
 
   const createRule = async () => {
-    if (!rSrcDevice || !rSrcMetric || !rThreshold || !rTgtDevice || !rTgtCap || !rLabel) return;
+    const validConditions = rConditions.filter((c) => c.device_id && c.metric_id && c.threshold);
+    if (validConditions.length === 0 || !rTgtDevice || !rTgtCap || !rLabel) return;
     setActionLoading("create-rule");
     try {
+      const conditionsJson = JSON.stringify(
+        validConditions.map((c) => ({
+          device_id: c.device_id,
+          metric_id: c.metric_id,
+          operator: c.operator,
+          threshold: parseFloat(c.threshold),
+        })),
+      );
+      // Use first condition for legacy fields (backward compat)
+      const first = validConditions[0];
       await invoke("create_rule", {
-        sourceDeviceId: rSrcDevice, sourceMetricId: rSrcMetric,
-        condition: rCondition, threshold: parseFloat(rThreshold),
+        sourceDeviceId: first.device_id, sourceMetricId: first.metric_id,
+        condition: first.operator, threshold: parseFloat(first.threshold),
         targetDeviceId: rTgtDevice, targetCapabilityId: rTgtCap,
         targetValue: rTgtValue, label: rLabel,
+        logic: validConditions.length > 1 ? rLogic : "and",
+        conditions: validConditions.length > 1 ? conditionsJson : null,
       });
       setShowRuleForm(false);
       setRLabel("");
+      setRConditions([{ device_id: "", metric_id: "", operator: "above", threshold: "" }]);
+      setRLogic("and");
       await loadAll();
     } catch (err) {
       console.error("Failed to create rule:", err);
@@ -388,28 +412,75 @@ export default function Automation() {
             <div className="mb-4 p-4 bg-zinc-900 border border-zinc-800 rounded-xl space-y-3">
               <input value={rLabel} onChange={(e) => setRLabel(e.target.value)} placeholder="Rule name (e.g., Auto-fan on high temp)"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" autoFocus />
-              <p className="text-[11px] text-zinc-500 uppercase tracking-wider">When...</p>
-              <div className="flex gap-2">
-                <select value={rSrcDevice} onChange={(e) => setRSrcDevice(e.target.value)}
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Source device...</option>
-                  {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
-                </select>
-                <select value={rSrcMetric} onChange={(e) => setRSrcMetric(e.target.value)}
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Sensor...</option>
-                  {selectedDevice(rSrcDevice)?.capabilities.filter((c) => c.type === "sensor").map((c) => (
-                    <option key={c.id} value={c.id}>{c.label}</option>
-                  ))}
-                </select>
-                <select value={rCondition} onChange={(e) => setRCondition(e.target.value)}
-                  className="w-24 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="above">above</option>
-                  <option value="below">below</option>
-                </select>
-                <input value={rThreshold} onChange={(e) => setRThreshold(e.target.value)} placeholder="value"
-                  className="w-20 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" type="number" />
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] text-zinc-500 uppercase tracking-wider">When...</p>
+                {rConditions.length > 1 && (
+                  <div className="flex gap-0.5 bg-zinc-800 rounded-md p-0.5">
+                    <button onClick={() => setRLogic("and")}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${rLogic === "and" ? "bg-trellis-500/20 text-trellis-400" : "text-zinc-500"}`}>
+                      AND
+                    </button>
+                    <button onClick={() => setRLogic("or")}
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${rLogic === "or" ? "bg-trellis-500/20 text-trellis-400" : "text-zinc-500"}`}>
+                      OR
+                    </button>
+                  </div>
+                )}
               </div>
+              {rConditions.map((cond, i) => (
+                <div key={i} className="space-y-1.5">
+                  {i > 0 && (
+                    <p className="text-[10px] text-trellis-400 font-medium uppercase text-center">{rLogic}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <select value={cond.device_id} onChange={(e) => {
+                      const updated = [...rConditions];
+                      updated[i] = { ...updated[i], device_id: e.target.value, metric_id: "" };
+                      setRConditions(updated);
+                    }}
+                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                      <option value="">Source device...</option>
+                      {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
+                    </select>
+                    <select value={cond.metric_id} onChange={(e) => {
+                      const updated = [...rConditions];
+                      updated[i] = { ...updated[i], metric_id: e.target.value };
+                      setRConditions(updated);
+                    }}
+                      className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                      <option value="">Sensor...</option>
+                      {selectedDevice(cond.device_id)?.capabilities.filter((c) => c.type === "sensor").map((c) => (
+                        <option key={c.id} value={c.id}>{c.label}</option>
+                      ))}
+                    </select>
+                    <select value={cond.operator} onChange={(e) => {
+                      const updated = [...rConditions];
+                      updated[i] = { ...updated[i], operator: e.target.value };
+                      setRConditions(updated);
+                    }}
+                      className="w-28 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                      <option value="above">above</option>
+                      <option value="below">below</option>
+                      <option value="equals">equals</option>
+                      <option value="not_equals">not equals</option>
+                    </select>
+                    <input value={cond.threshold} onChange={(e) => {
+                      const updated = [...rConditions];
+                      updated[i] = { ...updated[i], threshold: e.target.value };
+                      setRConditions(updated);
+                    }} placeholder="value"
+                      className="w-20 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" type="number" />
+                    {rConditions.length > 1 && (
+                      <button onClick={() => setRConditions(rConditions.filter((_, j) => j !== i))}
+                        className="text-zinc-500 hover:text-red-400 flex-shrink-0 p-1"><Trash2 size={14} /></button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <button onClick={() => setRConditions([...rConditions, { device_id: "", metric_id: "", operator: "above", threshold: "" }])}
+                className="flex items-center gap-1 text-xs text-trellis-400 hover:text-trellis-300 transition-colors">
+                <Plus size={12} /> Add condition
+              </button>
               <p className="text-[11px] text-zinc-500 uppercase tracking-wider">Then...</p>
               <div className="flex gap-2">
                 <select value={rTgtDevice} onChange={(e) => setRTgtDevice(e.target.value)}
@@ -445,13 +516,23 @@ export default function Automation() {
             </div>
           ) : (
             <div className="space-y-2">
-              {rules.map((r) => (
+              {rules.map((r) => {
+                const conditions: { device_id: string; metric_id: string; operator: string; threshold: number }[] =
+                  r.conditions ? (() => { try { return JSON.parse(r.conditions); } catch { return []; } })()
+                    : [{ device_id: r.source_device_id, metric_id: r.source_metric_id, operator: r.condition, threshold: r.threshold }];
+                const logic = r.logic || "and";
+                return (
                 <div key={r.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!r.enabled ? "opacity-50" : ""}`}>
                   <div>
                     <p className="text-sm font-medium text-zinc-200">{r.label}</p>
                     <p className="text-xs text-zinc-500 mt-0.5">
-                      If {selectedDevice(r.source_device_id)?.name || r.source_device_id}.{r.source_metric_id} {r.condition} {r.threshold}
-                      {" → "}{selectedDevice(r.target_device_id)?.name || r.target_device_id}.{r.target_capability_id} = {r.target_value}
+                      If {conditions.map((c, i) => (
+                        <span key={i}>
+                          {i > 0 && <span className="text-trellis-400 mx-1 font-medium">{logic.toUpperCase()}</span>}
+                          {(selectedDevice(c.device_id)?.nickname || selectedDevice(c.device_id)?.name || c.device_id)}.{c.metric_id} {c.operator === "not_equals" ? "≠" : c.operator === "equals" ? "=" : c.operator} {c.threshold}
+                        </span>
+                      ))}
+                      {" → "}{(selectedDevice(r.target_device_id)?.nickname || selectedDevice(r.target_device_id)?.name || r.target_device_id)}.{r.target_capability_id} = {r.target_value}
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -465,7 +546,8 @@ export default function Automation() {
                       className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

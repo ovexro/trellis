@@ -3096,7 +3096,7 @@
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
                   <div class="auto-card-title">${esc(r.label || 'Rule')}</div>
-                  <div class="auto-card-detail">${esc(r.condition || formatRuleCondition(r))}</div>
+                  <div class="auto-card-detail">${formatRuleCondition(r)}</div>
                 </div>
                 <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
               </div>
@@ -3140,15 +3140,21 @@
     }
 
     function formatRuleCondition(r) {
-      const parts = [];
-      if (r.source_device_id) parts.push(`Source: ${getDeviceNameById(r.source_device_id)}`);
-      if (r.source_metric_id) parts.push(r.source_metric_id);
-      if (r.condition) parts.push(r.condition);
-      if (r.threshold != null) parts.push(String(r.threshold));
-      if (r.target_device_id) parts.push(`-> ${getDeviceNameById(r.target_device_id)}`);
-      if (r.target_capability_id) parts.push(r.target_capability_id);
-      if (r.target_value != null) parts.push(`= ${r.target_value}`);
-      return parts.join(' ') || 'No condition';
+      var conditions;
+      if (r.conditions) {
+        try { conditions = JSON.parse(r.conditions); } catch(e) { conditions = null; }
+      }
+      if (!conditions) {
+        conditions = [{ device_id: r.source_device_id, metric_id: r.source_metric_id, operator: r.condition, threshold: r.threshold }];
+      }
+      var logic = r.logic || 'and';
+      var opLabel = function(op) { return op === 'not_equals' ? '\u2260' : op === 'equals' ? '=' : op; };
+      var condStr = conditions.map(function(c, i) {
+        var prefix = i > 0 ? ' <span style="color:var(--accent);font-weight:600">' + logic.toUpperCase() + '</span> ' : '';
+        return prefix + getDeviceNameById(c.device_id) + '.' + esc(c.metric_id) + ' ' + opLabel(c.operator) + ' ' + c.threshold;
+      }).join('');
+      var target = getDeviceNameById(r.target_device_id) + '.' + esc(r.target_capability_id || '') + ' = ' + esc(String(r.target_value != null ? r.target_value : ''));
+      return 'If ' + condStr + ' \u2192 ' + target;
     }
 
     /* ────────────────────────── Scenes Tab ────────────────────────── */

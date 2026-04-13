@@ -229,6 +229,7 @@ export default function ConfigSection() {
                 condition: r.condition, threshold: r.threshold,
                 targetDeviceId: r.target_device_id, targetCapabilityId: r.target_capability_id,
                 targetValue: r.target_value, label: r.label,
+                logic: r.logic || null, conditions: r.conditions || null,
               });
             } catch (err) {
               console.error("Failed to import rule:", err);

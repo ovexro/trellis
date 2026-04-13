@@ -512,15 +512,15 @@ impl Database {
         &self, source_device_id: &str, source_metric_id: &str,
         condition: &str, threshold: f64,
         target_device_id: &str, target_capability_id: &str, target_value: &str,
-        label: &str,
+        label: &str, logic: &str, conditions: Option<&str>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
-             target_device_id, target_capability_id, target_value, label, enabled)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)",
+             target_device_id, target_capability_id, target_value, label, enabled, logic, conditions)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
             rusqlite::params![source_device_id, source_metric_id, condition, threshold,
-                target_device_id, target_capability_id, target_value, label],
+                target_device_id, target_capability_id, target_value, label, logic, conditions],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -529,7 +529,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, source_device_id, source_metric_id, condition, threshold,
-             target_device_id, target_capability_id, target_value, label, enabled FROM rules"
+             target_device_id, target_capability_id, target_value, label, enabled,
+             logic, conditions FROM rules"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(Rule {
@@ -537,6 +538,8 @@ impl Database {
                 condition: row.get(3)?, threshold: row.get(4)?, target_device_id: row.get(5)?,
                 target_capability_id: row.get(6)?, target_value: row.get(7)?,
                 label: row.get(8)?, enabled: row.get(9)?,
+                logic: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "and".to_string()),
+                conditions: row.get(11)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -1286,6 +1289,14 @@ pub struct Rule {
     pub target_value: String,
     pub label: String,
     pub enabled: bool,
+    #[serde(default = "default_logic")]
+    pub logic: String,
+    #[serde(default)]
+    pub conditions: Option<String>,
+}
+
+fn default_logic() -> String {
+    "and".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1620,6 +1631,10 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Add scene_id column to schedules if it doesn't exist (scene scheduling)
     let _ = conn.execute("ALTER TABLE schedules ADD COLUMN scene_id INTEGER REFERENCES scenes(id)", []);
+
+    // Add compound conditions support to rules (post-v0.9.0 — AND/OR logic)
+    let _ = conn.execute("ALTER TABLE rules ADD COLUMN logic TEXT NOT NULL DEFAULT 'and'", []);
+    let _ = conn.execute("ALTER TABLE rules ADD COLUMN conditions TEXT", []);
 
     app.manage(Database {
         conn: Mutex::new(conn),
