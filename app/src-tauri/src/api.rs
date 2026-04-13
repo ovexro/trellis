@@ -1190,6 +1190,41 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        // ─── Scenes ─────────────────────────────────────────────────
+        ("GET", "/api/scenes") => {
+            match ctx.db.get_scenes() {
+                Ok(s) => json_ok(&s),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("POST", "/api/scenes") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_create_scene(ctx, &req.body)
+        }
+
+        ("DELETE", p) if p.starts_with("/api/scenes/") && !p["/api/scenes/".len()..].contains('/') => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id: i64 = match p["/api/scenes/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid scene ID"),
+            };
+            match ctx.db.delete_scene(id) {
+                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("POST", p) if p.starts_with("/api/scenes/") && p.ends_with("/run") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/scenes/".len()..p.len() - "/run".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid scene ID"),
+            };
+            handle_run_scene(ctx, id)
+        }
+
         // ─── Templates ──────────────────────────────────────────────
         ("GET", "/api/templates") => {
             match ctx.db.get_templates() {
@@ -1690,6 +1725,66 @@ fn handle_update_group(ctx: &ApiContext, id: i64, body: &str) -> (u16, String) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
+}
+
+fn handle_create_scene(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = match v["name"].as_str() {
+        Some(n) if !n.trim().is_empty() => n,
+        _ => return json_error(400, "Scene name is required"),
+    };
+    let actions = match v["actions"].as_array() {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return json_error(400, "Scene must have at least one action"),
+    };
+    let parsed: Vec<crate::db::SceneActionInput> = actions.iter().map(|a| {
+        crate::db::SceneActionInput {
+            device_id: a["device_id"].as_str().unwrap_or("").to_string(),
+            capability_id: a["capability_id"].as_str().unwrap_or("").to_string(),
+            value: a["value"].as_str().unwrap_or("").to_string(),
+        }
+    }).collect();
+    match ctx.db.create_scene(name, &parsed) {
+        Ok(id) => json_created(&serde_json::json!({"id": id})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_run_scene(ctx: &ApiContext, id: i64) -> (u16, String) {
+    let scene = match ctx.db.get_scene(id) {
+        Ok(Some(s)) => s,
+        Ok(None) => return json_error(404, "Scene not found"),
+        Err(e) => return json_error(500, &e),
+    };
+    for action in &scene.actions {
+        let saved = match ctx.db.get_saved_device(&action.device_id) {
+            Ok(Some(d)) => d,
+            _ => continue,
+        };
+        let value: Value = if action.value == "true" {
+            Value::Bool(true)
+        } else if action.value == "false" {
+            Value::Bool(false)
+        } else if let Ok(n) = action.value.parse::<f64>() {
+            serde_json::json!(n)
+        } else {
+            Value::String(action.value.clone())
+        };
+        let cmd = serde_json::json!({
+            "command": "set",
+            "id": action.capability_id,
+            "value": value
+        });
+        let msg = serde_json::to_string(&cmd).unwrap_or_default();
+        let ws_port = saved.port + 1;
+        if let Err(e) = ctx.connection_manager.send_to_device(&action.device_id, &saved.ip, ws_port, &msg) {
+            log::warn!("[Scene API] Failed to send to {}: {}", action.device_id, e);
+        }
+    }
+    json_ok(&serde_json::json!({"ran": true, "actions": scene.actions.len()}))
 }
 
 fn handle_create_schedule(ctx: &ApiContext, body: &str) -> (u16, String) {

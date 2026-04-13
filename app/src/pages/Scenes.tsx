@@ -1,80 +1,100 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Zap, Plus, Trash2, Play } from "lucide-react";
+import { Zap, Plus, Trash2, Play, Loader2 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface SceneAction {
-  deviceId: string;
-  capabilityId: string;
-  value: unknown;
+  device_id: string;
+  capability_id: string;
+  value: string;
 }
 
 interface Scene {
+  id: number;
   name: string;
   actions: SceneAction[];
+  created_at: string;
 }
 
 export default function Scenes() {
   const { devices } = useDeviceStore();
-  const [scenes, setScenes] = useState<Scene[]>(() => {
-    const saved = localStorage.getItem("trellis-scenes");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [scenes, setScenes] = useState<Scene[]>([]);
+  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [newScene, setNewScene] = useState<Scene>({ name: "", actions: [] });
-  const [running, setRunning] = useState<string | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newActions, setNewActions] = useState<SceneAction[]>([]);
+  const [running, setRunning] = useState<number | null>(null);
 
   const onlineDevices = devices.filter((d) => d.online);
 
-  const saveScenes = (updated: Scene[]) => {
-    setScenes(updated);
-    localStorage.setItem("trellis-scenes", JSON.stringify(updated));
+  const loadScenes = async () => {
+    try {
+      const data = await invoke<Scene[]>("get_scenes");
+      setScenes(data);
+    } catch (err) {
+      console.error("Failed to load scenes:", err);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => { loadScenes(); }, []);
 
   const addAction = () => {
     if (onlineDevices.length === 0) return;
     const device = onlineDevices[0];
-    const cap = device.capabilities[0];
+    const cap = device.capabilities.find((c) => c.type !== "sensor") ?? device.capabilities[0];
     if (!cap) return;
-    setNewScene({
-      ...newScene,
-      actions: [
-        ...newScene.actions,
-        { deviceId: device.id, capabilityId: cap.id, value: cap.value },
-      ],
-    });
+    setNewActions([
+      ...newActions,
+      {
+        device_id: device.id,
+        capability_id: cap.id,
+        value: String(cap.value ?? ""),
+      },
+    ]);
   };
 
-  const createScene = () => {
-    if (!newScene.name.trim() || newScene.actions.length === 0) return;
-    saveScenes([...scenes, newScene]);
-    setNewScene({ name: "", actions: [] });
-    setEditing(false);
+  const createScene = async () => {
+    if (!newName.trim() || newActions.length === 0) return;
+    try {
+      await invoke("create_scene", { name: newName.trim(), actions: newActions });
+      setNewName("");
+      setNewActions([]);
+      setEditing(false);
+      await loadScenes();
+    } catch (err) {
+      console.error("Failed to create scene:", err);
+    }
   };
 
-  const deleteScene = (index: number) => {
-    if (!confirm(`Delete scene "${scenes[index].name}"? This cannot be undone.`)) return;
-    saveScenes(scenes.filter((_, i) => i !== index));
+  const deleteScene = async (scene: Scene) => {
+    if (!confirm(`Delete scene "${scene.name}"? This cannot be undone.`)) return;
+    try {
+      await invoke("delete_scene", { id: scene.id });
+      await loadScenes();
+    } catch (err) {
+      console.error("Failed to delete scene:", err);
+    }
   };
 
   const runScene = async (scene: Scene) => {
-    setRunning(scene.name);
-    for (const action of scene.actions) {
-      const device = devices.find((d) => d.id === action.deviceId);
-      if (!device || !device.online) continue;
-      try {
-        await invoke("send_command", {
-          deviceId: device.id,
-          ip: device.ip,
-          port: device.port,
-          command: { command: "set", id: action.capabilityId, value: action.value },
-        });
-      } catch (err) {
-        console.error(`Scene action failed for ${device.name}:`, err);
-      }
+    setRunning(scene.id);
+    try {
+      await invoke("run_scene", { id: scene.id });
+    } catch (err) {
+      console.error("Failed to run scene:", err);
     }
     setRunning(null);
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-zinc-500" size={24} />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -98,23 +118,29 @@ export default function Scenes() {
         <div className="mb-6 p-4 bg-zinc-900 border border-zinc-800 rounded-xl">
           <input
             type="text"
-            value={newScene.name}
-            onChange={(e) => setNewScene({ ...newScene, name: e.target.value })}
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
             placeholder="Scene name (e.g., Good Night)"
             className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 mb-3"
             autoFocus
           />
 
-          {newScene.actions.map((action, i) => {
-            const device = devices.find((d) => d.id === action.deviceId);
+          {newActions.map((action, i) => {
+            const device = devices.find((d) => d.id === action.device_id);
             return (
               <div key={i} className="flex items-center gap-2 mb-2 text-xs">
                 <select
-                  value={action.deviceId}
+                  value={action.device_id}
                   onChange={(e) => {
-                    const actions = [...newScene.actions];
-                    actions[i].deviceId = e.target.value;
-                    setNewScene({ ...newScene, actions });
+                    const actions = [...newActions];
+                    actions[i] = { ...actions[i], device_id: e.target.value };
+                    const dev = devices.find((d) => d.id === e.target.value);
+                    const cap = dev?.capabilities.find((c) => c.type !== "sensor") ?? dev?.capabilities[0];
+                    if (cap) {
+                      actions[i].capability_id = cap.id;
+                      actions[i].value = String(cap.value ?? "");
+                    }
+                    setNewActions(actions);
                   }}
                   className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300"
                 >
@@ -123,11 +149,11 @@ export default function Scenes() {
                   ))}
                 </select>
                 <select
-                  value={action.capabilityId}
+                  value={action.capability_id}
                   onChange={(e) => {
-                    const actions = [...newScene.actions];
-                    actions[i].capabilityId = e.target.value;
-                    setNewScene({ ...newScene, actions });
+                    const actions = [...newActions];
+                    actions[i] = { ...actions[i], capability_id: e.target.value };
+                    setNewActions(actions);
                   }}
                   className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300"
                 >
@@ -139,18 +165,17 @@ export default function Scenes() {
                 </select>
                 <input
                   type="text"
-                  value={String(action.value)}
+                  value={action.value}
                   onChange={(e) => {
-                    const actions = [...newScene.actions];
-                    const val = e.target.value;
-                    actions[i].value = val === "true" ? true : val === "false" ? false : isNaN(Number(val)) ? val : Number(val);
-                    setNewScene({ ...newScene, actions });
+                    const actions = [...newActions];
+                    actions[i] = { ...actions[i], value: e.target.value };
+                    setNewActions(actions);
                   }}
                   className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300"
                   placeholder="value"
                 />
                 <button
-                  onClick={() => setNewScene({ ...newScene, actions: newScene.actions.filter((_, j) => j !== i) })}
+                  onClick={() => setNewActions(newActions.filter((_, j) => j !== i))}
                   className="p-1 text-zinc-500 hover:text-red-400"
                 >
                   <Trash2 size={12} />
@@ -164,7 +189,7 @@ export default function Scenes() {
               + Add action
             </button>
             <div className="flex-1" />
-            <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-zinc-500 text-xs">Cancel</button>
+            <button onClick={() => { setEditing(false); setNewName(""); setNewActions([]); }} className="px-3 py-1.5 text-zinc-500 text-xs">Cancel</button>
             <button onClick={createScene} className="px-3 py-1.5 bg-trellis-500 text-white rounded-lg text-xs">Create</button>
           </div>
         </div>
@@ -181,22 +206,29 @@ export default function Scenes() {
         </div>
       ) : (
         <div className="space-y-2">
-          {scenes.map((scene, i) => (
-            <div key={i} className="flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl">
+          {scenes.map((scene) => (
+            <div key={scene.id} className="flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl">
               <div>
                 <h3 className="text-sm font-semibold text-zinc-200">{scene.name}</h3>
-                <p className="text-xs text-zinc-500">{scene.actions.length} action{scene.actions.length !== 1 ? "s" : ""}</p>
+                <p className="text-xs text-zinc-500">
+                  {scene.actions.length} action{scene.actions.length !== 1 ? "s" : ""}
+                  {" — "}
+                  {[...new Set(scene.actions.map((a) => {
+                    const d = devices.find((dev) => dev.id === a.device_id);
+                    return d?.name ?? a.device_id;
+                  }))].join(", ")}
+                </p>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => runScene(scene)}
-                  disabled={running === scene.name}
+                  disabled={running === scene.id}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-trellis-500/10 text-trellis-400 hover:bg-trellis-500/20 rounded-lg text-xs transition-colors"
                 >
-                  <Play size={12} />
-                  {running === scene.name ? "Running..." : "Run"}
+                  {running === scene.id ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                  {running === scene.id ? "Running..." : "Run"}
                 </button>
-                <button onClick={() => deleteScene(i)} className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors">
+                <button onClick={() => deleteScene(scene)} className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors">
                   <Trash2 size={14} />
                 </button>
               </div>

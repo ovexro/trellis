@@ -1132,6 +1132,115 @@ impl Database {
         conn.query_row("SELECT COUNT(*) FROM api_tokens", [], |row| row.get(0))
             .map_err(|e| e.to_string())
     }
+
+    // ─── Scenes ─────────────────────────────────────────────────────────
+
+    pub fn create_scene(&self, name: &str, actions: &[SceneActionInput]) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO scenes (name) VALUES (?1)",
+            rusqlite::params![name],
+        ).map_err(|e| e.to_string())?;
+        let scene_id = conn.last_insert_rowid();
+        for (i, action) in actions.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO scene_actions (scene_id, device_id, capability_id, value, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![scene_id, action.device_id, action.capability_id, action.value, i as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(scene_id)
+    }
+
+    pub fn get_scenes(&self) -> Result<Vec<Scene>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut scene_stmt = conn.prepare(
+            "SELECT id, name, created_at FROM scenes ORDER BY id"
+        ).map_err(|e| e.to_string())?;
+        let scene_rows = scene_stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).map_err(|e| e.to_string())?;
+        let mut scenes = Vec::new();
+        for row in scene_rows {
+            let (id, name, created_at) = row.map_err(|e| e.to_string())?;
+            scenes.push(Scene { id, name, created_at, actions: Vec::new() });
+        }
+        drop(scene_stmt);
+
+        for scene in &mut scenes {
+            let mut action_stmt = conn.prepare(
+                "SELECT device_id, capability_id, value FROM scene_actions
+                 WHERE scene_id = ?1 ORDER BY sort_order"
+            ).map_err(|e| e.to_string())?;
+            let action_rows = action_stmt.query_map(rusqlite::params![scene.id], |row| {
+                Ok(SceneAction {
+                    device_id: row.get(0)?,
+                    capability_id: row.get(1)?,
+                    value: row.get(2)?,
+                })
+            }).map_err(|e| e.to_string())?;
+            scene.actions = action_rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        }
+        Ok(scenes)
+    }
+
+    pub fn get_scene(&self, id: i64) -> Result<Option<Scene>, String> {
+        let conn = self.conn.lock().unwrap();
+        let scene = conn.query_row(
+            "SELECT id, name, created_at FROM scenes WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+        );
+        let (scene_id, name, created_at) = match scene {
+            Ok(s) => s,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut action_stmt = conn.prepare(
+            "SELECT device_id, capability_id, value FROM scene_actions
+             WHERE scene_id = ?1 ORDER BY sort_order"
+        ).map_err(|e| e.to_string())?;
+        let actions = action_stmt.query_map(rusqlite::params![scene_id], |row| {
+            Ok(SceneAction {
+                device_id: row.get(0)?,
+                capability_id: row.get(1)?,
+                value: row.get(2)?,
+            })
+        }).map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        Ok(Some(Scene { id: scene_id, name, created_at, actions }))
+    }
+
+    pub fn delete_scene(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM scene_actions WHERE scene_id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM scenes WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Scene {
+    pub id: i64,
+    pub name: String,
+    pub created_at: String,
+    pub actions: Vec<SceneAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SceneAction {
+    pub device_id: String,
+    pub capability_id: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SceneActionInput {
+    pub device_id: String,
+    pub capability_id: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1470,6 +1579,25 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ).map_err(|e| e.to_string())?;
         }
     }
+
+    // Scenes + scene actions (backend-backed scenes, replaces localStorage)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS scenes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS scene_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scene_id INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            capability_id TEXT NOT NULL,
+            value TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (scene_id) REFERENCES scenes(id) ON DELETE CASCADE,
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+    ").map_err(|e| e.to_string())?;
 
     app.manage(Database {
         conn: Mutex::new(conn),

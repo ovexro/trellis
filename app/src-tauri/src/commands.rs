@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -1301,4 +1301,73 @@ pub async fn flash_sketch(
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
+}
+
+// ─── Scenes ─────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn create_scene(
+    db: State<'_, Database>, name: String, actions: Vec<SceneActionInput>,
+) -> Result<i64, String> {
+    if name.trim().is_empty() {
+        return Err("Scene name cannot be empty".to_string());
+    }
+    if actions.is_empty() {
+        return Err("Scene must have at least one action".to_string());
+    }
+    db.create_scene(&name, &actions)
+}
+
+#[tauri::command]
+pub fn get_scenes(db: State<'_, Database>) -> Result<Vec<Scene>, String> {
+    db.get_scenes()
+}
+
+#[tauri::command]
+pub fn delete_scene(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_scene(id)
+}
+
+#[tauri::command]
+pub async fn run_scene(
+    state: State<'_, AppState>, db: State<'_, Database>, id: i64,
+) -> Result<(), String> {
+    let scene = db.get_scene(id)?
+        .ok_or_else(|| format!("Scene {} not found", id))?;
+    let conn_mgr = state.connection_manager.clone();
+
+    for action in &scene.actions {
+        // Look up device IP/port from the saved device record
+        let saved = db.get_saved_device(&action.device_id)?;
+        let (ip, port) = match saved {
+            Some(d) => (d.ip, d.port),
+            None => {
+                log::warn!("[Scene] Device {} not found, skipping", action.device_id);
+                continue;
+            }
+        };
+
+        let value: serde_json::Value = if action.value == "true" {
+            serde_json::Value::Bool(true)
+        } else if action.value == "false" {
+            serde_json::Value::Bool(false)
+        } else if let Ok(n) = action.value.parse::<f64>() {
+            serde_json::json!(n)
+        } else {
+            serde_json::Value::String(action.value.clone())
+        };
+
+        let cmd = serde_json::json!({
+            "command": "set",
+            "id": action.capability_id,
+            "value": value
+        });
+        let msg = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
+        let ws_port = port + 1;
+
+        if let Err(e) = conn_mgr.send_to_device(&action.device_id, &ip, ws_port, &msg) {
+            log::warn!("[Scene] Failed to send to {}: {}", action.device_id, e);
+        }
+    }
+    Ok(())
 }

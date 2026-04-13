@@ -149,6 +149,10 @@ pub fn run() {
             clear_sinric_secret,
             get_sinric_status,
             test_sinric_connection,
+            create_scene,
+            get_scenes,
+            delete_scene,
+            run_scene,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

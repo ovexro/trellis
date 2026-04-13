@@ -817,6 +817,7 @@
         <button class="tab-btn" data-tab="devices">Devices</button>
         <button class="tab-btn" data-tab="metrics">Metrics</button>
         <button class="tab-btn" data-tab="automation">Automation</button>
+        <button class="tab-btn" data-tab="scenes">Scenes</button>
         <button class="tab-btn" data-tab="floor-plan">Floor Plan</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
       </nav>
@@ -840,6 +841,9 @@
       </button>
       <button class="tab-btn" data-tab="automation">
         <span class="tab-icon">&#9881;</span>Automation
+      </button>
+      <button class="tab-btn" data-tab="scenes">
+        <span class="tab-icon">&#9889;</span>Scenes
       </button>
       <button class="tab-btn" data-tab="floor-plan">
         <span class="tab-icon">&#9634;</span>Plan
@@ -879,6 +883,13 @@
     <div class="tab-panel" id="panel-automation">
       <div id="automationContent">
         <div class="skeleton skel-card"></div>
+        <div class="skeleton skel-card"></div>
+      </div>
+    </div>
+
+    <!-- Scenes Tab -->
+    <div class="tab-panel" id="panel-scenes">
+      <div id="scenesContent">
         <div class="skeleton skel-card"></div>
       </div>
     </div>
@@ -1152,6 +1163,7 @@
         if (tab === 'devices') loadDevices();
         if (tab === 'metrics') loadMetrics();
         if (tab === 'automation') loadAutomation();
+        if (tab === 'scenes') loadScenes();
         if (tab === 'floor-plan') loadFloorPlan();
         if (tab === 'settings') loadSettings();
       });
@@ -3054,6 +3066,48 @@
       if (r.target_capability_id) parts.push(r.target_capability_id);
       if (r.target_value != null) parts.push(`= ${r.target_value}`);
       return parts.join(' ') || 'No condition';
+    }
+
+    /* ────────────────────────── Scenes Tab ────────────────────────── */
+    async function loadScenes() {
+      const container = document.getElementById('scenesContent');
+      if (!container) return;
+      try {
+        const scenes = await api('/api/scenes');
+        if (!scenes || !scenes.length) {
+          container.innerHTML = renderEmpty('No scenes yet', 'Create scenes from the desktop app to control multiple devices at once.');
+          return;
+        }
+        let html = '<div class="auto-section"><div class="section-title">Scenes</div>';
+        html += scenes.map(s => {
+          const actionSummary = s.actions.map(a => {
+            const devName = getDeviceNameById(a.device_id);
+            return `${esc(devName)}.${esc(a.capability_id)} = ${esc(String(a.value))}`;
+          }).join(', ');
+          return `<div class="auto-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div class="auto-card-title">${esc(s.name)}</div>
+                <div class="auto-card-detail">${s.actions.length} action${s.actions.length !== 1 ? 's' : ''} &middot; ${actionSummary}</div>
+              </div>
+              <button onclick="runSceneFromDashboard(${s.id})" class="auto-card-badge badge-enabled" style="cursor:pointer;border:none;font-size:0.75rem;">&#9654; Run</button>
+            </div>
+          </div>`;
+        }).join('');
+        html += '</div>';
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = renderEmpty('Could not load scenes', e.message);
+      }
+    }
+
+    async function runSceneFromDashboard(id) {
+      try {
+        await api('/api/scenes/' + id + '/run', { method: 'POST' });
+        showToast('Scene executed', 'success');
+      } catch (e) {
+        showToast('Failed to run scene: ' + e.message, 'error');
+      }
     }
 
     /* ────────────────────────── Metrics Tab ────────────────────────── */
