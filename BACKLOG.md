@@ -6,7 +6,8 @@ Forward-looking list: candidate next tasks, speculative enhancements, and known 
 
 Concrete enough to pick up in a future session. Each has scope + what it unblocks. Not a priority order.
 
-- **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
+- ~~**Floor plan / spatial device layout**~~ — SHIPPED (post-v0.6.0, commit 984de8a).
+- **Floor plan v2 enhancements** — multi-floor support, room/wall drawing tools, auto-placement, device grouping by room on the canvas.
 
 ## Known follow-ups
 
