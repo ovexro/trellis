@@ -78,6 +78,7 @@ pub fn run() {
             store_metric,
             get_metrics,
             get_device_annotations,
+            get_recent_activity,
             create_alert,
             get_alerts,
             delete_alert,

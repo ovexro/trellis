@@ -880,6 +880,15 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }))
         }
 
+        // ─── Activity feed ───────────────────────────────────────────
+        ("GET", "/api/activity") => {
+            let limit: u32 = req.query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(30);
+            match ctx.db.get_recent_activity(limit) {
+                Ok(a) => json_ok(&a),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         // ─── Devices ─────────────────────────────────────────────────
         ("GET", "/api/devices") => {
             let devices = ctx.discovery.get_devices();

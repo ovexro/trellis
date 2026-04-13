@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import Shell from "./components/layout/Shell";
+import Home from "./pages/Home";
 import Dashboard from "./pages/Dashboard";
 import DeviceDetail from "./pages/DeviceDetail";
 import SerialMonitor from "./pages/SerialMonitor";
@@ -53,7 +54,8 @@ function App() {
     <Shell>
       <FirstRunRedirect>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/devices" element={<Dashboard />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/get-started" element={<GetStarted />} />
           <Route path="/device/:id" element={<DeviceDetail />} />

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
 import {
+  Home,
   LayoutDashboard,
   Terminal,
   TerminalSquare,
@@ -17,7 +18,8 @@ import {
 } from "lucide-react";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "Devices" },
+  { to: "/", icon: Home, label: "Home" },
+  { to: "/devices", icon: LayoutDashboard, label: "Devices" },
   { to: "/metrics", icon: TrendingUp, label: "Metrics" },
   { to: "/get-started", icon: Sparkles, label: "Get Started" },
   { to: "/new-device", icon: Cpu, label: "New Device" },
@@ -55,7 +57,7 @@ export default function Sidebar() {
           <NavLink
             key={to}
             to={to}
-            end={to === "/"}
+            end={to === "/" || to === "/devices"}
             className={({ isActive }) =>
               `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 ${
                 isActive

@@ -607,6 +607,56 @@
     .metrics-uptime-pct { font-size: 0.7rem; color: var(--text-dim); white-space: nowrap; flex-shrink: 0; }
     .metrics-chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 
+    /* ── Home Tab ── */
+    .home-status-strip {
+      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+      padding: 0.75rem 1rem; background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); font-size: 0.85rem;
+    }
+    .home-status-item { display: flex; align-items: center; gap: 0.4rem; }
+    .home-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .home-status-sep { width: 1px; height: 16px; background: var(--border); }
+    .home-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-top: 1.25rem; }
+    .home-section-title {
+      font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-dim); margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;
+    }
+    .home-section-title .home-icon { color: var(--accent); }
+    .home-sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.6rem; }
+    .home-sensor-card {
+      padding: 1rem; background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer; transition: background var(--transition);
+    }
+    .home-sensor-card:hover { background: #1f1f23; }
+    .home-sensor-device { font-size: 0.6rem; color: #52525b; margin-bottom: 0.3rem; }
+    .home-sensor-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); margin-bottom: 0.25rem; }
+    .home-sensor-value { font-size: 1.5rem; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .home-sensor-unit { font-size: 0.8rem; color: var(--text-faint); margin-left: 0.15rem; }
+    .home-controls-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.6rem; }
+    .home-control-card {
+      background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
+    }
+    .home-control-card .control-row { padding: 0.5rem 0.75rem 0.75rem; }
+    .home-control-device {
+      padding: 0.6rem 0.75rem 0.25rem; font-size: 0.6rem; color: #52525b;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .home-control-offline { color: var(--red); opacity: 0.7; }
+    .home-activity-list { max-height: 500px; overflow-y: auto; }
+    .home-activity-item {
+      display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.5rem 0;
+      border-bottom: 1px solid rgba(39,39,42,0.5); cursor: pointer; transition: background var(--transition);
+    }
+    .home-activity-item:hover { background: rgba(255,255,255,0.02); }
+    .home-activity-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; margin-top: 0.4rem; }
+    .home-activity-body { flex: 1; min-width: 0; }
+    .home-activity-meta { display: flex; align-items: center; gap: 0.4rem; font-size: 0.7rem; }
+    .home-activity-device { color: var(--text-dim); font-weight: 500; }
+    .home-activity-sev { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .home-activity-msg { font-size: 0.8rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .home-activity-time { font-size: 0.65rem; color: #52525b; white-space: nowrap; flex-shrink: 0; margin-top: 0.2rem; }
+    .home-empty { padding: 1.5rem; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-faint); font-size: 0.8rem; }
+
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
       .bottom-nav { display: block; }
@@ -624,6 +674,9 @@
       .chart-range-btn { padding: 0.4rem 0.55rem; font-size: 0.65rem; min-height: 2rem; }
       .metrics-chart-grid { grid-template-columns: 1fr; }
       .metrics-device-section { padding: 0.75rem; }
+      .home-layout { grid-template-columns: 1fr; }
+      .home-sensor-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+      .home-controls-grid { grid-template-columns: 1fr; }
     }
 
     @media (min-width: 641px) and (max-width: 900px) {
@@ -680,7 +733,8 @@
         <span class="ws-dot disconnected" id="wsDot" title="WebSocket disconnected"></span>
       </a>
       <nav class="tab-nav" id="desktopNav">
-        <button class="tab-btn active" data-tab="devices">Devices</button>
+        <button class="tab-btn active" data-tab="home">Home</button>
+        <button class="tab-btn" data-tab="devices">Devices</button>
         <button class="tab-btn" data-tab="metrics">Metrics</button>
         <button class="tab-btn" data-tab="automation">Automation</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
@@ -694,7 +748,10 @@
   <!-- Bottom Nav (mobile) -->
   <nav class="bottom-nav" id="bottomNav">
     <div class="tab-nav">
-      <button class="tab-btn active" data-tab="devices">
+      <button class="tab-btn active" data-tab="home">
+        <span class="tab-icon">&#9679;</span>Home
+      </button>
+      <button class="tab-btn" data-tab="devices">
         <span class="tab-icon">&#9632;</span>Devices
       </button>
       <button class="tab-btn" data-tab="metrics">
@@ -715,8 +772,13 @@
   <!-- Main content -->
   <main class="main">
 
+    <!-- Home Tab -->
+    <div class="tab-panel active" id="panel-home">
+      <div id="homeContent"></div>
+    </div>
+
     <!-- Devices Tab -->
-    <div class="tab-panel active" id="panel-devices">
+    <div class="tab-panel" id="panel-devices">
       <div id="devicesContent">
         <div class="skeleton skel-card"></div>
         <div class="skeleton skel-card"></div>
@@ -795,7 +857,7 @@
     let groups = [];
     let savedDevices = [];
     let expandedDevice = null;
-    let currentTab = 'devices';
+    let currentTab = 'home';
     let pollTimer = null;
     let initialLoad = true;
     let isViewer = false;
@@ -965,11 +1027,189 @@
         document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
         document.getElementById(`panel-${tab}`).classList.add('active');
 
+        if (tab === 'home') loadHome();
+        if (tab === 'devices') loadDevices();
         if (tab === 'metrics') loadMetrics();
         if (tab === 'automation') loadAutomation();
         if (tab === 'settings') loadSettings();
       });
     });
+
+    /* ────────────────────────── Home Tab ────────────────────────── */
+    var homeActivity = [];
+    var homeMqttStatus = null;
+    var homeSinricStatus = null;
+
+    async function loadHome() {
+      // Fetch devices (same data the Devices tab uses), activity, and bridge statuses in parallel.
+      // Devices may already be loaded — that's fine, we refresh anyway.
+      try {
+        var results = await Promise.all([
+          api('/api/devices'),
+          api('/api/saved-devices'),
+          api('/api/activity?limit=30'),
+          api('/api/mqtt/status').catch(function() { return null; }),
+          api('/api/sinric/status').catch(function() { return null; }),
+        ]);
+        devices = results[0] || [];
+        savedDevices = results[1] || [];
+        homeActivity = results[2] || [];
+        homeMqttStatus = results[3];
+        homeSinricStatus = results[4];
+        renderHome();
+      } catch (e) {
+        console.error('Failed to load home:', e);
+      }
+    }
+
+    function renderHome() {
+      var mqttStatus = homeMqttStatus;
+      var sinricStatus = homeSinricStatus;
+      var el = document.getElementById('homeContent');
+      if (!el) return;
+
+      var onlineCount = 0;
+      var offlineCount = 0;
+      var sensors = [];
+      var controls = [];
+
+      for (var i = 0; i < devices.length; i++) {
+        var d = devices[i];
+        if (d.online) onlineCount++; else offlineCount++;
+        var saved = savedDevices.find(function(s) { return s.id === d.id; });
+        var dname = (saved && saved.nickname) || d.name || d.id;
+        for (var j = 0; j < (d.capabilities || []).length; j++) {
+          var cap = d.capabilities[j];
+          if (cap.type === 'sensor') sensors.push({ device: d, cap: cap, dname: dname });
+          else if (cap.type === 'switch' || cap.type === 'slider' || cap.type === 'color') controls.push({ device: d, cap: cap, dname: dname });
+        }
+      }
+
+      // Status strip
+      var statusHtml = '<div class="home-status-strip">';
+      statusHtml += '<div class="home-status-item"><div class="home-status-dot" style="background:' + (onlineCount > 0 ? 'var(--green)' : 'var(--text-faint)') + '"></div><strong>' + onlineCount + '</strong> <span style="color:var(--text-faint)">online</span></div>';
+      if (offlineCount > 0) {
+        statusHtml += '<div class="home-status-item"><div class="home-status-dot" style="background:var(--red)"></div><strong style="color:var(--red)">' + offlineCount + '</strong> <span style="color:var(--text-faint)">offline</span></div>';
+      }
+      statusHtml += '<div class="home-status-sep"></div>';
+      if (mqttStatus && mqttStatus.enabled) {
+        statusHtml += '<div class="home-status-item"><div class="home-status-dot" style="background:' + (mqttStatus.connected ? 'var(--green)' : 'var(--red)') + '"></div><span style="color:var(--text-faint)">MQTT</span></div>';
+      }
+      if (sinricStatus && sinricStatus.enabled) {
+        statusHtml += '<div class="home-status-item"><div class="home-status-dot" style="background:' + (sinricStatus.connected ? 'var(--green)' : 'var(--red)') + '"></div><span style="color:var(--text-faint)">Sinric</span></div>';
+      }
+      statusHtml += '<div style="flex:1"></div><span style="font-size:0.75rem;color:#52525b">' + devices.length + ' device' + (devices.length !== 1 ? 's' : '') + '</span>';
+      statusHtml += '</div>';
+
+      // Main layout
+      var html = statusHtml + '<div class="home-layout">';
+
+      // Left column: sensors + controls
+      html += '<div>';
+
+      // Sensors
+      if (sensors.length > 0) {
+        html += '<div class="home-section-title"><span class="home-icon">&#9096;</span> Live Readings</div>';
+        html += '<div class="home-sensor-grid">';
+        for (var si = 0; si < sensors.length; si++) {
+          var s = sensors[si];
+          var val = s.cap.value != null ? s.cap.value : '--';
+          var unit = s.cap.unit || '';
+          html += '<div class="home-sensor-card" onclick="switchToDevice(\'' + esc(s.device.id) + '\')">';
+          html += '<div class="home-sensor-device">' + esc(s.dname) + '</div>';
+          html += '<div class="home-sensor-label">' + esc(s.cap.label || s.cap.id) + '</div>';
+          html += '<div><span class="home-sensor-value">' + esc(typeof val === 'number' ? val.toFixed(1) : String(val)) + '</span>';
+          if (unit) html += '<span class="home-sensor-unit">' + esc(unit) + '</span>';
+          html += '</div></div>';
+        }
+        html += '</div>';
+      }
+
+      // Controls
+      if (controls.length > 0) {
+        html += '<div class="home-section-title" style="margin-top:1.25rem"><span class="home-icon">&#9881;</span> Quick Controls</div>';
+        html += '<div class="home-controls-grid">';
+        for (var ci = 0; ci < controls.length; ci++) {
+          var c = controls[ci];
+          var offlineAttr = !c.device.online ? ' style="opacity:0.5;pointer-events:none"' : '';
+          html += '<div class="home-control-card">';
+          html += '<div class="home-control-device"><span>' + esc(c.dname) + '</span>';
+          if (!c.device.online) html += '<span class="home-control-offline">offline</span>';
+          html += '</div>';
+          html += '<div' + offlineAttr + '>' + renderControl(c.device.id, c.cap) + '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      if (sensors.length === 0 && controls.length === 0) {
+        html += '<div class="home-empty">No capabilities found. Connect a device with sensors or controls to see them here.</div>';
+      }
+
+      html += '</div>';
+
+      // Right column: activity feed
+      html += '<div>';
+      html += '<div class="home-section-title"><span class="home-icon">&#9733;</span> Recent Activity';
+      if (homeActivity.length > 0) html += '<span style="margin-left:auto;font-size:0.65rem;color:#52525b;font-weight:400">' + homeActivity.length + ' events</span>';
+      html += '</div>';
+
+      if (homeActivity.length === 0) {
+        html += '<div class="home-empty">No recent activity. Events will appear here as devices come online and report state changes.</div>';
+      } else {
+        html += '<div class="home-activity-list">';
+        for (var ai = 0; ai < homeActivity.length; ai++) {
+          var a = homeActivity[ai];
+          var adev = devices.find(function(d) { return d.id === a.device_id; });
+          var asaved = savedDevices.find(function(s) { return s.id === a.device_id; });
+          var adname = (asaved && asaved.nickname) || (adev && adev.name) || a.device_id;
+          var dotColor = a.severity === 'error' ? 'var(--red)' : a.severity === 'warn' ? 'var(--yellow)' : a.severity === 'state' ? 'var(--accent)' : 'var(--text-faint)';
+          var sevColor = a.severity === 'error' ? 'color:var(--red)' : a.severity === 'warn' ? 'color:var(--yellow)' : a.severity === 'state' ? 'color:var(--accent)' : '';
+          html += '<div class="home-activity-item" onclick="switchToDevice(\'' + esc(a.device_id) + '\')">';
+          html += '<div class="home-activity-dot" style="background:' + dotColor + '"></div>';
+          html += '<div class="home-activity-body">';
+          html += '<div class="home-activity-meta"><span class="home-activity-device">' + esc(adname) + '</span><span class="home-activity-sev" style="' + sevColor + '">' + esc(a.severity) + '</span></div>';
+          html += '<div class="home-activity-msg">' + esc(a.message) + '</div>';
+          html += '</div>';
+          html += '<span class="home-activity-time">' + formatTimeAgo(a.timestamp) + '</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+
+      el.innerHTML = html;
+    }
+
+    function switchToDevice(deviceId) {
+      // Switch to the Devices tab and expand the device
+      expandedDevice = deviceId;
+      currentTab = 'devices';
+      document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+      document.querySelectorAll('.tab-btn[data-tab="devices"]').forEach(function(b) { b.classList.add('active'); });
+      document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+      document.getElementById('panel-devices').classList.add('active');
+      renderDevices();
+      // Scroll to the device card
+      setTimeout(function() {
+        var card = document.querySelector('.device-card[data-device-id="' + deviceId + '"]');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    }
+
+    function formatTimeAgo(ts) {
+      var now = Date.now();
+      var then = new Date(ts + (ts.indexOf('Z') >= 0 || ts.indexOf('+') >= 0 ? '' : 'Z')).getTime();
+      var diff = Math.max(0, now - then);
+      var mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      var hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + 'h ago';
+      var days = Math.floor(hrs / 24);
+      return days + 'd ago';
+    }
 
     /* ────────────────────────── Devices ────────────────────────── */
     async function loadDevices() {
@@ -3139,6 +3379,7 @@
         if (!pollTimer) {
           pollTimer = setInterval(function() {
             if (currentTab === 'devices') loadDevices();
+            else if (currentTab === 'home') loadHome();
           }, 5000);
         }
       };
@@ -3192,6 +3433,8 @@
         if (currentTab === 'devices') {
           renderDevices();
           flashCard(msg.device_id);
+        } else if (currentTab === 'home') {
+          renderHome();
         }
       } else if (msg.event_type === 'heartbeat') {
         if (msg.payload && msg.payload.system) dev.system = msg.payload.system;
@@ -3244,14 +3487,18 @@
       if (currentTab === 'devices') {
         renderDevices();
         flashCard(d.id);
+      } else if (currentTab === 'home') {
+        renderHome();
       }
     }
 
     /* ────────────────────────── Polling ────────────────────────── */
     function startPolling() {
+      loadHome();
       loadDevices();
       pollTimer = setInterval(() => {
         if (currentTab === 'devices') loadDevices();
+        else if (currentTab === 'home') loadHome();
       }, 5000);
       connectWebSocket();
     }

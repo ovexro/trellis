@@ -397,6 +397,39 @@ impl Database {
         logs.reverse(); // Oldest first
         Ok(logs)
     }
+    /// Cross-device activity feed for the Home overview. Returns the most
+    /// recent log entries across ALL devices, newest first. Filters to
+    /// state/error/warn severities by default (the event types that matter
+    /// for an at-a-glance feed — not noisy info/debug chatter).
+    pub fn get_recent_activity(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<ActivityEntry>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, severity, message, timestamp FROM device_logs
+                 WHERE severity IN ('state', 'error', 'warn')
+                 ORDER BY timestamp DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![limit], |row| {
+                Ok(ActivityEntry {
+                    device_id: row.get(0)?,
+                    severity: row.get(1)?,
+                    message: row.get(2)?,
+                    timestamp: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(entries)
+    }
+
     // ─── Schedules ─────────────────────────────────────────────────────
 
     pub fn create_schedule(
@@ -976,6 +1009,14 @@ pub struct LogEntry {
     pub timestamp: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivityEntry {
+    pub device_id: String,
+    pub severity: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
 /// Chart annotation event — a point-in-time marker drawn as a vertical line
 /// on the metric charts. Produced by unioning firmware_history (OTA events)
 /// and device_logs rows whose severity is 'state', 'error', or 'warn'.
@@ -1143,6 +1184,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ON firmware_history(device_id, uploaded_at);
         CREATE INDEX IF NOT EXISTS idx_api_tokens_hash
             ON api_tokens(token_hash);
+        CREATE INDEX IF NOT EXISTS idx_logs_timestamp
+            ON device_logs(timestamp);
         ",
     )?;
 

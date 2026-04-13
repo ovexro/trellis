@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{Annotation, ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -497,6 +497,16 @@ pub fn toggle_alert(
     enabled: bool,
 ) -> Result<(), String> {
     db.toggle_alert(alert_id, enabled)
+}
+
+// ─── Activity feed ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_recent_activity(
+    db: State<'_, Database>,
+    limit: u32,
+) -> Result<Vec<ActivityEntry>, String> {
+    db.get_recent_activity(limit)
 }
 
 // ─── Device logs ─────────────────────────────────────────────────────────────
