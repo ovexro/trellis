@@ -788,6 +788,7 @@
     .fp-unplaced-val { font-size: 0.7rem; color: var(--text-dim); flex-shrink: 0; }
     .fp-bg-btn { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: var(--text-dim); border: none; background: none; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s, color 0.15s; }
     .fp-bg-btn:hover { background: rgba(39,39,42,0.5); color: var(--text); }
+    .fp-bg-btn.snap-active { color: var(--accent); background: rgba(45,212,191,0.1); }
     .fp-bg-btn.danger:hover { color: #f87171; }
     .fp-remove-btn { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: rgba(248,113,113,0.7); border: none; background: none; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s, color 0.15s; }
     .fp-remove-btn:hover { background: rgba(39,39,42,0.5); color: #f87171; }
@@ -3185,6 +3186,16 @@
     var fpBackground = null;
     var fpSelected = null;
     var fpDragging = null;
+    var fpSnapToGrid = false;
+    var FP_GRID_STEP = 4;
+
+    function fpSnap(v) {
+      if (!fpSnapToGrid) return v;
+      return Math.round(v / FP_GRID_STEP) * FP_GRID_STEP;
+    }
+    function fpClampSnap(v) {
+      return Math.max(2, Math.min(98, fpSnap(v)));
+    }
 
     async function loadFloorPlan() {
       try {
@@ -3369,11 +3380,15 @@
       // Background image
       if (fpBackground) {
         canvas.style.backgroundImage = 'url(' + fpBackground + ')';
-        gridDots.style.display = 'none';
+        gridDots.style.display = fpSnapToGrid ? '' : 'none';
       } else {
         canvas.style.backgroundImage = '';
         gridDots.style.display = '';
       }
+      // Grid dot color: trellis accent when snapping, default otherwise
+      gridDots.style.backgroundImage = fpSnapToGrid
+        ? 'radial-gradient(circle, rgba(45,212,191,0.25) 1px, transparent 1px)'
+        : 'radial-gradient(circle, rgba(113,113,122,0.15) 1px, transparent 1px)';
 
       // Empty state
       emptyState.classList.toggle('hidden', fpPositions.length > 0);
@@ -3413,8 +3428,13 @@
         deviceList.appendChild(el);
       });
 
-      // Background controls
+      // Canvas controls
       footer.innerHTML = '';
+      var snapBtn = document.createElement('button');
+      snapBtn.className = 'fp-bg-btn' + (fpSnapToGrid ? ' snap-active' : '');
+      snapBtn.innerHTML = '&#9638; Snap to grid';
+      snapBtn.onclick = function() { fpSnapToGrid = !fpSnapToGrid; renderFloorPlan(); };
+      footer.appendChild(snapBtn);
       var bgBtn = document.createElement('button');
       bgBtn.className = 'fp-bg-btn';
       bgBtn.innerHTML = '&#128444; ' + (fpBackground ? 'Change background' : 'Set background');
@@ -3497,8 +3517,8 @@
         var deviceId = e.dataTransfer.getData('text/plain');
         if (!deviceId || fpActiveFloorId === null) return;
         var rect = canvas.getBoundingClientRect();
-        var x = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
-        var y = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
+        var x = fpClampSnap(((e.clientX - rect.left) / rect.width) * 100);
+        var y = fpClampSnap(((e.clientY - rect.top) / rect.height) * 100);
         fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
         fpPositions.push({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y });
         fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== deviceId; });
@@ -3528,8 +3548,8 @@
         var rect = canvas.getBoundingClientRect();
         var dx = ((e.clientX - sX) / rect.width) * 100;
         var dy = ((e.clientY - sY) / rect.height) * 100;
-        pos.x = Math.max(2, Math.min(98, origX + dx));
-        pos.y = Math.max(2, Math.min(98, origY + dy));
+        pos.x = fpClampSnap(origX + dx);
+        pos.y = fpClampSnap(origY + dy);
         renderFloorPlan();
       }
       async function onUp(e) {
@@ -3569,8 +3589,8 @@
         var rect = canvas.getBoundingClientRect();
         var dx = ((t.clientX - sX) / rect.width) * 100;
         var dy = ((t.clientY - sY) / rect.height) * 100;
-        pos.x = Math.max(2, Math.min(98, origX + dx));
-        pos.y = Math.max(2, Math.min(98, origY + dy));
+        pos.x = fpClampSnap(origX + dx);
+        pos.y = fpClampSnap(origY + dy);
         renderFloorPlan();
       }
       async function onEnd(e) {

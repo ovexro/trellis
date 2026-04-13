@@ -15,6 +15,7 @@ import {
   Plus,
   Pencil,
   Layers,
+  Grid3x3,
 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type { Capability, Device } from "@/lib/types";
@@ -35,7 +36,20 @@ interface DevicePosition {
   y: number;
 }
 
+// ─── Constants ──────────────────────────────────────────────────────
+
+const GRID_STEP = 4; // percentage-based grid step (~32px at typical canvas widths)
+
 // ─── Helpers ────────────────────────────────────────────────────────
+
+function snap(v: number, enabled: boolean): number {
+  if (!enabled) return v;
+  return Math.round(v / GRID_STEP) * GRID_STEP;
+}
+
+function clampSnap(v: number, enabled: boolean): number {
+  return Math.max(2, Math.min(98, snap(v, enabled)));
+}
 
 function capIcon(type: string) {
   switch (type) {
@@ -436,6 +450,9 @@ export default function FloorPlan() {
     origX: number;
     origY: number;
   } | null>(null);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const snapRef = useRef(false);
+  snapRef.current = snapToGrid;
   const [renaming, setRenaming] = useState<FloorPlanEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [showAddFloor, setShowAddFloor] = useState(false);
@@ -570,10 +587,10 @@ export default function FloorPlan() {
     if (!deviceId || !canvasRef.current || activeFloorId === null) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    const cx = Math.max(2, Math.min(98, x));
-    const cy = Math.max(2, Math.min(98, y));
+    const rawX = ((e.clientX - rect.left) / rect.width) * 100;
+    const rawY = ((e.clientY - rect.top) / rect.height) * 100;
+    const cx = clampSnap(rawX, snapToGrid);
+    const cy = clampSnap(rawY, snapToGrid);
 
     // Optimistic update
     setPositions((prev) => {
@@ -616,8 +633,8 @@ export default function FloorPlan() {
       const rect = canvasRef.current.getBoundingClientRect();
       const dx = ((e.clientX - dragging.startX) / rect.width) * 100;
       const dy = ((e.clientY - dragging.startY) / rect.height) * 100;
-      const nx = Math.max(2, Math.min(98, dragging.origX + dx));
-      const ny = Math.max(2, Math.min(98, dragging.origY + dy));
+      const nx = clampSnap(dragging.origX + dx, snapRef.current);
+      const ny = clampSnap(dragging.origY + dy, snapRef.current);
 
       setPositions((prev) =>
         prev.map((p) =>
@@ -631,8 +648,8 @@ export default function FloorPlan() {
       const rect = canvasRef.current.getBoundingClientRect();
       const dx = ((e.clientX - dragging.startX) / rect.width) * 100;
       const dy = ((e.clientY - dragging.startY) / rect.height) * 100;
-      const nx = Math.max(2, Math.min(98, dragging.origX + dx));
-      const ny = Math.max(2, Math.min(98, dragging.origY + dy));
+      const nx = clampSnap(dragging.origX + dx, snapRef.current);
+      const ny = clampSnap(dragging.origY + dy, snapRef.current);
 
       const dist = Math.abs(dx) + Math.abs(dy);
       if (dist < 0.5) {
@@ -797,8 +814,19 @@ export default function FloorPlan() {
             ))}
           </div>
 
-          {/* Background controls */}
+          {/* Canvas controls */}
           <div className="p-2 border-t border-zinc-800/50 space-y-1">
+            <button
+              onClick={() => setSnapToGrid((v) => !v)}
+              className={`flex items-center gap-2 w-full px-2.5 py-1.5 text-xs rounded-lg transition-colors ${
+                snapToGrid
+                  ? "text-trellis-400 bg-trellis-500/10 hover:bg-trellis-500/15"
+                  : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+              }`}
+            >
+              <Grid3x3 size={13} />
+              Snap to grid
+            </button>
             <button
               onClick={handleBackgroundUpload}
               className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 rounded-lg transition-colors"
@@ -848,14 +876,15 @@ export default function FloorPlan() {
               backgroundRepeat: "no-repeat",
             }}
           >
-            {/* Grid pattern when no background */}
-            {!background && (
+            {/* Grid pattern — always visible when snap is on, otherwise only without background */}
+            {(!background || snapToGrid) && (
               <div
                 data-canvas-bg="true"
-                className="absolute inset-0"
+                className="absolute inset-0 pointer-events-none"
                 style={{
-                  backgroundImage:
-                    "radial-gradient(circle, rgba(113,113,122,0.15) 1px, transparent 1px)",
+                  backgroundImage: snapToGrid
+                    ? "radial-gradient(circle, rgba(45,212,191,0.25) 1px, transparent 1px)"
+                    : "radial-gradient(circle, rgba(113,113,122,0.15) 1px, transparent 1px)",
                   backgroundSize: "32px 32px",
                 }}
               />
