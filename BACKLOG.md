@@ -9,7 +9,8 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Floor plan / spatial device layout**~~ — SHIPPED (post-v0.6.0, commit 984de8a).
 - ~~**Floor plan v2: multi-floor support**~~ — SHIPPED (post-v0.7.0, commit 0c8fab7).
 - ~~**Floor plan v2: snap-to-grid**~~ — SHIPPED (post-v0.7.0, commit 84a1b95).
-- **Floor plan v2: remaining enhancements** — device labels/size options (compact vs expanded nodes), undo last move (Ctrl+Z), room/wall drawing tools, auto-placement.
+- ~~**Floor plan v2: compact labels**~~ — SHIPPED (post-v0.7.0, commit cea5728).
+- **Floor plan v2: remaining enhancements** — undo last move (Ctrl+Z), room/wall drawing tools, auto-placement.
 
 ## Known follow-ups
 
