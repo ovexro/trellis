@@ -32,6 +32,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Search / filter devices (by name, nickname, IP, platform, chip, tags)
 - [x] Device rooms/groups (create groups, assign devices, grouped dashboard view)
 - [x] Group management UI (create, edit, delete, color palette)
+- [x] **Inline controls and live values on device cards (post-v0.9.0)** — device cards in both the desktop app and web dashboard now show live capability data directly without expanding or navigating. Desktop cards display interactive switch toggles, compact sliders with debounced command sending, sensor values with units, color swatches with hex values, and truncated text values. Switches and sliders are fully interactive on online devices (offline devices show dimmed controls). Web dashboard collapsed cards show a capability preview row with compact switch toggles, sensor/slider values, color swatches, and text previews; preview auto-hides when the card is expanded to avoid duplication. Event propagation handled so clicking controls doesn't trigger card navigation/expansion. Outer card element changed from `<button>` to `<div role="button">` to allow valid nested interactive elements.
 
 ### Auto-Generated Controls
 - [x] Switch (toggle) — maps to `type: "switch"`

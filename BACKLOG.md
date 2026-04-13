@@ -14,6 +14,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Scene scheduling**~~ — SHIPPED (post-v0.7.0, commit 650b302).
 - ~~**Scene editing**~~ — SHIPPED (post-v0.8.0, commit f100ef7).
 - ~~**Config import/export update**~~ — SHIPPED (post-v0.8.0, commit b02a7a9).
+- **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
 - **Floor plan v2: remaining enhancements** — room/wall drawing tools, auto-placement.
 
 ## Known follow-ups
