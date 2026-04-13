@@ -37,6 +37,14 @@ interface DevicePosition {
   y: number;
 }
 
+// "place" = device was newly placed (undo = remove it)
+// "move"  = device was repositioned (undo = restore old x,y)
+// "remove" = device was removed (undo = restore it)
+type UndoEntry =
+  | { type: "place"; deviceId: string; floorId: number }
+  | { type: "move"; deviceId: string; floorId: number; prevX: number; prevY: number }
+  | { type: "remove"; deviceId: string; floorId: number; prevX: number; prevY: number };
+
 // ─── Constants ──────────────────────────────────────────────────────
 
 const GRID_STEP = 4; // percentage-based grid step (~32px at typical canvas widths)
@@ -459,6 +467,7 @@ export default function FloorPlan() {
   } | null>(null);
   const [snapToGrid, setSnapToGrid] = useState(false);
   const [compactNodes, setCompactNodes] = useState(false);
+  const [undoEntry, setUndoEntry] = useState<UndoEntry | null>(null);
   const snapRef = useRef(false);
   snapRef.current = snapToGrid;
   const [renaming, setRenaming] = useState<FloorPlanEntry | null>(null);
@@ -535,6 +544,69 @@ export default function FloorPlan() {
     await loadAllPositions();
   }, [activeFloorId, loadFloorData, loadAllPositions]);
 
+  // ─── Undo (Ctrl+Z) ────────────────────────────────────────────
+  const undoRef = useRef<UndoEntry | null>(null);
+  undoRef.current = undoEntry;
+
+  const performUndo = useCallback(async () => {
+    const entry = undoRef.current;
+    if (!entry) return;
+    setUndoEntry(null);
+
+    if (entry.type === "place") {
+      // Undo a new placement → remove it
+      setPositions((prev) => prev.filter((p) => p.device_id !== entry.deviceId));
+      setAllPositions((prev) => prev.filter((p) => p.device_id !== entry.deviceId));
+      try {
+        await invoke("remove_device_position", { deviceId: entry.deviceId });
+      } catch { /* best-effort */ }
+    } else if (entry.type === "move") {
+      // Undo a repositioning → restore old x,y
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.device_id === entry.deviceId ? { ...p, x: entry.prevX, y: entry.prevY } : p
+        )
+      );
+      setAllPositions((prev) =>
+        prev.map((p) =>
+          p.device_id === entry.deviceId ? { ...p, x: entry.prevX, y: entry.prevY } : p
+        )
+      );
+      try {
+        await invoke("set_device_position", {
+          deviceId: entry.deviceId,
+          floorId: entry.floorId,
+          x: entry.prevX,
+          y: entry.prevY,
+        });
+      } catch { /* best-effort */ }
+    } else if (entry.type === "remove") {
+      // Undo a removal → restore device
+      const restored = { device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY };
+      setPositions((prev) => [...prev, restored]);
+      setAllPositions((prev) => [...prev, restored]);
+      try {
+        await invoke("set_device_position", {
+          deviceId: entry.deviceId,
+          floorId: entry.floorId,
+          x: entry.prevX,
+          y: entry.prevY,
+        });
+      } catch { /* best-effort */ }
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        performUndo();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [performUndo]);
+
   // ─── Floor CRUD ───────────────────────────────────────────────
   const handleAddFloor = async () => {
     const name = newFloorName.trim();
@@ -599,6 +671,9 @@ export default function FloorPlan() {
     const rawY = ((e.clientY - rect.top) / rect.height) * 100;
     const cx = clampSnap(rawX, snapToGrid);
     const cy = clampSnap(rawY, snapToGrid);
+
+    // Record undo (new placement)
+    setUndoEntry({ type: "place", deviceId, floorId: activeFloorId });
 
     // Optimistic update
     setPositions((prev) => {
@@ -666,6 +741,15 @@ export default function FloorPlan() {
           screenX: e.clientX,
           screenY: e.clientY,
         });
+      } else {
+        // Record undo for the move
+        setUndoEntry({
+          type: "move",
+          deviceId: dragging.deviceId,
+          floorId: activeFloorId,
+          prevX: dragging.origX,
+          prevY: dragging.origY,
+        });
       }
 
       setDragging(null);
@@ -693,6 +777,11 @@ export default function FloorPlan() {
 
   // ─── Remove device from floor plan ────────────────────────────
   const removeFromPlan = async (deviceId: string) => {
+    // Record undo for the removal
+    const pos = positions.find((p) => p.device_id === deviceId);
+    if (pos && activeFloorId !== null) {
+      setUndoEntry({ type: "remove", deviceId, floorId: activeFloorId, prevX: pos.x, prevY: pos.y });
+    }
     setPositions((prev) => prev.filter((p) => p.device_id !== deviceId));
     setAllPositions((prev) => prev.filter((p) => p.device_id !== deviceId));
     setSelected(null);

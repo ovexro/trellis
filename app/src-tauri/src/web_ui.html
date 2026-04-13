@@ -3190,6 +3190,7 @@
     var fpDragging = null;
     var fpSnapToGrid = false;
     var fpCompactNodes = false;
+    var fpUndoEntry = null; // { type: 'place'|'move'|'remove', deviceId, floorId, prevX?, prevY? }
     var FP_GRID_STEP = 4;
 
     function fpSnap(v) {
@@ -3199,6 +3200,36 @@
     function fpClampSnap(v) {
       return Math.max(2, Math.min(98, fpSnap(v)));
     }
+
+    async function fpPerformUndo() {
+      var entry = fpUndoEntry;
+      if (!entry) return;
+      fpUndoEntry = null;
+      if (entry.type === 'place') {
+        fpPositions = fpPositions.filter(function(p) { return p.device_id !== entry.deviceId; });
+        fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== entry.deviceId; });
+        renderFloorPlan();
+        try { await api('/api/floor-plan/position/' + encodeURIComponent(entry.deviceId), { method: 'DELETE' }); } catch(e) {}
+      } else if (entry.type === 'move') {
+        fpPositions.forEach(function(p) { if (p.device_id === entry.deviceId) { p.x = entry.prevX; p.y = entry.prevY; } });
+        fpAllPositions.forEach(function(p) { if (p.device_id === entry.deviceId) { p.x = entry.prevX; p.y = entry.prevY; } });
+        renderFloorPlan();
+        try { await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY }) }); } catch(e) {}
+      } else if (entry.type === 'remove') {
+        var restored = { device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY };
+        fpPositions.push(restored);
+        fpAllPositions.push(restored);
+        renderFloorPlan();
+        try { await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY }) }); } catch(e) {}
+      }
+    }
+
+    document.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey && currentTab === 'floor-plan') {
+        e.preventDefault();
+        fpPerformUndo();
+      }
+    });
 
     async function loadFloorPlan() {
       try {
@@ -3527,6 +3558,7 @@
         var rect = canvas.getBoundingClientRect();
         var x = fpClampSnap(((e.clientX - rect.left) / rect.width) * 100);
         var y = fpClampSnap(((e.clientY - rect.top) / rect.height) * 100);
+        fpUndoEntry = { type: 'place', deviceId: deviceId, floorId: fpActiveFloorId };
         fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
         fpPositions.push({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y });
         fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== deviceId; });
@@ -3571,6 +3603,7 @@
           fpShowPopup(deviceId, e.clientX, e.clientY);
           return;
         }
+        fpUndoEntry = { type: 'move', deviceId: deviceId, floorId: fpActiveFloorId, prevX: origX, prevY: origY };
         if (fpActiveFloorId === null) return;
         try {
           await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
@@ -3608,6 +3641,7 @@
           fpShowPopup(deviceId, sX, sY);
           return;
         }
+        fpUndoEntry = { type: 'move', deviceId: deviceId, floorId: fpActiveFloorId, prevX: origX, prevY: origY };
         if (fpActiveFloorId === null) return;
         try {
           await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
@@ -3706,6 +3740,10 @@
     }
 
     async function fpRemoveDevice(deviceId) {
+      var pos = fpPositions.find(function(p) { return p.device_id === deviceId; });
+      if (pos && fpActiveFloorId !== null) {
+        fpUndoEntry = { type: 'remove', deviceId: deviceId, floorId: fpActiveFloorId, prevX: pos.x, prevY: pos.y };
+      }
       fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
       fpAllPositions = fpAllPositions.filter(function(p) { return p.device_id !== deviceId; });
       fpSelected = null;
