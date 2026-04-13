@@ -12,6 +12,9 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] USB serial device detection (listing)
 - [x] **Saved devices auto-load on app restart (v0.3.3)** — `Discovery::hydrate_from_db` reads `SavedDevice` rows from SQLite into the in-memory map at startup as offline placeholders, so cross-subnet devices added by IP reappear instantly on every consumer (desktop UI, REST API, web dashboard, MQTT bridge). Health check loop restructured to "work, then sleep" so the first probe runs immediately and hydrated devices flip online within ~1 second instead of waiting a 30-second interval.
 
+### Home Overview (post-v0.6.0)
+- [x] **Home page as default landing view** — new Home page in both desktop app (React, `/` route) and web dashboard (`:9090`, first tab). Shows system status strip (online/offline device counts, MQTT/Sinric bridge status dots), live sensor readings grid (all sensor capabilities across all devices with current values), quick controls (functional inline switches, sliders, color pickers across all devices — offline devices dimmed), and recent activity feed (last 30 cross-device events from `GET /api/activity` endpoint, severity color-coded, clickable to navigate to device). Real-time updates via Zustand store (desktop) and WebSocket push (web dashboard). Activity feed backed by new `idx_logs_timestamp` index for efficient cross-device queries.
+
 ### Dashboard
 - [x] Device card grid layout
 - [x] **Drag-and-drop card reordering (post-v0.4.4)** — device cards can be reordered via drag-and-drop in both the desktop app and the `:9090` web dashboard. Order persists in SQLite (`sort_order` column on `devices` table). `PUT /api/devices/reorder` REST endpoint (admin-only). Viewers see cards in the same order but cannot drag. HTML5 DnD with visual feedback (opacity on drag, accent ring on drop target, grip handle icon).
