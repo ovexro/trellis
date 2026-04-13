@@ -169,6 +169,43 @@
     .meta-item { display: flex; align-items: center; gap: 0.3rem; }
     .meta-label { color: var(--text-faint); }
 
+    /* ── Capability Preview (collapsed cards) ── */
+    .card-preview {
+      display: flex; flex-wrap: wrap; gap: 0.375rem;
+      padding: 0 1.125rem 0.875rem;
+    }
+    .preview-item {
+      display: flex; align-items: center; gap: 0.375rem;
+      font-size: 0.75rem; color: var(--text-dim);
+      background: rgba(255,255,255,0.04);
+      border-radius: 6px; padding: 0.25rem 0.5rem;
+    }
+    .preview-item .preview-value {
+      color: var(--text); font-family: monospace; font-size: 0.7rem;
+    }
+    .preview-item .preview-unit {
+      color: var(--text-faint); font-size: 0.65rem;
+    }
+    .preview-item .preview-swatch {
+      width: 12px; height: 12px; border-radius: 3px;
+      border: 1px solid rgba(255,255,255,0.15); flex-shrink: 0;
+    }
+    .preview-toggle {
+      width: 32px; height: 18px; border-radius: 9px;
+      background: #3f3f46; border: none; cursor: pointer;
+      position: relative; transition: background var(--transition);
+      flex-shrink: 0;
+    }
+    .preview-toggle.on { background: var(--accent); }
+    .preview-toggle::after {
+      content: ''; position: absolute;
+      top: 2px; left: 2px; width: 14px; height: 14px;
+      border-radius: 50%; background: #fff;
+      transition: transform var(--transition);
+    }
+    .preview-toggle.on::after { transform: translateX(14px); }
+    .device-card.expanded .card-preview { display: none; }
+
     /* ── Expanded Controls ── */
     .card-controls {
       max-height: 0; overflow: hidden;
@@ -1516,6 +1553,45 @@
       if (online && dev.id) metaHtml += `<a class="meta-item" href="/proxy/${encodeURIComponent(dev.id)}/" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--accent);text-decoration:none;">Dashboard ↗</a>`;
       metaHtml += `<a class="meta-item" href="#" onclick="event.preventDefault();event.stopPropagation();openDeviceDetail('${esc(dev.id)}')" style="color:var(--accent);text-decoration:none;cursor:pointer;">Details</a>`;
 
+      // Capability preview for collapsed cards
+      let previewHtml = '';
+      if (dev.capabilities && dev.capabilities.length) {
+        const items = dev.capabilities.map(function(cap) {
+          const label = esc(cap.label || cap.id);
+          switch (cap.type) {
+            case 'switch':
+              return `<span class="preview-item" onclick="event.stopPropagation()">
+                <span>${label}</span>
+                <button class="preview-toggle ${cap.value ? 'on' : ''}"
+                  data-trellis-device="${esc(dev.id)}"
+                  data-trellis-cap="${esc(cap.id)}"
+                  ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onclick="sendToggle(event, '${esc(dev.id)}', '${esc(cap.id)}')"` }></button>
+              </span>`;
+            case 'sensor': {
+              const sv = cap.value != null
+                ? (typeof cap.value === 'number' ? (Math.abs(cap.value) < 10 ? cap.value.toFixed(1) : Math.round(cap.value)) : cap.value)
+                : '--';
+              const su = cap.unit ? `<span class="preview-unit">${esc(cap.unit)}</span>` : '';
+              return `<span class="preview-item"><span>${label}</span> <span class="preview-value">${esc(String(sv))}${su}</span></span>`;
+            }
+            case 'slider': {
+              const slv = cap.value != null ? Math.round(cap.value) : '--';
+              const slu = cap.unit ? `<span class="preview-unit">${esc(cap.unit)}</span>` : '';
+              return `<span class="preview-item"><span>${label}</span> <span class="preview-value">${esc(String(slv))}${slu}</span></span>`;
+            }
+            case 'color':
+              return `<span class="preview-item"><span>${label}</span> <span class="preview-swatch" style="background:${esc(cap.value || '#000000')}"></span></span>`;
+            case 'text': {
+              const tv = cap.value ? (String(cap.value).length > 12 ? String(cap.value).slice(0, 12) + '\u2026' : cap.value) : '\u2014';
+              return `<span class="preview-item"><span>${label}</span> <span class="preview-value">${esc(String(tv))}</span></span>`;
+            }
+            default:
+              return '';
+          }
+        }).filter(Boolean).join('');
+        if (items) previewHtml = `<div class="card-preview">${items}</div>`;
+      }
+
       let controlsHtml = '';
       if (expanded && dev.capabilities && dev.capabilities.length) {
         controlsHtml = `<div class="controls-inner">
@@ -1542,6 +1618,7 @@
           ${dev.platform ? `<span class="card-badge">${esc(dev.platform)}</span>` : ''}
         </div>
         ${metaHtml ? `<div class="card-meta">${metaHtml}</div>` : ''}
+        ${previewHtml}
         <div class="card-controls">${controlsHtml}</div>
       </div>`;
     }
@@ -1624,7 +1701,7 @@
 
     function toggleDevice(e, id) {
       // Don't toggle if clicking a control
-      if (e.target.closest('.toggle, input, button.btn')) return;
+      if (e.target.closest('.toggle, .preview-toggle, input, button.btn')) return;
       expandedDevice = expandedDevice === id ? null : id;
       renderDevices();
     }
@@ -2825,6 +2902,8 @@
         // stale and the user has no feedback that the command landed.
         if (typeof value === 'boolean') {
           const sel = '.toggle[data-trellis-device="' + cssEscape(deviceId)
+            + '"][data-trellis-cap="' + cssEscape(capId) + '"],'
+            + '.preview-toggle[data-trellis-device="' + cssEscape(deviceId)
             + '"][data-trellis-cap="' + cssEscape(capId) + '"]';
           document.querySelectorAll(sel).forEach(function(btn) {
             btn.classList.toggle('on', value);

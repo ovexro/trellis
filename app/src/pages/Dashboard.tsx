@@ -18,7 +18,7 @@ const GROUP_COLORS = [
 ];
 
 export default function Dashboard() {
-  const { devices, initEventListeners, addDeviceByIp } = useDeviceStore();
+  const { devices, initEventListeners, addDeviceByIp, updateCapability } = useDeviceStore();
   const navigate = useNavigate();
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [manualIp, setManualIp] = useState("");
@@ -101,6 +101,22 @@ export default function Dashboard() {
       console.error("Failed to set device group:", err);
     }
   };
+
+  const handleCommand = useCallback(async (deviceId: string, capId: string, value: unknown) => {
+    const device = useDeviceStore.getState().devices.find((d) => d.id === deviceId);
+    if (!device) return;
+    updateCapability(deviceId, capId, value);
+    try {
+      await invoke("send_command", {
+        deviceId,
+        ip: device.ip,
+        port: device.port,
+        command: { command: "set", id: capId, value },
+      });
+    } catch (err) {
+      console.error("Failed to send command:", err);
+    }
+  }, [updateCapability]);
 
   // Filter and sort devices
   const filteredDevices = devices
@@ -312,6 +328,7 @@ export default function Dashboard() {
                     onDrop={handleDrop}
                     groups={groups}
                     onSetGroup={handleSetDeviceGroup}
+                    onCommand={handleCommand}
                   />
                 ))}
               </GroupSection>
@@ -340,6 +357,7 @@ export default function Dashboard() {
                     onDrop={handleDrop}
                     groups={groups}
                     onSetGroup={handleSetDeviceGroup}
+                    onCommand={handleCommand}
                   />
                 ))}
               </GroupSection>
@@ -355,6 +373,7 @@ export default function Dashboard() {
               dragId={dragId}
               onDragStart={setDragId}
               onDrop={handleDrop}
+              onCommand={handleCommand}
             />
           ))}
         </div>
@@ -372,6 +391,7 @@ function DraggableCard({
   onDrop,
   groups,
   onSetGroup,
+  onCommand,
 }: {
   device: Device;
   dragId: string | null;
@@ -379,6 +399,7 @@ function DraggableCard({
   onDrop: (targetId: string) => void;
   groups?: DeviceGroup[];
   onSetGroup?: (deviceId: string, groupId: number | null) => void;
+  onCommand?: (deviceId: string, capId: string, value: unknown) => void;
 }) {
   const isDragging = dragId === device.id;
   const [isOver, setIsOver] = useState(false);
@@ -408,9 +429,9 @@ function DraggableCard({
       style={{ cursor: "grab" }}
     >
       {groups && onSetGroup ? (
-        <DeviceWithGroupAssign device={device} groups={groups} onSetGroup={onSetGroup} />
+        <DeviceWithGroupAssign device={device} groups={groups} onSetGroup={onSetGroup} onCommand={onCommand} />
       ) : (
-        <DeviceCard device={device} />
+        <DeviceCard device={device} onCommand={onCommand} />
       )}
       <div className="absolute top-3 right-3 text-zinc-600 hover:text-zinc-400 cursor-grab active:cursor-grabbing"
         title="Drag to reorder">
@@ -476,10 +497,12 @@ function DeviceWithGroupAssign({
   device,
   groups,
   onSetGroup,
+  onCommand,
 }: {
   device: Device;
   groups: DeviceGroup[];
   onSetGroup: (deviceId: string, groupId: number | null) => void;
+  onCommand?: (deviceId: string, capId: string, value: unknown) => void;
 }) {
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -500,7 +523,7 @@ function DeviceWithGroupAssign({
 
   return (
     <div className="relative">
-      <DeviceCard device={device} />
+      <DeviceCard device={device} onCommand={onCommand} />
       {/* Group assignment dot + dropdown trigger */}
       <div className="absolute bottom-3 right-3" ref={dropdownRef}>
         <button
