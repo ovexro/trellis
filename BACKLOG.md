@@ -8,7 +8,7 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 
-- **Sinric Pro voice assistant bridge** — RESEARCHED: Sinric Pro wins over direct Alexa/Google skills (lower friction, covers both platforms, free tier 3 devices). Implementation: Rust WebSocket client to ws.sinric.pro with HMAC-SHA256 signing, Settings panel for API key/secret, bidirectional sync (Sinric commands → Trellis device commands, state changes → Sinric updates), capability mapping (switch→switch, slider→dimmer, sensor→temperature/humidity). Estimated 2-3 sessions. Also document HA path as "already works" in user guide.
+- **Sinric Pro voice assistant bridge — session 1 SHIPPED (8eb6996)**: WSS bridge to ws.sinric.pro with HMAC-SHA256 signing, Settings panel (API key/secret/device mappings), bidirectional switch control (setPowerState), sensor → temperature reporting, HMAC signature verification on inbound. **Remaining (sessions 2-3)**: slider→dimmer, color→light, text→text, web dashboard section, per-capability mapping UI, user guide docs. Also document HA path as "already works" in user guide.
 
 ## Known follow-ups
 
