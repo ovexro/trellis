@@ -3074,23 +3074,35 @@
 
     /* ────────────────────────── Scenes Tab ────────────────────────── */
     let editingSceneId = null;
+    let creatingScene = false;
+
+    function scenesHeader() {
+      if (isViewer) return '';
+      return `<div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem;">
+        <button onclick="openCreateScene()" style="font-size:0.75rem;padding:0.35rem 0.7rem;background:var(--accent);border:none;border-radius:6px;color:#fff;cursor:pointer;">+ New Scene</button>
+      </div>`;
+    }
 
     async function loadScenes() {
       const container = document.getElementById('scenesContent');
       if (!container) return;
       try {
         const scenes = await api('/api/scenes');
+        let html = scenesHeader();
+        html += '<div id="scene-create-area"></div>';
         if (!scenes || !scenes.length) {
-          container.innerHTML = renderEmpty('No scenes yet', 'Create scenes from the desktop app to control multiple devices at once.');
+          html += `<div style="text-align:center;padding:2rem;color:var(--text-faint);font-size:0.8rem;">No scenes yet. Create one to control multiple devices at once.</div>`;
+          container.innerHTML = html;
           return;
         }
-        let html = '<div class="auto-section"><div class="section-title">Scenes</div>';
+        html += '<div class="auto-section"><div class="section-title">Scenes</div>';
         html += scenes.map(s => {
           const actionSummary = s.actions.map(a => {
             const devName = getDeviceNameById(a.device_id);
             return `${esc(devName)}.${esc(a.capability_id)} = ${esc(String(a.value))}`;
           }).join(', ');
           const editBtn = isViewer ? '' : `<button onclick="openEditScene(${s.id})" class="auto-card-badge" style="cursor:pointer;border:none;font-size:0.75rem;background:var(--surface-alt);color:var(--text-dim);">&#9998; Edit</button>`;
+          const deleteBtn = isViewer ? '' : `<button onclick="deleteSceneFromDashboard(${s.id})" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.8rem;padding:0.2rem 0.4rem;" title="Delete scene">&times;</button>`;
           return `<div class="auto-card" id="scene-card-${s.id}">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div>
@@ -3100,6 +3112,7 @@
               <div style="display:flex;gap:0.4rem;align-items:center;">
                 ${editBtn}
                 <button onclick="runSceneFromDashboard(${s.id})" class="auto-card-badge badge-enabled" style="cursor:pointer;border:none;font-size:0.75rem;">&#9654; Run</button>
+                ${deleteBtn}
               </div>
             </div>
           </div>`;
@@ -3176,7 +3189,75 @@
 
     function cancelEditScene() {
       editingSceneId = null;
+      creatingScene = false;
       loadScenes();
+    }
+
+    function openCreateScene() {
+      if (isViewer) return;
+      creatingScene = true;
+      editingSceneId = null;
+      const area = document.getElementById('scene-create-area');
+      if (!area) return;
+      const onlineDev = devices.find(d => d.online);
+      const cap = onlineDev ? (onlineDev.capabilities.find(c => c.type !== 'sensor') || onlineDev.capabilities[0]) : null;
+      let html = `<div class="auto-card" style="margin-bottom:0.5rem;">
+        <div style="padding:0.5rem 0;">
+          <input id="scene-edit-name" value="" placeholder="Scene name (e.g., Good Night)" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.6rem;color:var(--text);font-size:0.8rem;margin-bottom:0.5rem;" />
+          <div id="scene-edit-actions">`;
+      if (onlineDev && cap) {
+        html += renderSceneActionRow(0, onlineDev.id, cap.id, String(cap.value != null ? cap.value : ''));
+      }
+      html += `</div>
+          <div style="display:flex;gap:0.4rem;margin-top:0.5rem;">
+            <button onclick="addSceneEditAction()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);cursor:pointer;">+ Add action</button>
+            <div style="flex:1;"></div>
+            <button onclick="cancelEditScene()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:none;border:none;color:var(--text-dim);cursor:pointer;">Cancel</button>
+            <button onclick="saveCreateScene()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:var(--accent);border:none;border-radius:6px;color:#fff;cursor:pointer;">Create</button>
+          </div>
+        </div>
+      </div>`;
+      area.innerHTML = html;
+    }
+
+    async function saveCreateScene() {
+      const nameInput = document.getElementById('scene-edit-name');
+      if (!nameInput) return;
+      const name = nameInput.value.trim();
+      if (!name) { showToast('Scene name is required', 'error'); return; }
+      const rows = document.querySelectorAll('#scene-edit-actions .scene-action-row');
+      if (!rows.length) { showToast('Scene must have at least one action', 'error'); return; }
+      const actions = [];
+      rows.forEach(row => {
+        const selects = row.querySelectorAll('select');
+        const input = row.querySelector('input');
+        actions.push({ device_id: selects[0].value, capability_id: selects[1].value, value: input.value });
+      });
+      try {
+        await api('/api/scenes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, actions })
+        });
+        creatingScene = false;
+        showToast('Scene created', 'success');
+        loadScenes();
+      } catch (e) {
+        showToast('Failed to create scene: ' + e.message, 'error');
+      }
+    }
+
+    async function deleteSceneFromDashboard(id) {
+      const card = document.getElementById('scene-card-' + id);
+      const name = card ? card.querySelector('.auto-card-title').textContent : '#' + id;
+      if (!confirm('Delete scene "' + name + '"? This cannot be undone.')) return;
+      try {
+        await api('/api/scenes/' + id, { method: 'DELETE' });
+        showToast('Scene deleted', 'success');
+        loadScenes();
+      } catch (e) {
+        showToast('Failed to delete scene: ' + e.message, 'error');
+      }
     }
 
     async function saveEditScene() {
