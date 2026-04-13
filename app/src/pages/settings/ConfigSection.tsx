@@ -22,13 +22,16 @@ export default function ConfigSection() {
 
   const exportConfig = async () => {
     try {
-      const [savedDevices, schedules, rules, webhooks, templates, groups] = await Promise.all([
+      const [savedDevices, schedules, rules, webhooks, templates, groups, scenes, floorPlans, favorites] = await Promise.all([
         invoke("get_saved_devices"),
         invoke("get_schedules"),
         invoke("get_rules"),
         invoke("get_webhooks"),
         invoke("get_templates"),
         invoke("get_groups"),
+        invoke("get_scenes"),
+        invoke("get_floor_plans"),
+        invoke("get_favorite_capabilities"),
       ]);
 
       // Collect alerts for all known devices
@@ -42,19 +45,33 @@ export default function ConfigSection() {
         }
       }
 
-      const scenes = localStorage.getItem("trellis-scenes");
+      // Collect device positions for each floor
+      const allPositions: unknown[] = [];
+      if (Array.isArray(floorPlans)) {
+        for (const fp of floorPlans as { id: number }[]) {
+          try {
+            const positions = await invoke("get_device_positions", { floorId: fp.id });
+            if (Array.isArray(positions)) allPositions.push(...positions);
+          } catch {
+            // Floor may have no positions
+          }
+        }
+      }
 
       const config = {
-        version: "0.1.5",
+        version: 2,
         exported_at: new Date().toISOString(),
         devices: savedDevices,
-        scenes: scenes ? JSON.parse(scenes) : [],
+        scenes,
         schedules,
         rules,
         webhooks,
         alerts: allAlerts,
         templates,
         groups,
+        floor_plans: floorPlans,
+        device_positions: allPositions,
+        favorites,
         device_count: devices.length,
       };
 
@@ -88,11 +105,6 @@ export default function ConfigSection() {
 
         let imported = [];
 
-        if (config.scenes) {
-          localStorage.setItem("trellis-scenes", JSON.stringify(config.scenes));
-          imported.push(`${config.scenes.length} scenes`);
-        }
-
         // Restore groups (must be before devices so group_id references are valid)
         const groupIdMap = new Map<number, number>(); // old id → new id
         if (config.groups && Array.isArray(config.groups)) {
@@ -125,13 +137,81 @@ export default function ConfigSection() {
           imported.push(`${config.devices.length} devices`);
         }
 
-        // Restore schedules
+        // Restore scenes (must be before schedules so scene_id references are valid)
+        const sceneIdMap = new Map<number, number>(); // old id → new id
+        if (config.scenes && Array.isArray(config.scenes)) {
+          for (const s of config.scenes) {
+            try {
+              const actions = Array.isArray(s.actions)
+                ? s.actions.map((a: { device_id: string; capability_id: string; value: string }) => ({
+                    device_id: a.device_id,
+                    capability_id: a.capability_id,
+                    value: a.value,
+                  }))
+                : [];
+              if (actions.length > 0) {
+                const newId = await invoke<number>("create_scene", {
+                  name: s.name, actions,
+                });
+                sceneIdMap.set(s.id, newId);
+              }
+            } catch (err) {
+              console.error("Failed to import scene:", err);
+            }
+          }
+          imported.push(`${config.scenes.length} scenes`);
+        }
+
+        // Restore floor plans and device positions
+        const floorIdMap = new Map<number, number>(); // old id → new id
+        if (config.floor_plans && Array.isArray(config.floor_plans)) {
+          for (const fp of config.floor_plans) {
+            try {
+              const newId = await invoke<number>("create_floor_plan", { name: fp.name });
+              floorIdMap.set(fp.id, newId);
+              if (fp.background) {
+                await invoke("update_floor_plan", { id: newId, name: null, background: fp.background });
+              }
+            } catch (err) {
+              console.error("Failed to import floor plan:", err);
+            }
+          }
+          imported.push(`${config.floor_plans.length} floor plans`);
+        }
+        if (config.device_positions && Array.isArray(config.device_positions)) {
+          for (const pos of config.device_positions) {
+            const newFloorId = floorIdMap.get(pos.floor_id) ?? pos.floor_id;
+            try {
+              await invoke("set_device_position", {
+                deviceId: pos.device_id, floorId: newFloorId, x: pos.x, y: pos.y,
+              });
+            } catch (err) {
+              console.error("Failed to import device position:", err);
+            }
+          }
+          imported.push(`${config.device_positions.length} positions`);
+        }
+
+        // Restore favorites
+        if (config.favorites && Array.isArray(config.favorites)) {
+          for (const [deviceId, capabilityId] of config.favorites) {
+            try {
+              await invoke("toggle_favorite_capability", { deviceId, capabilityId });
+            } catch (err) {
+              console.error("Failed to import favorite:", err);
+            }
+          }
+          imported.push(`${config.favorites.length} favorites`);
+        }
+
+        // Restore schedules (after scenes so scene_id remapping works)
         if (config.schedules && Array.isArray(config.schedules)) {
           for (const s of config.schedules) {
             try {
+              const sceneId = s.scene_id != null ? (sceneIdMap.get(s.scene_id) ?? s.scene_id) : null;
               await invoke("create_schedule", {
                 deviceId: s.device_id, capabilityId: s.capability_id,
-                value: s.value, cron: s.cron, label: s.label,
+                value: s.value, cron: s.cron, label: s.label, sceneId,
               });
             } catch (err) {
               console.error("Failed to import schedule:", err);
@@ -243,7 +323,7 @@ export default function ConfigSection() {
           </p>
         )}
         <p className="text-xs text-zinc-600 mt-2">
-          Export saves device nicknames, tags, scenes, schedules, rules, webhooks, alerts, and templates.
+          Export saves devices, scenes, floor plans, positions, favorites, schedules, rules, webhooks, alerts, and templates.
           Import on a new PC to restore your setup.
         </p>
       </div>
