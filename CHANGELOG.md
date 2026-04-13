@@ -2,6 +2,23 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.8.0] — 2026-04-13
+
+Floor Plan enhancements and backend-backed scenes release. Multi-floor support, snap-to-grid, compact labels, undo, and scenes moved from localStorage to SQLite with scheduling support.
+
+### Added
+
+- **Multi-floor support.** New `floor_plans` table. Tab bar above the canvas lists all floors; click to switch, `+` to add, right-click for rename/delete. Each floor has its own device positions and background image. Seamless migration from single-floor. REST API: `GET/POST /api/floor-plans`, `PUT/DELETE /api/floor-plans/{id}`. Both desktop and web dashboard.
+- **Snap-to-grid toggle.** Sidebar button snaps device positions to a 4% grid. Grid dots turn trellis-accent when active and remain visible over backgrounds. Applied to sidebar drops and node drags.
+- **Compact labels toggle.** Sidebar button switches placed nodes between expanded (name + value) and compact (value only, smaller padding) for dense floor plans.
+- **Undo last move.** Ctrl+Z / Cmd+Z reverts the last floor plan action: placement (removes), move (restores position), or removal (restores device). Single-level.
+- **Backend-backed scenes.** Scenes persisted in SQLite (`scenes` + `scene_actions` tables) instead of localStorage. Full CRUD via Tauri commands and REST API (`GET/POST /api/scenes`, `DELETE /api/scenes/{id}`, `POST /api/scenes/{id}/run`). Scene execution moved to backend so both desktop app and web dashboard can trigger scenes. New "Scenes" tab in web dashboard.
+- **Scene scheduling.** Schedules can fire entire scenes on a cron schedule. New `scene_id` column on `schedules` table. Schedule creation form has a type toggle (Single Action / Scene). Scene name shown in schedule cards in both desktop app and web dashboard.
+
+### Library
+
+- No library changes in this release (floor plan and scenes are desktop-only).
+
 ## [0.7.0] — 2026-04-13
 
 Home experience release. New Home landing page, per-capability favorites, and Floor Plan spatial layout — all in both the desktop app and the web dashboard.
