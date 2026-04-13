@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, LogEntry, MetricPoint, Rule, SavedDevice, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -691,6 +691,23 @@ pub fn toggle_favorite_capability(db: State<'_, Database>, device_id: String, ca
 #[tauri::command]
 pub fn get_favorite_capabilities(db: State<'_, Database>) -> Result<Vec<(String, String)>, String> {
     db.get_favorite_capabilities()
+}
+
+// ─── Floor plan ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_device_positions(db: State<'_, Database>) -> Result<Vec<DevicePosition>, String> {
+    db.get_device_positions()
+}
+
+#[tauri::command]
+pub fn set_device_position(db: State<'_, Database>, device_id: String, x: f64, y: f64) -> Result<(), String> {
+    db.set_device_position(&device_id, x, y)
+}
+
+#[tauri::command]
+pub fn remove_device_position(db: State<'_, Database>, device_id: String) -> Result<(), String> {
+    db.remove_device_position(&device_id)
 }
 
 // ─── CSV export ─────────────────────────────────────────────────────────────

@@ -1016,6 +1016,37 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_reorder_devices(ctx, &req.body)
         }
 
+        // ─── Floor plan ─────────────────────────────────────────────
+        ("GET", "/api/floor-plan") => {
+            match ctx.db.get_device_positions() {
+                Ok(positions) => {
+                    let bg = ctx.db.get_setting("floor_plan_background").unwrap_or(None);
+                    json_ok(&serde_json::json!({"positions": positions, "background": bg}))
+                }
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("PUT", "/api/floor-plan/position") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_set_device_position(ctx, &req.body)
+        }
+
+        ("DELETE", p) if p.starts_with("/api/floor-plan/position/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let raw_id = &p["/api/floor-plan/position/".len()..];
+            let id = urlencoding::decode(raw_id).unwrap_or_else(|_| raw_id.into());
+            match ctx.db.remove_device_position(&id) {
+                Ok(()) => json_ok(&serde_json::json!({"removed": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("PUT", "/api/floor-plan/background") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_set_floor_plan_background(ctx, &req.body)
+        }
+
         ("DELETE", p) if p.starts_with("/api/devices/") && !p["/api/devices/".len()..].contains('/') => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..];
@@ -1505,6 +1536,50 @@ fn handle_set_device_favorite(ctx: &ApiContext, device_id: &str, body: &str) -> 
     match ctx.db.set_device_favorite(device_id, favorite) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_device_position(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let device_id = match v["device_id"].as_str() {
+        Some(id) => id,
+        None => return json_error(400, "missing device_id"),
+    };
+    let x = match v["x"].as_f64() {
+        Some(x) => x.clamp(0.0, 100.0),
+        None => return json_error(400, "missing x"),
+    };
+    let y = match v["y"].as_f64() {
+        Some(y) => y.clamp(0.0, 100.0),
+        None => return json_error(400, "missing y"),
+    };
+    match ctx.db.set_device_position(device_id, x, y) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_floor_plan_background(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    match v["background"].as_str() {
+        Some(bg) if !bg.is_empty() => {
+            match ctx.db.set_setting("floor_plan_background", bg) {
+                Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+        _ => {
+            match ctx.db.delete_setting("floor_plan_background") {
+                Ok(()) => json_ok(&serde_json::json!({"cleared": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
     }
 }
 

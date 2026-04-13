@@ -730,6 +730,50 @@
     .install-text { font-size: 0.8rem; color: var(--text-dim); }
     .install-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+    /* ── Floor Plan ────────────────────────────────────────────── */
+    .fp-layout { display: flex; height: calc(100vh - 120px); gap: 0; }
+    .fp-sidebar { width: 220px; flex-shrink: 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg); }
+    .fp-sidebar-header { padding: 0.75rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .fp-device-list { flex: 1; overflow-y: auto; padding: 0.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+    .fp-sidebar-footer { padding: 0.5rem; border-top: 1px solid var(--border); }
+    .fp-canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+    .fp-canvas { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+    .fp-grid-dots { position: absolute; inset: 0; background-image: radial-gradient(circle, rgba(113,113,122,0.15) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; }
+    .fp-empty-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+    .fp-empty-state.hidden { display: none; }
+    .fp-node { position: absolute; transform: translate(-50%, -50%); cursor: move; z-index: 10; user-select: none; }
+    .fp-node.selected { z-index: 20; }
+    .fp-node-body { display: flex; flex-direction: column; align-items: center; gap: 0.15rem; padding: 0.5rem 0.75rem; border-radius: 0.75rem; border: 1px solid var(--border); background: var(--card); transition: border-color 0.15s, box-shadow 0.15s; }
+    .fp-node.selected .fp-node-body { border-color: var(--accent); box-shadow: 0 0 12px rgba(45,212,191,0.1); }
+    .fp-node-body:hover { border-color: #52525b; }
+    .fp-node-row { display: flex; align-items: center; gap: 0.35rem; }
+    .fp-node-val { font-size: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; color: var(--text); }
+    .fp-node-val.offline { color: var(--text-dim); }
+    .fp-node-name { font-size: 0.65rem; color: var(--text-dim); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+    .fp-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+    .fp-dot.online { background: #34d399; }
+    .fp-dot.offline { background: #52525b; }
+    .fp-legend { position: absolute; bottom: 0.75rem; right: 0.75rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.7rem; color: var(--text-dim); background: rgba(9,9,11,0.8); backdrop-filter: blur(4px); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.35rem 0.75rem; }
+    .fp-legend-item { display: flex; align-items: center; gap: 0.3rem; }
+    .fp-counter { position: absolute; top: 0.75rem; right: 0.75rem; font-size: 0.7rem; color: var(--text-dim); background: rgba(9,9,11,0.8); backdrop-filter: blur(4px); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.25rem 0.6rem; }
+    .fp-popup { position: absolute; z-index: 30; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 0.75rem; min-width: 200px; max-width: 280px; }
+    .fp-popup.hidden { display: none; }
+    .fp-unplaced { display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem; border-radius: var(--radius-sm); cursor: grab; background: rgba(39,39,42,0.6); transition: background 0.15s; }
+    .fp-unplaced:hover { background: rgba(63,63,70,0.6); }
+    .fp-unplaced:active { cursor: grabbing; }
+    .fp-unplaced-name { font-size: 0.8rem; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .fp-unplaced-val { font-size: 0.7rem; color: var(--text-dim); flex-shrink: 0; }
+    .fp-bg-btn { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: var(--text-dim); border: none; background: none; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .fp-bg-btn:hover { background: rgba(39,39,42,0.5); color: var(--text); }
+    .fp-bg-btn.danger:hover { color: #f87171; }
+    .fp-remove-btn { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: rgba(248,113,113,0.7); border: none; background: none; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .fp-remove-btn:hover { background: rgba(39,39,42,0.5); color: #f87171; }
+    @media (max-width: 640px) {
+      .fp-layout { flex-direction: column; height: auto; }
+      .fp-sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 180px; }
+      .fp-canvas-wrap { height: 60vh; }
+    }
   </style>
 </head>
 <body>
@@ -747,6 +791,7 @@
         <button class="tab-btn" data-tab="devices">Devices</button>
         <button class="tab-btn" data-tab="metrics">Metrics</button>
         <button class="tab-btn" data-tab="automation">Automation</button>
+        <button class="tab-btn" data-tab="floor-plan">Floor Plan</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
       </nav>
       <span id="viewerBadge" class="hidden" style="font-size:0.7rem;padding:0.2rem 0.6rem;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);border-radius:999px;white-space:nowrap;">Read-only</span>
@@ -769,6 +814,9 @@
       </button>
       <button class="tab-btn" data-tab="automation">
         <span class="tab-icon">&#9881;</span>Automation
+      </button>
+      <button class="tab-btn" data-tab="floor-plan">
+        <span class="tab-icon">&#9634;</span>Plan
       </button>
       <button class="tab-btn" data-tab="settings">
         <span class="tab-icon">&#9776;</span>Settings
@@ -806,6 +854,41 @@
       <div id="automationContent">
         <div class="skeleton skel-card"></div>
         <div class="skeleton skel-card"></div>
+      </div>
+    </div>
+
+    <!-- Floor Plan Tab -->
+    <div class="tab-panel" id="panel-floor-plan">
+      <div id="floorPlanContent">
+        <div class="fp-layout">
+          <div class="fp-sidebar" id="fpSidebar">
+            <div class="fp-sidebar-header">
+              <strong style="font-size:0.85rem;">Devices</strong>
+              <span style="font-size:0.7rem;color:var(--text-dim);">Drag to place</span>
+            </div>
+            <div class="fp-device-list" id="fpDeviceList"></div>
+            <div class="fp-sidebar-footer" id="fpSidebarFooter"></div>
+          </div>
+          <div class="fp-canvas-wrap">
+            <div class="fp-canvas" id="fpCanvas">
+              <div class="fp-grid-dots" id="fpGridDots"></div>
+              <div class="fp-empty-state" id="fpEmptyState">
+                <div style="font-size:2.5rem;opacity:0.3;margin-bottom:0.5rem;">&#9634;</div>
+                <div style="font-size:0.9rem;color:var(--text-dim);">Drag devices from the sidebar to place them</div>
+                <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.3rem;">Tip: set a background image of your floor plan</div>
+              </div>
+              <div id="fpNodes"></div>
+              <div class="fp-popup hidden" id="fpPopup"></div>
+            </div>
+            <div class="fp-legend">
+              <span class="fp-legend-item"><span class="fp-dot online"></span>Online</span>
+              <span class="fp-legend-item"><span class="fp-dot offline"></span>Offline</span>
+              <span style="color:var(--text-dim);">|</span>
+              <span style="color:var(--text-dim);">Click node to interact</span>
+            </div>
+            <div class="fp-counter" id="fpCounter">0 / 0 placed</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1041,6 +1124,7 @@
         if (tab === 'devices') loadDevices();
         if (tab === 'metrics') loadMetrics();
         if (tab === 'automation') loadAutomation();
+        if (tab === 'floor-plan') loadFloorPlan();
         if (tab === 'settings') loadSettings();
       });
     });
@@ -3066,6 +3150,377 @@
     function setMetricsTabRange(hours) {
       metricsTabRange = hours;
       loadMetrics();
+    }
+
+    /* ────────────────────────── Floor Plan ────────────────────────── */
+    var fpPositions = [];
+    var fpBackground = null;
+    var fpSelected = null;
+    var fpDragging = null;
+
+    async function loadFloorPlan() {
+      try {
+        var data = await api('/api/floor-plan');
+        fpPositions = data.positions || [];
+        fpBackground = data.background || null;
+      } catch (e) {
+        fpPositions = [];
+        fpBackground = null;
+      }
+      renderFloorPlan();
+    }
+
+    function renderFloorPlan() {
+      var canvas = document.getElementById('fpCanvas');
+      var deviceList = document.getElementById('fpDeviceList');
+      var footer = document.getElementById('fpSidebarFooter');
+      var counter = document.getElementById('fpCounter');
+      var emptyState = document.getElementById('fpEmptyState');
+      var gridDots = document.getElementById('fpGridDots');
+      var nodesEl = document.getElementById('fpNodes');
+
+      // Background image
+      if (fpBackground) {
+        canvas.style.backgroundImage = 'url(' + fpBackground + ')';
+        gridDots.style.display = 'none';
+      } else {
+        canvas.style.backgroundImage = '';
+        gridDots.style.display = '';
+      }
+
+      // Empty state
+      emptyState.classList.toggle('hidden', fpPositions.length > 0);
+
+      // Counter
+      counter.textContent = fpPositions.length + ' / ' + devices.length + ' placed';
+
+      // Placed IDs
+      var placedIds = {};
+      fpPositions.forEach(function(p) { placedIds[p.device_id] = true; });
+
+      // Unplaced devices in sidebar
+      var unplaced = devices.filter(function(d) { return !placedIds[d.id]; });
+      deviceList.innerHTML = '';
+      if (unplaced.length === 0) {
+        deviceList.innerHTML = '<div style="text-align:center;font-size:0.75rem;color:var(--text-dim);padding:1.5rem 0;">All devices placed</div>';
+      }
+      unplaced.forEach(function(d) {
+        var el = document.createElement('div');
+        el.className = 'fp-unplaced';
+        el.draggable = true;
+        el.dataset.deviceId = d.id;
+        var cap = fpPrimaryCap(d);
+        el.innerHTML =
+          '<span style="color:var(--text-dim);font-size:0.75rem;cursor:grab;">&#9783;</span>' +
+          '<span class="fp-dot ' + (d.online ? 'online' : 'offline') + '"></span>' +
+          '<span class="fp-unplaced-name">' + esc(d.nickname || d.name) + '</span>' +
+          (cap ? '<span class="fp-unplaced-val">' + esc(fpCapSummary(cap)) + '</span>' : '');
+        el.addEventListener('dragstart', function(e) {
+          e.dataTransfer.setData('text/plain', d.id);
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        deviceList.appendChild(el);
+      });
+
+      // Background controls
+      footer.innerHTML = '';
+      var bgBtn = document.createElement('button');
+      bgBtn.className = 'fp-bg-btn';
+      bgBtn.innerHTML = '&#128444; ' + (fpBackground ? 'Change background' : 'Set background');
+      bgBtn.onclick = fpUploadBackground;
+      footer.appendChild(bgBtn);
+      if (fpBackground) {
+        var clearBtn = document.createElement('button');
+        clearBtn.className = 'fp-bg-btn danger';
+        clearBtn.innerHTML = '&#10005; Clear background';
+        clearBtn.onclick = fpClearBackground;
+        footer.appendChild(clearBtn);
+      }
+      if (fpSelected && placedIds[fpSelected]) {
+        var rmBtn = document.createElement('button');
+        rmBtn.className = 'fp-remove-btn';
+        rmBtn.innerHTML = '&#128465; Remove from floor plan';
+        rmBtn.onclick = function() { fpRemoveDevice(fpSelected); };
+        footer.appendChild(rmBtn);
+      }
+
+      // Placed nodes
+      nodesEl.innerHTML = '';
+      fpPositions.forEach(function(pos) {
+        var device = devices.find(function(d) { return d.id === pos.device_id; });
+        if (!device) return;
+        var cap = fpPrimaryCap(device);
+        var node = document.createElement('div');
+        node.className = 'fp-node' + (fpSelected === pos.device_id ? ' selected' : '');
+        node.style.left = pos.x + '%';
+        node.style.top = pos.y + '%';
+        node.innerHTML =
+          '<div class="fp-node-body">' +
+            '<div class="fp-node-row">' +
+              '<span class="fp-dot ' + (device.online ? 'online' : 'offline') + '"></span>' +
+              (cap ? '<span class="fp-node-val' + (device.online ? '' : ' offline') + '">' + esc(fpCapSummary(cap)) + '</span>' : '') +
+            '</div>' +
+            '<span class="fp-node-name">' + esc(device.nickname || device.name) + '</span>' +
+          '</div>';
+
+        node.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          fpSelected = pos.device_id;
+          renderFloorPlan();
+          fpStartNodeDrag(pos.device_id, e);
+        });
+        node.addEventListener('touchstart', function(e) {
+          fpSelected = pos.device_id;
+          renderFloorPlan();
+          fpStartNodeDragTouch(pos.device_id, e);
+        }, { passive: false });
+        nodesEl.appendChild(node);
+      });
+    }
+
+    function fpPrimaryCap(device) {
+      return device.capabilities.find(function(c) { return c.type === 'sensor'; }) ||
+             device.capabilities.find(function(c) { return c.type === 'switch'; }) ||
+             device.capabilities[0] || null;
+    }
+
+    function fpCapSummary(cap) {
+      if (cap.type === 'sensor') {
+        var v = cap.value;
+        return (typeof v === 'number' ? v.toFixed(1) : v) + (cap.unit ? ' ' + cap.unit : '');
+      }
+      if (cap.type === 'switch') return cap.value ? 'ON' : 'OFF';
+      if (cap.type === 'slider') return cap.value + (cap.unit ? ' ' + cap.unit : '');
+      return '';
+    }
+
+    // Canvas drop zone
+    (function() {
+      var canvas = document.getElementById('fpCanvas');
+      canvas.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      });
+      canvas.addEventListener('drop', async function(e) {
+        e.preventDefault();
+        var deviceId = e.dataTransfer.getData('text/plain');
+        if (!deviceId) return;
+        var rect = canvas.getBoundingClientRect();
+        var x = Math.max(2, Math.min(98, ((e.clientX - rect.left) / rect.width) * 100));
+        var y = Math.max(2, Math.min(98, ((e.clientY - rect.top) / rect.height) * 100));
+        fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
+        fpPositions.push({ device_id: deviceId, x: x, y: y });
+        renderFloorPlan();
+        try {
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: x, y: y }) });
+        } catch (e) { loadFloorPlan(); }
+      });
+      canvas.addEventListener('click', function(e) {
+        if (e.target === canvas || e.target.classList.contains('fp-grid-dots') || e.target.classList.contains('fp-empty-state')) {
+          fpSelected = null;
+          document.getElementById('fpPopup').classList.add('hidden');
+          renderFloorPlan();
+        }
+      });
+    })();
+
+    function fpStartNodeDrag(deviceId, startEvt) {
+      var canvas = document.getElementById('fpCanvas');
+      var pos = fpPositions.find(function(p) { return p.device_id === deviceId; });
+      if (!pos) return;
+      var origX = pos.x, origY = pos.y;
+      var sX = startEvt.clientX, sY = startEvt.clientY;
+
+      function onMove(e) {
+        var rect = canvas.getBoundingClientRect();
+        var dx = ((e.clientX - sX) / rect.width) * 100;
+        var dy = ((e.clientY - sY) / rect.height) * 100;
+        pos.x = Math.max(2, Math.min(98, origX + dx));
+        pos.y = Math.max(2, Math.min(98, origY + dy));
+        renderFloorPlan();
+      }
+      async function onUp(e) {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        var rect = canvas.getBoundingClientRect();
+        var dx = ((e.clientX - sX) / rect.width) * 100;
+        var dy = ((e.clientY - sY) / rect.height) * 100;
+        var dist = Math.abs(dx) + Math.abs(dy);
+        if (dist < 0.5) {
+          fpShowPopup(deviceId, e.clientX, e.clientY);
+          return;
+        }
+        try {
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: pos.x, y: pos.y }) });
+        } catch (e) { loadFloorPlan(); }
+      }
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    function fpStartNodeDragTouch(deviceId, startEvt) {
+      startEvt.preventDefault();
+      var canvas = document.getElementById('fpCanvas');
+      var pos = fpPositions.find(function(p) { return p.device_id === deviceId; });
+      if (!pos) return;
+      var origX = pos.x, origY = pos.y;
+      var touch = startEvt.touches[0];
+      var sX = touch.clientX, sY = touch.clientY;
+      var moved = false;
+
+      function onMove(e) {
+        e.preventDefault();
+        moved = true;
+        var t = e.touches[0];
+        var rect = canvas.getBoundingClientRect();
+        var dx = ((t.clientX - sX) / rect.width) * 100;
+        var dy = ((t.clientY - sY) / rect.height) * 100;
+        pos.x = Math.max(2, Math.min(98, origX + dx));
+        pos.y = Math.max(2, Math.min(98, origY + dy));
+        renderFloorPlan();
+      }
+      async function onEnd(e) {
+        window.removeEventListener('touchmove', onMove);
+        window.removeEventListener('touchend', onEnd);
+        if (!moved) {
+          var rect = canvas.getBoundingClientRect();
+          fpShowPopup(deviceId, sX, sY);
+          return;
+        }
+        try {
+          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, x: pos.x, y: pos.y }) });
+        } catch (e) { loadFloorPlan(); }
+      }
+      window.addEventListener('touchmove', onMove, { passive: false });
+      window.addEventListener('touchend', onEnd);
+    }
+
+    function fpShowPopup(deviceId, screenX, screenY) {
+      var popup = document.getElementById('fpPopup');
+      var canvas = document.getElementById('fpCanvas');
+      var device = devices.find(function(d) { return d.id === deviceId; });
+      if (!device) return;
+      var rect = canvas.getBoundingClientRect();
+      var px = screenX - rect.left + 10;
+      var py = screenY - rect.top - 10;
+      if (px + 280 > rect.width) px = rect.width - 290;
+      if (py + 200 > rect.height) py = rect.height - 210;
+      if (px < 10) px = 10;
+      if (py < 10) py = 10;
+
+      var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">' +
+        '<strong style="font-size:0.85rem;">' + esc(device.nickname || device.name) + '</strong>' +
+        '<button onclick="document.getElementById(\'fpPopup\').classList.add(\'hidden\')" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.9rem;">&#10005;</button>' +
+      '</div>';
+
+      // Sensors
+      device.capabilities.forEach(function(cap) {
+        if (cap.type === 'sensor') {
+          var v = cap.value;
+          html += '<div style="display:flex;justify-content:space-between;font-size:0.8rem;padding:0.15rem 0;">' +
+            '<span style="color:var(--text-dim);">' + esc(cap.label) + '</span>' +
+            '<span style="font-family:monospace;color:var(--text);">' + esc(typeof v === 'number' ? v.toFixed(1) : String(v)) + (cap.unit ? ' ' + esc(cap.unit) : '') + '</span>' +
+          '</div>';
+        }
+      });
+
+      // Controls
+      var controllable = device.capabilities.filter(function(c) { return c.type === 'switch' || c.type === 'slider'; });
+      if (controllable.length > 0 && device.online) {
+        html += '<div style="border-top:1px solid var(--border);margin-top:0.4rem;padding-top:0.4rem;">';
+        controllable.forEach(function(cap) {
+          if (cap.type === 'switch') {
+            var checked = cap.value ? 'checked' : '';
+            html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.2rem 0;">' +
+              '<span style="font-size:0.8rem;color:var(--text-dim);">' + esc(cap.label) + '</span>' +
+              '<label style="position:relative;width:36px;height:20px;display:inline-block;cursor:pointer;">' +
+              '<input type="checkbox" ' + checked + ' onchange="fpSendCommand(\'' + esc(device.id) + '\',\'' + esc(cap.id) + '\',this.checked)" style="display:none;">' +
+              '<span style="position:absolute;inset:0;border-radius:10px;background:' + (cap.value ? 'var(--accent)' : '#52525b') + ';transition:background 0.2s;"></span>' +
+              '<span style="position:absolute;top:2px;left:' + (cap.value ? '18px' : '2px') + ';width:16px;height:16px;border-radius:50%;background:white;transition:left 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.3);"></span>' +
+              '</label></div>';
+          }
+          if (cap.type === 'slider') {
+            html += '<div style="padding:0.2rem 0;">' +
+              '<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:0.2rem;">' +
+              '<span style="color:var(--text-dim);">' + esc(cap.label) + '</span>' +
+              '<span style="font-family:monospace;color:var(--text);font-size:0.75rem;">' + esc(String(cap.value)) + (cap.unit ? ' ' + esc(cap.unit) : '') + '</span></div>' +
+              '<input type="range" min="' + (cap.min || 0) + '" max="' + (cap.max || 100) + '" value="' + esc(String(cap.value)) + '" ' +
+              'onchange="fpSendCommand(\'' + esc(device.id) + '\',\'' + esc(cap.id) + '\',Number(this.value))" ' +
+              'style="width:100%;height:6px;accent-color:var(--accent);"></div>';
+          }
+        });
+        html += '</div>';
+      }
+
+      if (!device.online) {
+        html += '<div style="text-align:center;font-size:0.75rem;color:#f87171;opacity:0.7;padding:0.3rem 0;">Device offline</div>';
+      }
+
+      html += '<button onclick="fpNavigateDevice(\'' + esc(device.id) + '\')" style="margin-top:0.4rem;width:100%;text-align:center;font-size:0.75rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:0.3rem 0;">Open device details</button>';
+
+      popup.innerHTML = html;
+      popup.style.left = px + 'px';
+      popup.style.top = py + 'px';
+      popup.classList.remove('hidden');
+    }
+
+    async function fpSendCommand(deviceId, capId, value) {
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/command', {
+          method: 'POST',
+          body: JSON.stringify({ command: 'set', id: capId, value: value })
+        });
+      } catch (e) { console.error('Floor plan command failed:', e); }
+    }
+
+    function fpNavigateDevice(deviceId) {
+      // Switch to devices tab and open detail panel
+      document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+      document.querySelectorAll('.tab-btn[data-tab="devices"]').forEach(function(b) { b.classList.add('active'); });
+      document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+      document.getElementById('panel-devices').classList.add('active');
+      currentTab = 'devices';
+      loadDevices();
+      // Open the detail panel after a tick
+      setTimeout(function() { if (typeof openDeviceDetail === 'function') openDeviceDetail(deviceId); }, 300);
+    }
+
+    async function fpRemoveDevice(deviceId) {
+      fpPositions = fpPositions.filter(function(p) { return p.device_id !== deviceId; });
+      fpSelected = null;
+      document.getElementById('fpPopup').classList.add('hidden');
+      renderFloorPlan();
+      try {
+        await api('/api/floor-plan/position/' + encodeURIComponent(deviceId), { method: 'DELETE' });
+      } catch (e) { loadFloorPlan(); }
+    }
+
+    function fpUploadBackground() {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async function() {
+        var file = input.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = async function() {
+          fpBackground = reader.result;
+          renderFloorPlan();
+          try {
+            await api('/api/floor-plan/background', { method: 'PUT', body: JSON.stringify({ background: fpBackground }) });
+          } catch (e) { console.error('Failed to save background:', e); }
+        };
+        reader.readAsDataURL(file);
+      };
+      input.click();
+    }
+
+    async function fpClearBackground() {
+      fpBackground = null;
+      renderFloorPlan();
+      try {
+        await api('/api/floor-plan/background', { method: 'PUT', body: JSON.stringify({ background: '' }) });
+      } catch (e) { console.error('Failed to clear background:', e); }
     }
 
     /* ────────────────────────── Settings ────────────────────────── */

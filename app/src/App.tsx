@@ -13,6 +13,7 @@ import Scenes from "./pages/Scenes";
 import Automation from "./pages/Automation";
 import TerminalPage from "./pages/TerminalPage";
 import Metrics from "./pages/Metrics";
+import FloorPlan from "./pages/FloorPlan";
 import Settings from "./pages/settings";
 
 function FirstRunRedirect({ children }: { children: React.ReactNode }) {
@@ -65,6 +66,7 @@ function App() {
           <Route path="/scenes" element={<Scenes />} />
           <Route path="/automation" element={<Automation />} />
           <Route path="/terminal" element={<TerminalPage />} />
+          <Route path="/floor-plan" element={<FloorPlan />} />
           <Route path="/settings" element={<Settings />} />
         </Routes>
       </FirstRunRedirect>

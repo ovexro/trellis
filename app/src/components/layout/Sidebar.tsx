@@ -10,6 +10,7 @@ import {
   Zap,
   GitBranch,
   TrendingUp,
+  Map,
   Settings,
   Radio,
   Sparkles,
@@ -28,6 +29,7 @@ const navItems = [
   { to: "/serial", icon: Terminal, label: "Serial" },
   { to: "/terminal", icon: TerminalSquare, label: "Terminal" },
   { to: "/ota", icon: Upload, label: "OTA" },
+  { to: "/floor-plan", icon: Map, label: "Floor Plan" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 

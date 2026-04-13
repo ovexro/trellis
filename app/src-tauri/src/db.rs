@@ -9,6 +9,13 @@ pub struct Database {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DevicePosition {
+    pub device_id: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MetricPoint {
     pub value: f64,
     pub timestamp: String,
@@ -182,6 +189,10 @@ impl Database {
         conn.execute("DELETE FROM alerts WHERE device_id = ?1", rusqlite::params![device_id])
             .map_err(|e| e.to_string())?;
         conn.execute("DELETE FROM device_logs WHERE device_id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM favorite_capabilities WHERE device_id = ?1", rusqlite::params![device_id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM device_positions WHERE device_id = ?1", rusqlite::params![device_id])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -713,6 +724,45 @@ impl Database {
             result.push(row.map_err(|e| e.to_string())?);
         }
         Ok(result)
+    }
+
+    // ─── Floor plan positions ────────────────────────────────────────────
+
+    pub fn get_device_positions(&self) -> Result<Vec<DevicePosition>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT device_id, x, y FROM device_positions")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DevicePosition {
+                device_id: row.get(0)?,
+                x: row.get(1)?,
+                y: row.get(2)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(result)
+    }
+
+    pub fn set_device_position(&self, device_id: &str, x: f64, y: f64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_positions (device_id, x, y) VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_id) DO UPDATE SET x = ?2, y = ?3",
+            rusqlite::params![device_id, x, y],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn remove_device_position(&self, device_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM device_positions WHERE device_id = ?1",
+            rusqlite::params![device_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ─── Settings ────────────────────────────────────────────────────────
@@ -1263,6 +1313,16 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             device_id TEXT NOT NULL,
             capability_id TEXT NOT NULL,
             PRIMARY KEY (device_id, capability_id),
+            FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+        );
+    ").map_err(|e| e.to_string())?;
+
+    // Floor plan: device positions on the spatial canvas (post-v0.6.0)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS device_positions (
+            device_id TEXT NOT NULL PRIMARY KEY,
+            x REAL NOT NULL DEFAULT 0.0,
+            y REAL NOT NULL DEFAULT 0.0,
             FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
         );
     ").map_err(|e| e.to_string())?;
