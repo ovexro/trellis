@@ -36,7 +36,10 @@ use sha2::Sha256;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
+use tauri::Manager;
+
 use crate::connection::ConnectionManager;
+use crate::db::Database;
 use crate::discovery::Discovery;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -88,6 +91,11 @@ pub struct SinricDeviceMapping {
     /// capability of the matching type (backward-compatible default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trellis_capability_id: Option<String>,
+    /// When set, a `setPowerState(On)` command triggers this scene instead
+    /// of dispatching to a device capability. `trellis_device_id` is ignored
+    /// when `scene_id` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_id: Option<i64>,
 }
 
 /// Public-facing config view. The api_secret is redacted — same pattern as
@@ -169,6 +177,7 @@ pub struct SinricBridge {
     outgoing_tx: Arc<Mutex<Option<mpsc::Sender<OutgoingEvent>>>>,
     connection_manager: Arc<ConnectionManager>,
     discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
+    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
 }
 
 impl SinricBridge {
@@ -181,11 +190,16 @@ impl SinricBridge {
             outgoing_tx: Arc::new(Mutex::new(None)),
             connection_manager,
             discovery: Arc::new(Mutex::new(None)),
+            app_handle: Arc::new(Mutex::new(None)),
         }
     }
 
     pub fn set_discovery(&self, discovery: Arc<Discovery>) {
         *self.discovery.lock().unwrap() = Some(discovery);
+    }
+
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.lock().unwrap() = Some(handle);
     }
 
     pub fn get_config(&self) -> SinricConfig {
@@ -261,6 +275,7 @@ impl SinricBridge {
         let config = self.config.clone();
         let conn_mgr = self.connection_manager.clone();
         let discovery = self.discovery.clone();
+        let app_handle = self.app_handle.clone();
 
         {
             let mut s = status.lock().unwrap();
@@ -270,7 +285,7 @@ impl SinricBridge {
         }
 
         let handle = thread::spawn(move || {
-            sinric_worker(config, status, stop_flag, rx, conn_mgr, discovery);
+            sinric_worker(config, status, stop_flag, rx, conn_mgr, discovery, app_handle);
         });
 
         *self.worker.lock().unwrap() = Some(handle);
@@ -481,6 +496,7 @@ fn sinric_worker(
     rx: mpsc::Receiver<OutgoingEvent>,
     conn_mgr: Arc<ConnectionManager>,
     discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
+    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
 ) {
     let mut backoff = Duration::from_secs(2);
 
@@ -538,6 +554,7 @@ fn sinric_worker(
                     &config,
                     &conn_mgr,
                     &discovery,
+                    &app_handle,
                 );
 
                 let _ = ws.close(None);
@@ -571,6 +588,7 @@ fn message_loop(
     config: &Arc<Mutex<SinricConfig>>,
     conn_mgr: &Arc<ConnectionManager>,
     discovery: &Arc<Mutex<Option<Arc<Discovery>>>>,
+    app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
 ) {
     loop {
         if *stop_flag.lock().unwrap() {
@@ -581,7 +599,7 @@ fn message_loop(
         match ws.read() {
             Ok(Message::Text(text)) => {
                 status.lock().unwrap().messages_received += 1;
-                handle_incoming(&text, config, conn_mgr, discovery, ws, status);
+                handle_incoming(&text, config, conn_mgr, discovery, ws, status, app_handle);
             }
             Ok(Message::Ping(data)) => {
                 let _ = ws.send(Message::Pong(data));
@@ -650,6 +668,7 @@ fn handle_incoming(
     discovery: &Arc<Mutex<Option<Arc<Discovery>>>>,
     ws: &mut WebSocket<MaybeTlsStream<std::net::TcpStream>>,
     status: &Arc<Mutex<SinricStatus>>,
+    app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
 ) {
     let envelope: SinricEnvelope = match serde_json::from_str(text) {
         Ok(v) => v,
@@ -724,6 +743,48 @@ fn handle_incoming(
             return;
         }
     };
+
+    // Scene-mapped device: setPowerState(On) triggers the scene.
+    let scene_id = mapping.and_then(|m| m.scene_id);
+    if let Some(sid) = scene_id {
+        if action == "setPowerState" {
+            let state_str = payload
+                .get("value")
+                .and_then(|v| v.get("state"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Off");
+            let on = state_str == "On";
+
+            let (success, response_value) = if on {
+                match run_scene_from_sinric(sid, conn_mgr, app_handle) {
+                    Ok(()) => {
+                        log::info!("[Sinric] Ran scene {} for Sinric device {}", sid, device_id);
+                        (true, json!({"state": "On"}))
+                    }
+                    Err(e) => {
+                        log::warn!("[Sinric] Failed to run scene {}: {}", sid, e);
+                        (false, json!({"state": "On"}))
+                    }
+                }
+            } else {
+                // "Off" is a no-op for scenes — respond success so Alexa doesn't complain
+                (true, json!({"state": "Off"}))
+            };
+
+            let response = build_response(
+                action, device_id, reply_token, success, &response_value, &cfg.api_secret,
+            );
+            if let Some(resp_text) = response {
+                match ws.send(Message::Text(resp_text)) {
+                    Ok(()) => { status.lock().unwrap().messages_sent += 1; }
+                    Err(e) => { log::warn!("[Sinric] Failed to send response: {}", e); }
+                }
+            }
+            return;
+        }
+        // Non-setPowerState actions don't apply to scenes — ignore
+        return;
+    }
 
     // Check that the device is online before trying to dispatch
     let device_online = conn_mgr.is_connected(&trellis_device_id);
@@ -913,6 +974,55 @@ fn handle_incoming(
             }
         }
     }
+}
+
+// ─── Scene execution from Sinric ─────────────────────────────────────────────
+
+fn run_scene_from_sinric(
+    scene_id: i64,
+    conn_mgr: &Arc<ConnectionManager>,
+    app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
+) -> Result<(), String> {
+    let handle = app_handle.lock().unwrap();
+    let handle = handle.as_ref().ok_or("App handle not available")?;
+    let db = handle.try_state::<Database>()
+        .ok_or("Database not available")?;
+
+    let scene = db.get_scene(scene_id)?
+        .ok_or_else(|| format!("Scene {} not found", scene_id))?;
+
+    for action in &scene.actions {
+        let saved = match db.get_saved_device(&action.device_id) {
+            Ok(Some(d)) => d,
+            _ => {
+                log::warn!("[Sinric] Scene action: device {} not found, skipping", action.device_id);
+                continue;
+            }
+        };
+
+        let value: Value = if action.value == "true" {
+            Value::Bool(true)
+        } else if action.value == "false" {
+            Value::Bool(false)
+        } else if let Ok(n) = action.value.parse::<f64>() {
+            json!(n)
+        } else {
+            Value::String(action.value.clone())
+        };
+
+        let cmd = json!({
+            "command": "set",
+            "id": action.capability_id,
+            "value": value
+        });
+        let msg = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
+        let ws_port = saved.port + 1;
+
+        if let Err(e) = conn_mgr.send_to_device(&action.device_id, &saved.ip, ws_port, &msg) {
+            log::warn!("[Sinric] Scene action failed for {}: {}", action.device_id, e);
+        }
+    }
+    Ok(())
 }
 
 // ─── Outgoing message construction ───────────────────────────────────────────

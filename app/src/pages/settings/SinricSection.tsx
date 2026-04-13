@@ -5,6 +5,11 @@ import type { SinricConfig, SinricConfigPublic, SinricStatus, SinricDeviceMappin
 import { DEFAULT_SINRIC_CONFIG } from "./types";
 import type { Device } from "@/lib/types";
 
+interface SceneInfo {
+  id: number;
+  name: string;
+}
+
 export default function SinricSection() {
   const [config, setConfig] = useState<SinricConfig>(DEFAULT_SINRIC_CONFIG);
   const [hasSecret, setHasSecret] = useState(false);
@@ -12,6 +17,7 @@ export default function SinricSection() {
   const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [scenes, setScenes] = useState<SceneInfo[]>([]);
 
   useEffect(() => {
     invoke<SinricConfigPublic>("get_sinric_config")
@@ -24,6 +30,10 @@ export default function SinricSection() {
 
     invoke<Device[]>("get_devices")
       .then(setDevices)
+      .catch(() => {});
+
+    invoke<SceneInfo[]>("get_scenes")
+      .then(setScenes)
       .catch(() => {});
 
     refreshStatus();
@@ -105,9 +115,13 @@ export default function SinricSection() {
     });
   };
 
-  const updateMapping = (index: number, field: keyof SinricDeviceMapping, value: string) => {
+  const updateMapping = (index: number, field: keyof SinricDeviceMapping, value: string | number | undefined) => {
     const updated = [...config.device_mappings];
-    updated[index] = { ...updated[index], [field]: value };
+    if (value === undefined) {
+      delete (updated[index] as Record<string, unknown>)[field];
+    } else {
+      updated[index] = { ...updated[index], [field]: value };
+    }
     // Clear capability selection when device changes
     if (field === "trellis_device_id") {
       delete updated[index].trellis_capability_id;
@@ -115,6 +129,23 @@ export default function SinricSection() {
     // Treat empty capability as "auto" (omit from payload)
     if (field === "trellis_capability_id" && !value) {
       delete updated[index].trellis_capability_id;
+    }
+    setConfig({ ...config, device_mappings: updated });
+  };
+
+  const setMappingType = (index: number, type: "device" | "scene") => {
+    const updated = [...config.device_mappings];
+    if (type === "scene") {
+      updated[index] = {
+        sinric_device_id: updated[index].sinric_device_id,
+        trellis_device_id: "",
+        scene_id: scenes.length > 0 ? scenes[0].id : undefined,
+      };
+    } else {
+      updated[index] = {
+        sinric_device_id: updated[index].sinric_device_id,
+        trellis_device_id: "",
+      };
     }
     setConfig({ ...config, device_mappings: updated });
   };
@@ -226,7 +257,7 @@ export default function SinricSection() {
         {/* Device mappings */}
         <div className="border border-zinc-800 rounded-lg p-3 space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-500">Device mappings</label>
+            <label className="text-xs text-zinc-500">Device &amp; scene mappings</label>
             <button
               type="button"
               onClick={addMapping}
@@ -237,62 +268,98 @@ export default function SinricSection() {
           </div>
           {config.device_mappings.length === 0 && (
             <p className="text-xs text-zinc-600 italic">
-              No mappings yet. Create devices on sinric.pro, then map them to your Trellis devices here.
+              No mappings yet. Create devices on sinric.pro, then map them to your Trellis devices or scenes here.
             </p>
           )}
           {config.device_mappings.map((mapping, i) => {
+            const isScene = mapping.scene_id != null;
             const caps = getMappableCapabilities(mapping.trellis_device_id);
             return (
-              <div key={i} className="grid grid-cols-[1fr_1fr_1fr_auto] gap-2 items-end">
-                <div>
-                  <label className="text-xs text-zinc-600 block mb-1">Sinric Device ID</label>
-                  <input
-                    type="text"
-                    value={mapping.sinric_device_id}
-                    onChange={(e) => updateMapping(i, "sinric_device_id", e.target.value)}
-                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 font-mono"
-                    placeholder="Sinric device ID"
-                  />
-                </div>
-                <div>
-                  <label className="text-xs text-zinc-600 block mb-1">Trellis Device</label>
-                  <select
-                    value={mapping.trellis_device_id}
-                    onChange={(e) => updateMapping(i, "trellis_device_id", e.target.value)}
-                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+              <div key={i} className="space-y-1">
+                <div className="grid grid-cols-[1fr_auto_1fr_1fr_auto] gap-2 items-end">
+                  <div>
+                    <label className="text-xs text-zinc-600 block mb-1">Sinric Device ID</label>
+                    <input
+                      type="text"
+                      value={mapping.sinric_device_id}
+                      onChange={(e) => updateMapping(i, "sinric_device_id", e.target.value)}
+                      className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 font-mono"
+                      placeholder="Sinric device ID"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-zinc-600 block mb-1">Type</label>
+                    <select
+                      value={isScene ? "scene" : "device"}
+                      onChange={(e) => setMappingType(i, e.target.value as "device" | "scene")}
+                      className="px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+                    >
+                      <option value="device">Device</option>
+                      <option value="scene">Scene</option>
+                    </select>
+                  </div>
+                  {isScene ? (
+                    <>
+                      <div className="col-span-2">
+                        <label className="text-xs text-zinc-600 block mb-1">Scene</label>
+                        <select
+                          value={mapping.scene_id ?? ""}
+                          onChange={(e) => updateMapping(i, "scene_id", e.target.value ? Number(e.target.value) : undefined)}
+                          className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+                        >
+                          <option value="">— select —</option>
+                          {scenes.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="text-xs text-zinc-600 block mb-1">Trellis Device</label>
+                        <select
+                          value={mapping.trellis_device_id}
+                          onChange={(e) => updateMapping(i, "trellis_device_id", e.target.value)}
+                          className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500"
+                        >
+                          <option value="">— select —</option>
+                          {devices.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name} ({d.id})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-zinc-600 block mb-1">Capability</label>
+                        <select
+                          value={mapping.trellis_capability_id ?? ""}
+                          onChange={(e) => updateMapping(i, "trellis_capability_id", e.target.value)}
+                          disabled={!mapping.trellis_device_id}
+                          className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 disabled:opacity-40"
+                        >
+                          <option value="">Auto (first match)</option>
+                          {caps.map((c) => (
+                            <option key={c.id} value={c.id}>
+                              [{capTypeBadge[c.type] ?? c.type}] {c.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeMapping(i)}
+                    className="px-2 py-1.5 bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 rounded text-xs transition-colors"
+                    title="Remove mapping"
                   >
-                    <option value="">— select —</option>
-                    {devices.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} ({d.id})
-                      </option>
-                    ))}
-                  </select>
+                    ×
+                  </button>
                 </div>
-                <div>
-                  <label className="text-xs text-zinc-600 block mb-1">Capability</label>
-                  <select
-                    value={mapping.trellis_capability_id ?? ""}
-                    onChange={(e) => updateMapping(i, "trellis_capability_id", e.target.value)}
-                    disabled={!mapping.trellis_device_id}
-                    className="w-full px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded text-xs text-zinc-200 focus:outline-none focus:border-trellis-500 disabled:opacity-40"
-                  >
-                    <option value="">Auto (first match)</option>
-                    {caps.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        [{capTypeBadge[c.type] ?? c.type}] {c.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeMapping(i)}
-                  className="px-2 py-1.5 bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 rounded text-xs transition-colors"
-                  title="Remove mapping"
-                >
-                  ×
-                </button>
               </div>
             );
           })}
@@ -322,12 +389,12 @@ export default function SinricSection() {
         )}
 
         <p className="text-xs text-zinc-600">
-          Bridges your Trellis devices to Alexa and Google Home via Sinric Pro.
+          Bridges your Trellis devices and scenes to Alexa and Google Home via Sinric Pro.
           Create devices on{" "}
           <a href="https://sinric.pro" target="_blank" rel="noopener" className="text-trellis-500 hover:underline">sinric.pro</a>,
-          copy the APP_KEY and APP_SECRET from the dashboard, then map each Sinric device to a Trellis device above.
-          Optionally pick a specific capability — otherwise the bridge auto-discovers the first match.
-          Switches map to power on/off, sliders to dimmer range, color pickers to RGB light, and sensors report temperature readings.
+          copy the APP_KEY and APP_SECRET from the dashboard, then map each Sinric device to a Trellis device or scene above.
+          Device mappings: switches map to power on/off, sliders to dimmer range, color pickers to RGB light, sensors to temperature.
+          Scene mappings: "turn on" triggers the scene, "turn off" is a no-op.
         </p>
       </div>
     </div>

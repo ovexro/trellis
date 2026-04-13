@@ -176,8 +176,9 @@ pub fn run() {
                 .expect("Failed to initialize SecretStore — both OS keyring and file fallback are unavailable");
             app.manage(secret_store.clone());
 
-            // Set app handle for connection manager
+            // Set app handle for connection manager and Sinric bridge
             connection_manager.set_app_handle(app.handle().clone());
+            sinric_bridge.set_app_handle(app.handle().clone());
 
             // Hydrate saved devices from SQLite into the in-memory map BEFORE
             // starting background discovery. This makes saved devices visible

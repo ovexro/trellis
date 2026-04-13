@@ -61,6 +61,7 @@ export type SinricDeviceMapping = {
   sinric_device_id: string;
   trellis_device_id: string;
   trellis_capability_id?: string;
+  scene_id?: number;
 };
 
 export type SinricConfig = {
