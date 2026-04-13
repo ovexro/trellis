@@ -1203,6 +1203,15 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_create_scene(ctx, &req.body)
         }
 
+        ("PUT", p) if p.starts_with("/api/scenes/") && !p["/api/scenes/".len()..].contains('/') => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id: i64 = match p["/api/scenes/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid scene ID"),
+            };
+            handle_update_scene(ctx, id, &req.body)
+        }
+
         ("DELETE", p) if p.starts_with("/api/scenes/") && !p["/api/scenes/".len()..].contains('/') => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/scenes/".len()..].parse() {
@@ -1749,6 +1758,32 @@ fn handle_create_scene(ctx: &ApiContext, body: &str) -> (u16, String) {
     }).collect();
     match ctx.db.create_scene(name, &parsed) {
         Ok(id) => json_created(&serde_json::json!({"id": id})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_update_scene(ctx: &ApiContext, id: i64, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = match v["name"].as_str() {
+        Some(n) if !n.trim().is_empty() => n,
+        _ => return json_error(400, "Scene name is required"),
+    };
+    let actions = match v["actions"].as_array() {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => return json_error(400, "Scene must have at least one action"),
+    };
+    let parsed: Vec<crate::db::SceneActionInput> = actions.iter().map(|a| {
+        crate::db::SceneActionInput {
+            device_id: a["device_id"].as_str().unwrap_or("").to_string(),
+            capability_id: a["capability_id"].as_str().unwrap_or("").to_string(),
+            value: a["value"].as_str().unwrap_or("").to_string(),
+        }
+    }).collect();
+    match ctx.db.update_scene(id, name, &parsed) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
 }

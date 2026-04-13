@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Zap, Plus, Trash2, Play, Loader2 } from "lucide-react";
+import { Zap, Plus, Trash2, Play, Loader2, Pencil } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface SceneAction {
@@ -21,6 +21,7 @@ export default function Scenes() {
   const [scenes, setScenes] = useState<Scene[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [newName, setNewName] = useState("");
   const [newActions, setNewActions] = useState<SceneAction[]>([]);
   const [running, setRunning] = useState<number | null>(null);
@@ -55,16 +56,39 @@ export default function Scenes() {
     ]);
   };
 
-  const createScene = async () => {
+  const openCreate = () => {
+    setEditingId(null);
+    setNewName("");
+    setNewActions([]);
+    setEditing(true);
+  };
+
+  const openEdit = (scene: Scene) => {
+    setEditingId(scene.id);
+    setNewName(scene.name);
+    setNewActions(scene.actions.map((a) => ({ ...a })));
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setEditingId(null);
+    setNewName("");
+    setNewActions([]);
+  };
+
+  const saveScene = async () => {
     if (!newName.trim() || newActions.length === 0) return;
     try {
-      await invoke("create_scene", { name: newName.trim(), actions: newActions });
-      setNewName("");
-      setNewActions([]);
-      setEditing(false);
+      if (editingId !== null) {
+        await invoke("update_scene", { id: editingId, name: newName.trim(), actions: newActions });
+      } else {
+        await invoke("create_scene", { name: newName.trim(), actions: newActions });
+      }
+      cancelEdit();
       await loadScenes();
     } catch (err) {
-      console.error("Failed to create scene:", err);
+      console.error("Failed to save scene:", err);
     }
   };
 
@@ -72,6 +96,7 @@ export default function Scenes() {
     if (!confirm(`Delete scene "${scene.name}"? This cannot be undone.`)) return;
     try {
       await invoke("delete_scene", { id: scene.id });
+      if (editingId === scene.id) cancelEdit();
       await loadScenes();
     } catch (err) {
       console.error("Failed to delete scene:", err);
@@ -106,7 +131,7 @@ export default function Scenes() {
           </p>
         </div>
         <button
-          onClick={() => setEditing(!editing)}
+          onClick={openCreate}
           className="flex items-center gap-2 px-3 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors"
         >
           <Plus size={14} />
@@ -127,6 +152,9 @@ export default function Scenes() {
 
           {newActions.map((action, i) => {
             const device = devices.find((d) => d.id === action.device_id);
+            const deviceOptions = editingId !== null
+              ? devices.filter((d) => d.online || d.id === action.device_id)
+              : onlineDevices;
             return (
               <div key={i} className="flex items-center gap-2 mb-2 text-xs">
                 <select
@@ -144,8 +172,8 @@ export default function Scenes() {
                   }}
                   className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-2 py-1.5 text-zinc-300"
                 >
-                  {onlineDevices.map((d) => (
-                    <option key={d.id} value={d.id}>{d.name}</option>
+                  {deviceOptions.map((d) => (
+                    <option key={d.id} value={d.id}>{d.name}{!d.online ? " (offline)" : ""}</option>
                   ))}
                 </select>
                 <select
@@ -189,8 +217,10 @@ export default function Scenes() {
               + Add action
             </button>
             <div className="flex-1" />
-            <button onClick={() => { setEditing(false); setNewName(""); setNewActions([]); }} className="px-3 py-1.5 text-zinc-500 text-xs">Cancel</button>
-            <button onClick={createScene} className="px-3 py-1.5 bg-trellis-500 text-white rounded-lg text-xs">Create</button>
+            <button onClick={cancelEdit} className="px-3 py-1.5 text-zinc-500 text-xs">Cancel</button>
+            <button onClick={saveScene} className="px-3 py-1.5 bg-trellis-500 text-white rounded-lg text-xs">
+              {editingId !== null ? "Save" : "Create"}
+            </button>
           </div>
         </div>
       )}
@@ -220,6 +250,13 @@ export default function Scenes() {
                 </p>
               </div>
               <div className="flex gap-2">
+                <button
+                  onClick={() => openEdit(scene)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-lg text-xs transition-colors"
+                >
+                  <Pencil size={12} />
+                  Edit
+                </button>
                 <button
                   onClick={() => runScene(scene)}
                   disabled={running === scene.id}

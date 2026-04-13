@@ -151,6 +151,7 @@ pub fn run() {
             test_sinric_connection,
             create_scene,
             get_scenes,
+            update_scene,
             delete_scene,
             run_scene,
         ])

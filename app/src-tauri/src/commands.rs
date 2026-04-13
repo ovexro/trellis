@@ -1324,6 +1324,19 @@ pub fn get_scenes(db: State<'_, Database>) -> Result<Vec<Scene>, String> {
 }
 
 #[tauri::command]
+pub fn update_scene(
+    db: State<'_, Database>, id: i64, name: String, actions: Vec<SceneActionInput>,
+) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Scene name cannot be empty".to_string());
+    }
+    if actions.is_empty() {
+        return Err("Scene must have at least one action".to_string());
+    }
+    db.update_scene(id, &name, &actions)
+}
+
+#[tauri::command]
 pub fn delete_scene(db: State<'_, Database>, id: i64) -> Result<(), String> {
     db.delete_scene(id)
 }

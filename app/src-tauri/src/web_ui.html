@@ -3073,6 +3073,8 @@
     }
 
     /* ────────────────────────── Scenes Tab ────────────────────────── */
+    let editingSceneId = null;
+
     async function loadScenes() {
       const container = document.getElementById('scenesContent');
       if (!container) return;
@@ -3088,13 +3090,17 @@
             const devName = getDeviceNameById(a.device_id);
             return `${esc(devName)}.${esc(a.capability_id)} = ${esc(String(a.value))}`;
           }).join(', ');
-          return `<div class="auto-card">
+          const editBtn = isViewer ? '' : `<button onclick="openEditScene(${s.id})" class="auto-card-badge" style="cursor:pointer;border:none;font-size:0.75rem;background:var(--surface-alt);color:var(--text-dim);">&#9998; Edit</button>`;
+          return `<div class="auto-card" id="scene-card-${s.id}">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div>
                 <div class="auto-card-title">${esc(s.name)}</div>
                 <div class="auto-card-detail">${s.actions.length} action${s.actions.length !== 1 ? 's' : ''} &middot; ${actionSummary}</div>
               </div>
-              <button onclick="runSceneFromDashboard(${s.id})" class="auto-card-badge badge-enabled" style="cursor:pointer;border:none;font-size:0.75rem;">&#9654; Run</button>
+              <div style="display:flex;gap:0.4rem;align-items:center;">
+                ${editBtn}
+                <button onclick="runSceneFromDashboard(${s.id})" class="auto-card-badge badge-enabled" style="cursor:pointer;border:none;font-size:0.75rem;">&#9654; Run</button>
+              </div>
             </div>
           </div>`;
         }).join('');
@@ -3102,6 +3108,101 @@
         container.innerHTML = html;
       } catch (e) {
         container.innerHTML = renderEmpty('Could not load scenes', e.message);
+      }
+    }
+
+    async function openEditScene(id) {
+      if (isViewer) return;
+      try {
+        const scenes = await api('/api/scenes');
+        const scene = scenes.find(s => s.id === id);
+        if (!scene) { showToast('Scene not found', 'error'); return; }
+        editingSceneId = id;
+        const card = document.getElementById('scene-card-' + id);
+        if (!card) return;
+        let html = `<div style="padding:0.5rem 0;">
+          <input id="scene-edit-name" value="${esc(scene.name)}" placeholder="Scene name" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.6rem;color:var(--text);font-size:0.8rem;margin-bottom:0.5rem;" />
+          <div id="scene-edit-actions">`;
+        scene.actions.forEach((a, i) => {
+          html += renderSceneActionRow(i, a.device_id, a.capability_id, a.value);
+        });
+        html += `</div>
+          <div style="display:flex;gap:0.4rem;margin-top:0.5rem;">
+            <button onclick="addSceneEditAction()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);cursor:pointer;">+ Add action</button>
+            <div style="flex:1;"></div>
+            <button onclick="cancelEditScene()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:none;border:none;color:var(--text-dim);cursor:pointer;">Cancel</button>
+            <button onclick="saveEditScene()" style="font-size:0.7rem;padding:0.3rem 0.6rem;background:var(--accent);border:none;border-radius:6px;color:#fff;cursor:pointer;">Save</button>
+          </div>
+        </div>`;
+        card.innerHTML = html;
+      } catch (e) {
+        showToast('Failed to load scene: ' + e.message, 'error');
+      }
+    }
+
+    function renderSceneActionRow(idx, deviceId, capId, value) {
+      const devOptions = devices.filter(d => d.online || d.id === deviceId).map(d =>
+        `<option value="${esc(d.id)}" ${d.id === deviceId ? 'selected' : ''}>${esc(d.name || d.id)}${!d.online ? ' (offline)' : ''}</option>`
+      ).join('');
+      const dev = devices.find(d => d.id === deviceId);
+      const capOptions = (dev ? dev.capabilities.filter(c => c.type !== 'sensor') : []).map(c =>
+        `<option value="${esc(c.id)}" ${c.id === capId ? 'selected' : ''}>${esc(c.label || c.id)}</option>`
+      ).join('');
+      return `<div class="scene-action-row" style="display:flex;gap:0.3rem;margin-bottom:0.3rem;align-items:center;" data-idx="${idx}">
+        <select onchange="onSceneDeviceChange(this)" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0.3rem;color:var(--text);font-size:0.7rem;">${devOptions}</select>
+        <select class="scene-cap-select" style="flex:1;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0.3rem;color:var(--text);font-size:0.7rem;">${capOptions}</select>
+        <input type="text" value="${esc(String(value))}" placeholder="value" style="width:4rem;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0.3rem;color:var(--text);font-size:0.7rem;" />
+        <button onclick="this.closest('.scene-action-row').remove()" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.8rem;">&times;</button>
+      </div>`;
+    }
+
+    function onSceneDeviceChange(sel) {
+      const row = sel.closest('.scene-action-row');
+      const capSelect = row.querySelector('.scene-cap-select');
+      const dev = devices.find(d => d.id === sel.value);
+      const caps = dev ? dev.capabilities.filter(c => c.type !== 'sensor') : [];
+      capSelect.innerHTML = caps.map(c => `<option value="${esc(c.id)}">${esc(c.label || c.id)}</option>`).join('');
+    }
+
+    function addSceneEditAction() {
+      const container = document.getElementById('scene-edit-actions');
+      if (!container) return;
+      const onlineDev = devices.find(d => d.online);
+      if (!onlineDev) { showToast('No online devices', 'error'); return; }
+      const cap = onlineDev.capabilities.find(c => c.type !== 'sensor') || onlineDev.capabilities[0];
+      const idx = container.querySelectorAll('.scene-action-row').length;
+      container.insertAdjacentHTML('beforeend', renderSceneActionRow(idx, onlineDev.id, cap ? cap.id : '', cap ? String(cap.value != null ? cap.value : '') : ''));
+    }
+
+    function cancelEditScene() {
+      editingSceneId = null;
+      loadScenes();
+    }
+
+    async function saveEditScene() {
+      const nameInput = document.getElementById('scene-edit-name');
+      if (!nameInput) return;
+      const name = nameInput.value.trim();
+      if (!name) { showToast('Scene name is required', 'error'); return; }
+      const rows = document.querySelectorAll('#scene-edit-actions .scene-action-row');
+      if (!rows.length) { showToast('Scene must have at least one action', 'error'); return; }
+      const actions = [];
+      rows.forEach(row => {
+        const selects = row.querySelectorAll('select');
+        const input = row.querySelector('input');
+        actions.push({ device_id: selects[0].value, capability_id: selects[1].value, value: input.value });
+      });
+      try {
+        await api('/api/scenes/' + editingSceneId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, actions })
+        });
+        editingSceneId = null;
+        showToast('Scene updated', 'success');
+        loadScenes();
+      } catch (e) {
+        showToast('Failed to update scene: ' + e.message, 'error');
       }
     }
 

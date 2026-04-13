@@ -1211,6 +1211,24 @@ impl Database {
         Ok(Some(Scene { id: scene_id, name, created_at, actions }))
     }
 
+    pub fn update_scene(&self, id: i64, name: &str, actions: &[SceneActionInput]) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE scenes SET name = ?1 WHERE id = ?2",
+            rusqlite::params![name, id],
+        ).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM scene_actions WHERE scene_id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        for (i, action) in actions.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO scene_actions (scene_id, device_id, capability_id, value, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![id, action.device_id, action.capability_id, action.value, i as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn delete_scene(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM scene_actions WHERE scene_id = ?1", rusqlite::params![id])
