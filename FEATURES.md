@@ -237,8 +237,9 @@ Single source of truth for all features. Check items as they are implemented and
 
 - [x] Multi-action scene creation (set multiple devices at once)
 - [x] One-click scene execution (sequential command dispatch)
-- [x] Scene persistence (localStorage)
+- [x] ~~Scene persistence (localStorage)~~ Replaced by SQLite backend below
 - [x] Device/capability/value selector per action
+- [x] **Backend-backed scenes (post-v0.7.0)** — scenes persisted in SQLite (`scenes` + `scene_actions` tables) instead of localStorage. Full CRUD via Tauri commands (`create_scene`, `get_scenes`, `delete_scene`, `run_scene`) and REST API (`GET/POST /api/scenes`, `DELETE /api/scenes/{id}`, `POST /api/scenes/{id}/run`). Scene execution moved to backend (ConnectionManager sends commands to each device) so both desktop app and web dashboard can trigger scenes. New "Scenes" tab in `:9090` web dashboard with Run button per scene. Admin-only for create/delete/run.
 
 ## MQTT Bridge
 
