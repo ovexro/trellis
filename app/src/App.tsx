@@ -11,6 +11,7 @@ import GetStarted from "./pages/GetStarted";
 import Scenes from "./pages/Scenes";
 import Automation from "./pages/Automation";
 import TerminalPage from "./pages/TerminalPage";
+import Metrics from "./pages/Metrics";
 import Settings from "./pages/settings";
 
 function FirstRunRedirect({ children }: { children: React.ReactNode }) {
@@ -53,6 +54,7 @@ function App() {
       <FirstRunRedirect>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/metrics" element={<Metrics />} />
           <Route path="/get-started" element={<GetStarted />} />
           <Route path="/device/:id" element={<DeviceDetail />} />
           <Route path="/serial" element={<SerialMonitor />} />

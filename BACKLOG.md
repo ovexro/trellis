@@ -6,9 +6,7 @@ Forward-looking list: candidate next tasks, speculative enhancements, and known 
 
 Concrete enough to pick up in a future session. Each has scope + what it unblocks. Not a priority order.
 
-- **Desktop `DeviceDetail` React page — remaining parity gaps** — all P1+P2 sub-tasks shipped. Two P3 items remain (explicitly out of scope for the parity effort, tracked here as separate candidates):
-  - Top-level Metrics tab (the `:9090` dashboard has one; desktop does not). That's a new feature, not a parity gap.
-  - Replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option.
+- **Desktop `DeviceDetail` React page — remaining parity gap** — replacing Recharts with the hand-rolled SVG renderer. Long-term refactor option, not required for parity.
 
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 

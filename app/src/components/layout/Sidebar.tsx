@@ -8,6 +8,7 @@ import {
   Cpu,
   Zap,
   GitBranch,
+  TrendingUp,
   Settings,
   Radio,
   Sparkles,
@@ -17,6 +18,7 @@ import {
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Devices" },
+  { to: "/metrics", icon: TrendingUp, label: "Metrics" },
   { to: "/get-started", icon: Sparkles, label: "Get Started" },
   { to: "/new-device", icon: Cpu, label: "New Device" },
   { to: "/scenes", icon: Zap, label: "Scenes" },

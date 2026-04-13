@@ -20,6 +20,7 @@ interface Segment {
 
 interface UptimeTimelineProps {
   deviceId: string;
+  externalHours?: number;
   onSegmentClick?: (timestamp: string) => void;
 }
 
@@ -147,9 +148,10 @@ function clusterTooltip(seg: Segment): string {
   return `${seg.clusterCount} transitions in ${human} (${startStr} \u2192 ${endStr})`;
 }
 
-function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
+function UptimeTimelineImpl({ deviceId, externalHours, onSegmentClick }: UptimeTimelineProps) {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [hours, setHours] = useState(1);
+  const [internalHours, setInternalHours] = useState(1);
+  const hours = externalHours ?? internalHours;
 
   const loadAnnotations = useCallback(async () => {
     try {
@@ -284,21 +286,23 @@ function UptimeTimelineImpl({ deviceId, onSegmentClick }: UptimeTimelineProps) {
             No tracked uptime in this window
           </div>
         )}
-        <div className="flex gap-1 shrink-0 ml-3">
-          {TIME_RANGES.map((range) => (
-            <button
-              key={range.hours}
-              onClick={() => setHours(range.hours)}
-              className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
-                hours === range.hours
-                  ? "bg-trellis-500/20 text-trellis-400"
-                  : "text-zinc-500 hover:text-zinc-300"
-              }`}
-            >
-              {range.label}
-            </button>
-          ))}
-        </div>
+        {externalHours == null && (
+          <div className="flex gap-1 shrink-0 ml-3">
+            {TIME_RANGES.map((range) => (
+              <button
+                key={range.hours}
+                onClick={() => setInternalHours(range.hours)}
+                className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
+                  hours === range.hours
+                    ? "bg-trellis-500/20 text-trellis-400"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {range.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <svg

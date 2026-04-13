@@ -35,6 +35,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] System metrics panel (RSSI, heap charts — shown for all devices)
 - [x] Metric history stored in SQLite
 - [x] Configurable chart time range
+- [x] **Metrics page (post-v0.4.9)** — top-level monitoring overview in the desktop app showing all devices with uptime ribbon, RSSI/heap/sensor charts in a 2-column grid, global time range picker (1h/6h/24h/7d), device status indicators, and "Details" links. Reuses existing MetricChart and UptimeTimeline components via new `externalHours` prop that locks the range and hides per-chart pickers. Matches the `:9090` web dashboard Metrics tab layout.
 
 ### Serial Monitor
 - [x] List USB serial ports

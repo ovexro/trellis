@@ -41,6 +41,7 @@ interface MetricChartProps {
   label: string;
   unit?: string;
   color?: string;
+  externalHours?: number;
   onAnnotationClick?: (ann: { timestamp: string; kind: string; label: string }) => void;
 }
 
@@ -113,11 +114,13 @@ function MetricChartImpl({
   label,
   unit,
   color = "#22c55e",
+  externalHours,
   onAnnotationClick,
 }: MetricChartProps) {
   const [data, setData] = useState<ChartPoint[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [hours, setHours] = useState(1);
+  const [internalHours, setInternalHours] = useState(1);
+  const hours = externalHours ?? internalHours;
 
   // Metrics refresh is hot — new sensor readings arrive every ~5s from live
   // WS broadcasts, so we re-fetch the line data on an interval. Annotations
@@ -270,10 +273,10 @@ function MetricChartImpl({
           {unit && <span className="text-zinc-500 ml-1">({unit})</span>}
         </h3>
         <div className="flex gap-1 items-center">
-          {TIME_RANGES.map((range) => (
+          {externalHours == null && TIME_RANGES.map((range) => (
             <button
               key={range.hours}
-              onClick={() => setHours(range.hours)}
+              onClick={() => setInternalHours(range.hours)}
               className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
                 hours === range.hours
                   ? "bg-trellis-500/20 text-trellis-400"
