@@ -8,8 +8,6 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Floor plan / spatial device layout** — visual room layout with drag-drop device placement (Tier 5 roadmap, larger scope).
 
-- **Sinric Pro voice assistant bridge — sessions 1-2 SHIPPED (611e3cc)**: WSS bridge to ws.sinric.pro with HMAC-SHA256 signing, Settings panel (API key/secret/device mappings), bidirectional switch (setPowerState) + slider (setRangeValue) + color (setColor), sensor → temperature reporting, HMAC signature verification on inbound, web dashboard Sinric status section. **Remaining (session 3)**: per-capability mapping UI, user guide docs, release. Text capability not mapped (no Sinric standard device type).
-
 ## Known follow-ups
 
 Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anything.
