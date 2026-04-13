@@ -27,7 +27,8 @@ A complete walkthrough of every feature. From installing the app to automating y
 19. [Settings & Config Backup](#19-settings--config-backup)
 20. [System Tray](#20-system-tray)
 21. [Arduino Library Reference](#21-arduino-library-reference)
-22. [Troubleshooting](#22-troubleshooting)
+22. [Sinric Pro (Alexa / Google Home)](#22-sinric-pro-alexa--google-home)
+23. [Troubleshooting](#23-troubleshooting)
 
 ---
 
@@ -656,7 +657,101 @@ void loop() {
 
 ---
 
-## 22. Troubleshooting
+## 22. Sinric Pro (Alexa / Google Home)
+
+Control your Trellis devices with voice commands through Amazon Alexa and Google Home via [Sinric Pro](https://sinric.pro). Trellis connects to the Sinric Pro cloud over a persistent WebSocket — no port forwarding, no extra hardware.
+
+### How it works
+
+The Sinric Pro bridge runs inside the Trellis desktop app. When you say *"Alexa, turn on the light"*, the request flows:
+
+```
+Voice assistant → Sinric Pro cloud → Trellis desktop app → your device
+```
+
+State changes flow the other way too: if you toggle a switch from the Trellis dashboard, the Sinric cloud shadow updates so Alexa reports the correct state when asked.
+
+### Supported capability types
+
+| Trellis type | Sinric device type | Voice actions |
+|---|---|---|
+| Switch | Switch / Smart Plug | "Turn on/off the light" |
+| Slider | Dimmer / Window Blinds | "Set brightness to 50" |
+| Color | RGB Light | "Set the light to blue" |
+| Sensor | Temperature Sensor | "What's the temperature?" |
+| Text | — | Not supported (no standard Sinric device type) |
+
+### Setup
+
+#### 1. Create a Sinric Pro account
+
+1. Go to [sinric.pro](https://sinric.pro) and sign up (free tier: 3 devices)
+2. Note your **APP_KEY** and **APP_SECRET** from the Credentials page — you'll paste these into Trellis
+
+#### 2. Create virtual devices on Sinric Pro
+
+For each Trellis device (or capability) you want to control by voice:
+
+1. Click **Add Device** in the Sinric Pro dashboard
+2. Choose a device type that matches your Trellis capability (e.g., "Switch" for a relay, "Temperature Sensor" for a DHT22)
+3. Pick a name Alexa/Google will recognise (e.g., "Desk Lamp", "Living Room Temp")
+4. Copy the **Device ID** (a UUID) — you'll need it in the next step
+
+#### 3. Configure the bridge in Trellis
+
+1. Open Trellis → **Settings** → scroll to **Sinric Pro (Alexa / Google Home)**
+2. Tick **Enable Sinric Pro bridge**
+3. Paste your **APP_KEY** and **APP_SECRET**
+4. Under **Device mappings**, click **+ Add mapping** for each virtual device:
+   - **Sinric Device ID** — paste the UUID from the Sinric Pro dashboard
+   - **Trellis Device** — select the physical device from the dropdown
+   - **Capability** — pick a specific capability, or leave as **Auto (first match)** to let the bridge auto-discover the first capability of the matching type
+5. Click **Save & apply**
+
+The status indicator should turn green and show "Connected to `ws.sinric.pro`".
+
+> **Tip — Test connection first.** Click **Test connection** before saving to verify your APP_KEY is accepted. The test opens a WebSocket, reads one server frame, and disconnects. If it fails, double-check the APP_KEY (it's case-sensitive).
+
+#### 4. Link to Alexa or Google Home
+
+1. In the **Alexa** app (or **Google Home** app), search for the **Sinric Pro** skill/action
+2. Enable it and sign in with your Sinric Pro account
+3. Alexa will discover the devices you created in step 2
+4. Test: *"Alexa, turn on Desk Lamp"*
+
+### Per-capability mapping
+
+By default, the bridge auto-discovers the first capability of each type on a device. This works well for simple devices (one switch, one sensor). For devices with **multiple capabilities of the same type** (e.g., two switches or two sliders), pick the specific capability in the **Capability** dropdown.
+
+The dropdown shows a type badge for each capability:
+
+- **[SW]** — Switch
+- **[SL]** — Slider
+- **[SN]** — Sensor
+- **[CL]** — Color
+
+If you map a specific capability and the Sinric device sends an action for a different type (e.g., the Sinric device supports both power and dimmer, but you mapped a switch), the bridge will use your explicit mapping for the matching type and fall back to auto-discovery for the other types.
+
+### Sensor naming convention
+
+Temperature queries use a name-hint heuristic: the bridge looks for sensor capabilities whose ID contains `temp` (for temperature) or `humid` (for humidity). If your sensor IDs follow this convention, temperature reporting works automatically. If not, use the Capability dropdown to explicitly map the sensor you want to report.
+
+### Monitoring
+
+- **Desktop app**: The status indicator in Settings shows connection state, messages sent/received
+- **Web dashboard** (`localhost:9090`): Settings tab shows Sinric connection dot and message counters (read-only)
+- **REST API**: `GET /api/sinric/status` returns `{ enabled, connected, last_error, messages_sent, messages_received }`
+
+### Limitations
+
+- **Text capabilities** can't be mapped — Sinric Pro has no standard "text display" device type
+- **Trellis must be running** — the bridge lives in the desktop app; if you close it, voice control stops (minimize to tray to keep it alive in the background)
+- **One-directional humidity** — humidity is always auto-discovered (the Sinric temperature device reports both temp and humidity together); the explicit capability mapping applies to the primary temperature reading only
+- **Sinric Pro free tier** allows 3 devices — paid plans support more
+
+---
+
+## 23. Troubleshooting
 
 ### Device doesn't appear in the app
 
