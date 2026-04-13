@@ -2,6 +2,20 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.7.0] — 2026-04-13
+
+Home experience release. New Home landing page, per-capability favorites, and Floor Plan spatial layout — all in both the desktop app and the web dashboard.
+
+### Added
+
+- **Home overview page.** New default landing view in the desktop app and web dashboard. Shows a system status strip (online/offline device counts, MQTT and Sinric bridge status), live sensor readings grid, quick controls (functional inline switches, sliders, color pickers — offline devices dimmed), and a recent activity feed (last 30 cross-device events, severity color-coded, clickable to navigate to device). New `GET /api/activity` endpoint backed by `idx_logs_timestamp` index for efficient cross-device queries.
+- **Per-capability favorites.** Star toggle on every sensor and control card in the Home page. Pinned capabilities appear in a "Favorites" section at top; non-favorited remain in regular sections (no duplication). New `favorite_capabilities` table (device_id + capability_id composite key). REST API: `POST /api/favorites/toggle`, `GET /api/favorites`. Admin-only with optimistic UI and revert on failure. Works in both desktop app and web dashboard.
+- **Floor Plan page.** Freeform canvas for spatial device placement. Drag devices from a sidebar panel onto percentage-based positions. Placed nodes show live status dot, primary capability value, and device name. Click a node for an inline popup with all sensor readings and interactive controls. Background image support (room photo or blueprint). New `device_positions` table. REST API: `GET /api/floor-plan`, `PUT /api/floor-plan/position`, `DELETE /api/floor-plan/position/{id}`, `PUT /api/floor-plan/background`. All admin-only. Touch support for mobile web dashboard. Device deletion cascades to positions and favorites.
+
+### Library
+
+- No library changes in this release (Home, favorites, and floor plan are desktop-only).
+
 ## [0.6.0] — 2026-04-13
 
 Sinric Pro voice assistant bridge. Control your Trellis devices with Alexa and Google Home via the Sinric Pro cloud.
