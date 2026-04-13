@@ -2,6 +2,25 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.4.9] — 2026-04-13
+
+GitHub OTA polish release. Download progress, friendlier error messages, pre-release filtering, and asset name filtering — all surfaced in both the desktop app and web dashboard.
+
+### Added
+
+- **GitHub OTA download progress bar.** Chunked downloads emit per-2% progress events via Tauri events and WebSocket broadcast. Animated progress bar in both the desktop OTA page and the `:9090` web dashboard device detail panel.
+- **Pre-release filtering toggle.** Hidden by default; a checkbox appears when pre-releases exist. Amber badge distinguishes pre-releases in the list.
+- **Asset name filter.** Substring match input for filtering firmware assets within a release. Per-device persistence. Releases with zero matching assets are hidden.
+
+### Improved
+
+- **User-friendly GitHub OTA error messages.** 404/403/network errors mapped to plain-English explanations instead of raw HTTP status codes. Web dashboard `api()` helper reads JSON error bodies for richer feedback.
+
+### Docs
+
+- Updated screenshots and README for v0.4.8 release.
+- Cleaned shipped items from BACKLOG.md.
+
 ## [0.4.8] — 2026-04-12
 
 The GitHub OTA + accessibility release. OTA firmware updates can now be pulled directly from any public GitHub repository's Releases page — both in the desktop app and the web dashboard. Accessibility improvements bring focus trapping, keyboard navigation, and mobile touch polish to the web dashboard. Several internal audits close out low-priority backlog items.

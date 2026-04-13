@@ -80,15 +80,22 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 ### Desktop App
 - **Auto-discovery** — continuous mDNS scanning, devices appear automatically
 - **Live updates** — persistent WebSocket connections, real-time sensor data
-- **Device cards** — name, status, RSSI, uptime, firmware version, chip
+- **Device cards** — name, status, RSSI, uptime, firmware version, drag-and-drop reorder
 - **Auto-generated controls** — switches, sliders, sensors, color pickers, text
-- **Time-series charts** — sensor data over time with SQLite storage
+- **Interactive charts** — time-series sensor data with range picker, hover tooltips, event annotations (OTA/online/offline markers), click-through to logs
+- **Uptime timeline** — visual ribbon showing online/offline history with stats
+- **Severity-filtered logs** — chip row (All/Events/State/Error/Warn/Info/Debug)
 - **Serial monitor** — full USB serial terminal with live streaming
-- **OTA updates** — native file picker, local HTTP firmware server
+- **OTA updates** — local file upload or pull firmware from any GitHub Release (.bin/.bin.gz)
+- **Onboarding wizard** — 4-step guided setup with 5 starter templates and Quick Flash
+- **MQTT bridge** — mirror devices to any MQTT broker with Home Assistant auto-discovery
+- **Remote access** — reach devices from anywhere via Cloudflare Tunnel or Tailscale Funnel
+- **API tokens + RBAC** — Bearer token auth, admin/viewer roles, rate limiting, token TTL
 - **Device persistence** — nicknames, tags, known devices survive restarts
-- **Search & filter** — find devices by name, IP, platform, chip
-- **Device logs** — severity-filtered log viewer with live streaming
-- **Alert rules** — configurable thresholds with desktop notifications
+- **Search & filter** — find devices by name, IP, platform, chip, tags
+- **Automation** — scheduled actions (cron), conditional rules, webhooks
+- **Push notifications** — ntfy.sh integration, per-device filtering
+- **Web dashboard** — responsive UI at `:9090` with WebSocket push, works on phones
 - **System tray** — app runs in background, click to restore
 - **Dark theme** — clean, modern UI with green accent
 
@@ -99,6 +106,8 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 - **Self-description protocol** — device declares its own capabilities
 - **WebSocket** — real-time bidirectional communication
 - **Embedded web dashboard** — open `http://<device-ip>/` from any phone or laptop browser. Auto-renders all your switches, sliders, sensors, color picker and text fields with live WebSocket updates. No desktop app required, no install.
+- **NVS persistence** — switch and slider values survive reboots on ESP32
+- **WiFi provisioning** — captive portal AP mode with stored credentials
 - **Live broadcasts** — periodic sensor values + system telemetry
 - **Device logging** — logInfo()/logWarn()/logError() sent to desktop app
 - **OTA ready** — firmware updates from the desktop app (ESP32)
@@ -137,7 +146,7 @@ The repo is a monorepo: the root doubles as the Arduino library (so Library Mana
 | ESP32 (all variants) | Supported |
 | Raspberry Pi Pico W | Supported |
 | Raspberry Pi Pico 2 W | Supported |
-| ESP8266 | Planned |
+| ESP8266 | Not yet supported |
 
 ## Tech Stack
 
