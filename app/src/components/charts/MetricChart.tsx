@@ -42,6 +42,8 @@ interface MetricChartProps {
   unit?: string;
   color?: string;
   externalHours?: number;
+  deviceName?: string;
+  deviceOnline?: boolean;
   onAnnotationClick?: (ann: { timestamp: string; kind: string; label: string }) => void;
 }
 
@@ -115,10 +117,13 @@ function MetricChartImpl({
   unit,
   color = "#22c55e",
   externalHours,
+  deviceName,
+  deviceOnline,
   onAnnotationClick,
 }: MetricChartProps) {
   const [data, setData] = useState<ChartPoint[]>([]);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [fetchedOnce, setFetchedOnce] = useState(false);
   const [internalHours, setInternalHours] = useState(1);
   const hours = externalHours ?? internalHours;
 
@@ -142,8 +147,10 @@ function MetricChartImpl({
           time: parseUtcMs(p.timestamp),
         }))
       );
+      setFetchedOnce(true);
     } catch (err) {
       console.error("Failed to load metrics:", err);
+      setFetchedOnce(true);
     }
   }, [deviceId, metricId, hours]);
 
@@ -187,11 +194,7 @@ function MetricChartImpl({
     };
   }, [loadMetrics]);
 
-  // Loading-state is only used by the empty-state placeholder below. Since
-  // we now never flip it to true on a live refresh (only the initial load
-  // matters for the placeholder), we can track it as a plain boolean that
-  // flips false once the first successful load lands.
-  const loading = data.length === 0;
+  const loading = !fetchedOnce;
 
   const formatTime = useCallback(
     (ms: number) => {
@@ -295,7 +298,10 @@ function MetricChartImpl({
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url;
-                  a.download = `${metricId}_${hours}h.csv`;
+                  const safeName = deviceName
+                    ? deviceName.replace(/[^a-zA-Z0-9_-]/g, "_") + "_"
+                    : "";
+                  a.download = `${safeName}${metricId}_${hours}h.csv`;
                   a.click();
                   URL.revokeObjectURL(url);
                 } catch (err) {
@@ -318,7 +324,13 @@ function MetricChartImpl({
             <div className="h-px bg-zinc-700" />
             <div className="h-px bg-zinc-700" />
           </div>
-          <span className="text-xs">{loading ? "Loading..." : "Waiting for data from device..."}</span>
+          <span className="text-xs">
+            {loading
+              ? "Loading\u2026"
+              : deviceOnline === false
+                ? "Device is offline \u2014 no data in this range"
+                : "Waiting for data from device\u2026"}
+          </span>
         </div>
       ) : (
         <>

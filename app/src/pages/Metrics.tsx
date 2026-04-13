@@ -20,6 +20,7 @@ export default function Metrics() {
   const sorted = [...devices].sort(
     (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
   );
+  const onlineCount = devices.filter((d) => d.online).length;
 
   return (
     <div>
@@ -29,6 +30,14 @@ export default function Metrics() {
           <h1 className="text-xl font-bold text-zinc-100">Metrics</h1>
           <p className="text-sm text-zinc-500 mt-0.5">
             {devices.length} device{devices.length !== 1 ? "s" : ""}
+            {devices.length > 0 && (
+              <span className="ml-1.5">
+                &middot;{" "}
+                <span className={onlineCount > 0 ? "text-emerald-500" : ""}>
+                  {onlineCount} online
+                </span>
+              </span>
+            )}
           </p>
         </div>
         <div className="flex gap-1">
@@ -109,6 +118,8 @@ export default function Metrics() {
                       unit="dBm"
                       color="#f59e0b"
                       externalHours={hours}
+                      deviceName={device.nickname || device.name}
+                      deviceOnline={device.online}
                     />
                     <MetricChart
                       deviceId={device.id}
@@ -117,6 +128,8 @@ export default function Metrics() {
                       unit="bytes"
                       color="#3b82f6"
                       externalHours={hours}
+                      deviceName={device.nickname || device.name}
+                      deviceOnline={device.online}
                     />
                     {sensors.map((cap) => (
                       <MetricChart
@@ -126,6 +139,8 @@ export default function Metrics() {
                         label={cap.label}
                         unit={cap.unit}
                         externalHours={hours}
+                        deviceName={device.nickname || device.name}
+                        deviceOnline={device.online}
                       />
                     ))}
                   </div>
