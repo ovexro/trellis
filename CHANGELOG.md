@@ -2,6 +2,37 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.10.0] — 2026-04-14
+
+Dashboard experience, automation, and webhook reliability release. Inline controls on device cards, compound rule conditions with AND/OR logic, and webhook retry with delivery logging.
+
+### Added
+
+- **Inline controls and live values on device cards.** Desktop cards now show interactive switch toggles, compact sliders, sensor values, color swatches, and text previews directly — no need to navigate to the detail page for quick actions. Web dashboard collapsed cards show a capability preview row with inline switch toggles. Offline devices show dimmed, disabled controls. Outer card element changed from `<button>` to `<div role="button">` for valid nested interactive elements.
+- **Compound rule conditions with AND/OR logic.** Rules support multiple conditions combined with AND or OR. Each condition can reference a different device and sensor, enabling cross-device rules like "if temp > 30 AND humidity < 40, turn on fan". Four operators: above, below, equals, not_equals. Multi-condition form in desktop app with add/remove condition rows and AND/OR toggle. New `logic` and `conditions` (JSON) columns on the rules table. Config import/export preserves compound conditions. Backward compatible — existing single-condition rules continue to work.
+- **Webhook retry with exponential backoff.** Failed webhook deliveries retry up to 3 times with exponential backoff (2s, 4s, 8s). Each attempt is logged in a new `webhook_deliveries` SQLite table.
+- **Webhook delivery log.** Desktop app shows an expandable delivery history per webhook with status codes, retry indicators, timestamps, and error messages. REST endpoint `GET /api/webhooks/{id}/deliveries`.
+- **Webhook test button.** Send a test POST to any webhook and see the result immediately. Available in both the desktop app and web dashboard.
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
+## [0.9.0] — 2026-04-13
+
+Scene management release. Scene editing, config export v2, web dashboard scene CRUD, and Sinric voice scene triggering.
+
+### Added
+
+- **Scene editing.** Edit existing scenes (rename + add/remove/reorder actions). `PUT /api/scenes/{id}` REST endpoint and `update_scene` Tauri command. Edit button on scene cards in both desktop app and web dashboard.
+- **Config import/export v2.** Export now includes backend-backed scenes, floor plans, device positions, and favorite capabilities. Import remaps IDs across cross-referenced tables. Config version bumped to 2; backward-compatible with v1 exports.
+- **Web dashboard scene CRUD.** Full scene management in the web dashboard: create, edit, and delete scenes with inline forms. Previously only the desktop app could create/delete scenes.
+- **Sinric scene triggering.** Map a Sinric Pro virtual device to a Trellis scene so "Alexa, turn on Movie Mode" fires all scene actions. `setPowerState(On)` runs the scene; `setPowerState(Off)` is a no-op. Settings UI has a Device/Scene type toggle per mapping row.
+
+### Library
+
+- No library changes in this release.
+
 ## [0.8.0] — 2026-04-13
 
 Floor Plan enhancements and backend-backed scenes release. Multi-floor support, snap-to-grid, compact labels, undo, and scenes moved from localStorage to SQLite with scheduling support.
