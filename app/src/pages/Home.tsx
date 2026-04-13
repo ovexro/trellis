@@ -10,6 +10,7 @@ import {
   Clock,
   ArrowRight,
   Radio,
+  Star,
 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import Slider from "@/components/controls/Slider";
@@ -152,16 +153,50 @@ function Section({
   );
 }
 
+// ─── Star toggle ──────────────────────────────────────────────────
+
+function FavStar({
+  active,
+  onToggle,
+}: {
+  active: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className="p-0.5 -m-0.5 transition-colors"
+      title={active ? "Remove from favorites" : "Add to favorites"}
+    >
+      <Star
+        size={12}
+        className={
+          active
+            ? "text-amber-400 fill-amber-400"
+            : "text-zinc-700 hover:text-amber-400/60"
+        }
+      />
+    </button>
+  );
+}
+
 // ─── Sensor card (compact, with optional sparkline) ────────────────
 
 function SensorCard({
   device,
   cap,
+  isFav,
   onClick,
+  onToggleFavorite,
 }: {
   device: Device;
   cap: Capability;
+  isFav: boolean;
   onClick: () => void;
+  onToggleFavorite: () => void;
 }) {
   const val = cap.value as number;
   return (
@@ -169,8 +204,11 @@ function SensorCard({
       onClick={onClick}
       className="p-4 bg-zinc-800/50 rounded-lg text-left hover:bg-zinc-800 transition-colors group w-full"
     >
-      <div className="text-[10px] text-zinc-600 group-hover:text-zinc-400 transition-colors mb-1 truncate">
-        {device.nickname || device.name}
+      <div className="flex items-center gap-1 mb-1">
+        <div className="text-[10px] text-zinc-600 group-hover:text-zinc-400 transition-colors truncate flex-1">
+          {device.nickname || device.name}
+        </div>
+        <FavStar active={isFav} onToggle={onToggleFavorite} />
       </div>
       <div className="text-xs text-zinc-500 uppercase tracking-wide mb-1">
         {cap.label}
@@ -192,22 +230,27 @@ function SensorCard({
 function QuickControl({
   device,
   cap,
+  isFav,
   onChangeVal,
+  onToggleFavorite,
 }: {
   device: Device;
   cap: Capability;
+  isFav: boolean;
   onChangeVal: (deviceId: string, capId: string, value: unknown) => void;
+  onToggleFavorite: () => void;
 }) {
   const deviceLabel = device.nickname || device.name;
 
   const header = (
-    <div className="px-3 pt-3 pb-1 flex items-center justify-between">
-      <span className="text-[10px] text-zinc-600 truncate">
+    <div className="px-3 pt-3 pb-1 flex items-center gap-1">
+      <span className="text-[10px] text-zinc-600 truncate flex-1">
         {deviceLabel}
       </span>
       {!device.online && (
         <span className="text-[10px] text-red-400/70">offline</span>
       )}
+      <FavStar active={isFav} onToggle={onToggleFavorite} />
     </div>
   );
   const disabledClass = device.online ? "" : "opacity-50 pointer-events-none";
@@ -314,7 +357,7 @@ function ActivityItem({
 // ─── Home page ─────────────────────────────────────────────────────
 
 export default function Home() {
-  const { devices, initEventListeners, updateCapability } = useDeviceStore();
+  const { devices, favoriteCapabilities, initEventListeners, updateCapability, toggleFavoriteCapability } = useDeviceStore();
   const navigate = useNavigate();
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [mqtt, setMqtt] = useState<BridgeStatus | null>(null);
@@ -371,23 +414,28 @@ export default function Home() {
     }
   };
 
-  // Collect sensors and controls across all devices
+  // Collect sensors and controls, split by capability-level favorite status
+  const favSensors: { device: Device; cap: Capability }[] = [];
+  const favControls: { device: Device; cap: Capability }[] = [];
   const sensors: { device: Device; cap: Capability }[] = [];
   const controls: { device: Device; cap: Capability }[] = [];
 
   for (const device of devices) {
     for (const cap of device.capabilities) {
+      const isFav = favoriteCapabilities.has(`${device.id}:${cap.id}`);
       if (cap.type === "sensor") {
-        sensors.push({ device, cap });
+        (isFav ? favSensors : sensors).push({ device, cap });
       } else if (
         cap.type === "switch" ||
         cap.type === "slider" ||
         cap.type === "color"
       ) {
-        controls.push({ device, cap });
+        (isFav ? favControls : controls).push({ device, cap });
       }
     }
   }
+
+  const hasFavorites = favSensors.length > 0 || favControls.length > 0;
 
   // Map device IDs to display names for the activity feed
   const deviceNames = new Map(
@@ -426,6 +474,34 @@ export default function Home() {
         <StatusStrip devices={devices} mqtt={mqtt} sinric={sinric} />
       </div>
 
+      {/* Favorites section */}
+      {hasFavorites && (
+        <Section title="Favorites" icon={Star}>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {favSensors.map(({ device, cap }) => (
+              <SensorCard
+                key={`fav-${device.id}-${cap.id}`}
+                device={device}
+                cap={cap}
+                isFav={true}
+                onClick={() => navigate(`/device/${device.id}`)}
+                onToggleFavorite={() => toggleFavoriteCapability(device.id, cap.id)}
+              />
+            ))}
+            {favControls.map(({ device, cap }) => (
+              <QuickControl
+                key={`fav-${device.id}-${cap.id}`}
+                device={device}
+                cap={cap}
+                isFav={true}
+                onChangeVal={handleControlChange}
+                onToggleFavorite={() => toggleFavoriteCapability(device.id, cap.id)}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
       {/* Two-column layout: sensors + controls left, activity right */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left column: sensors + controls */}
@@ -450,7 +526,9 @@ export default function Home() {
                     key={`${device.id}-${cap.id}`}
                     device={device}
                     cap={cap}
+                    isFav={false}
                     onClick={() => navigate(`/device/${device.id}`)}
+                    onToggleFavorite={() => toggleFavoriteCapability(device.id, cap.id)}
                   />
                 ))}
               </div>
@@ -466,7 +544,9 @@ export default function Home() {
                     key={`${device.id}-${cap.id}`}
                     device={device}
                     cap={cap}
+                    isFav={false}
                     onChangeVal={handleControlChange}
+                    onToggleFavorite={() => toggleFavoriteCapability(device.id, cap.id)}
                   />
                 ))}
               </div>

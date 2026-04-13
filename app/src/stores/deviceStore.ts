@@ -163,16 +163,19 @@ async function fireWebhooks(eventType: string, deviceId: string, data: Record<st
 
 interface DeviceState {
   devices: Device[];
+  favoriteCapabilities: Set<string>;
   initialized: boolean;
   refreshDevices: () => Promise<void>;
   addDeviceByIp: (ip: string, port: number) => Promise<Device>;
   removeDevice: (deviceId: string) => Promise<void>;
   updateCapability: (deviceId: string, capId: string, value: unknown) => void;
+  toggleFavoriteCapability: (deviceId: string, capId: string) => Promise<void>;
   initEventListeners: () => void;
 }
 
 export const useDeviceStore = create<DeviceState>((set, get) => ({
   devices: [],
+  favoriteCapabilities: new Set<string>(),
   initialized: false,
 
   refreshDevices: async () => {
@@ -224,6 +227,28 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         };
       }),
     }));
+  },
+
+  toggleFavoriteCapability: async (deviceId, capId) => {
+    const key = `${deviceId}:${capId}`;
+    const was = get().favoriteCapabilities.has(key);
+    // Optimistic update
+    set((state) => {
+      const next = new Set(state.favoriteCapabilities);
+      if (was) next.delete(key); else next.add(key);
+      return { favoriteCapabilities: next };
+    });
+    try {
+      await invoke("toggle_favorite_capability", { deviceId, capabilityId: capId });
+    } catch (err) {
+      console.error("Failed to toggle favorite capability:", err);
+      // Revert
+      set((state) => {
+        const next = new Set(state.favoriteCapabilities);
+        if (was) next.add(key); else next.delete(key);
+        return { favoriteCapabilities: next };
+      });
+    }
   },
 
   initEventListeners: () => {
@@ -355,24 +380,32 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     (async () => {
       await get().refreshDevices();
       try {
-        const saved = await invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null; sort_order: number }>>(
-          "get_saved_devices",
-        );
-        if (saved.length === 0) return;
-        const savedById = new Map(saved.map((s) => [s.id, s]));
-        set((state) => ({
-          devices: state.devices.map((d) => {
-            const s = savedById.get(d.id);
-            if (!s) return d;
-            return {
-              ...d,
-              nickname: s.nickname || d.nickname,
-              tags: s.tags || d.tags,
-              group_id: s.group_id ?? d.group_id,
-              sort_order: s.sort_order ?? 0,
-            };
-          }),
-        }));
+        const [saved, favs] = await Promise.all([
+          invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null; sort_order: number }>>(
+            "get_saved_devices",
+          ),
+          invoke<Array<[string, string]>>("get_favorite_capabilities"),
+        ]);
+        const favSet = new Set(favs.map(([d, c]) => `${d}:${c}`));
+        if (saved.length > 0) {
+          const savedById = new Map(saved.map((s) => [s.id, s]));
+          set((state) => ({
+            favoriteCapabilities: favSet,
+            devices: state.devices.map((d) => {
+              const s = savedById.get(d.id);
+              if (!s) return d;
+              return {
+                ...d,
+                nickname: s.nickname || d.nickname,
+                tags: s.tags || d.tags,
+                group_id: s.group_id ?? d.group_id,
+                sort_order: s.sort_order ?? 0,
+              };
+            }),
+          }));
+        } else {
+          set({ favoriteCapabilities: favSet });
+        }
       } catch (err) {
         console.error("Failed to load saved device metadata:", err);
       }

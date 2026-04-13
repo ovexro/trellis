@@ -678,6 +678,21 @@ pub fn set_device_group(db: State<'_, Database>, device_id: String, group_id: Op
     db.set_device_group(&device_id, group_id)
 }
 
+#[tauri::command]
+pub fn set_device_favorite(db: State<'_, Database>, device_id: String, favorite: bool) -> Result<(), String> {
+    db.set_device_favorite(&device_id, favorite)
+}
+
+#[tauri::command]
+pub fn toggle_favorite_capability(db: State<'_, Database>, device_id: String, capability_id: String) -> Result<bool, String> {
+    db.toggle_favorite_capability(&device_id, &capability_id)
+}
+
+#[tauri::command]
+pub fn get_favorite_capabilities(db: State<'_, Database>) -> Result<Vec<(String, String)>, String> {
+    db.get_favorite_capabilities()
+}
+
 // ─── CSV export ─────────────────────────────────────────────────────────────
 
 #[tauri::command]

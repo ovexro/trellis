@@ -30,6 +30,7 @@ export interface Device {
   tags?: string;
   group_id?: number | null;
   sort_order?: number;
+  favorite?: boolean;
 }
 
 export interface DeviceGroup {

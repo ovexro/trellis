@@ -656,6 +656,15 @@
     .home-activity-msg { font-size: 0.8rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .home-activity-time { font-size: 0.65rem; color: #52525b; white-space: nowrap; flex-shrink: 0; margin-top: 0.2rem; }
     .home-empty { padding: 1.5rem; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-faint); font-size: 0.8rem; }
+    .home-fav-star {
+      cursor: pointer; background: none; border: none; padding: 2px; margin: -2px;
+      font-size: 0.7rem; line-height: 1; transition: color var(--transition); flex-shrink: 0;
+    }
+    .home-fav-star.active { color: #fbbf24; }
+    .home-fav-star:not(.active) { color: #3f3f46; }
+    .home-fav-star:not(.active):hover { color: rgba(251,191,36,0.5); }
+    .home-fav-section { margin-top: 1.25rem; margin-bottom: 1.25rem; }
+    .home-fav-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.6rem; }
 
     @media (max-width: 640px) {
       .header .tab-nav { display: none; }
@@ -677,6 +686,7 @@
       .home-layout { grid-template-columns: 1fr; }
       .home-sensor-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
       .home-controls-grid { grid-template-columns: 1fr; }
+      .home-fav-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
     }
 
     @media (min-width: 641px) and (max-width: 900px) {
@@ -1040,8 +1050,10 @@
     var homeMqttStatus = null;
     var homeSinricStatus = null;
 
+    var homeFavorites = new Set();
+
     async function loadHome() {
-      // Fetch devices (same data the Devices tab uses), activity, and bridge statuses in parallel.
+      // Fetch devices (same data the Devices tab uses), activity, bridge statuses, and favorites in parallel.
       // Devices may already be loaded — that's fine, we refresh anyway.
       try {
         var results = await Promise.all([
@@ -1050,12 +1062,14 @@
           api('/api/activity?limit=30'),
           api('/api/mqtt/status').catch(function() { return null; }),
           api('/api/sinric/status').catch(function() { return null; }),
+          api('/api/favorites').catch(function() { return []; }),
         ]);
         devices = results[0] || [];
         savedDevices = results[1] || [];
         homeActivity = results[2] || [];
         homeMqttStatus = results[3];
         homeSinricStatus = results[4];
+        homeFavorites = new Set((results[5] || []).map(function(f) { return f.device_id + ':' + f.capability_id; }));
         renderHome();
       } catch (e) {
         console.error('Failed to load home:', e);
@@ -1070,6 +1084,8 @@
 
       var onlineCount = 0;
       var offlineCount = 0;
+      var favSensors = [];
+      var favControls = [];
       var sensors = [];
       var controls = [];
 
@@ -1080,10 +1096,14 @@
         var dname = (saved && saved.nickname) || d.name || d.id;
         for (var j = 0; j < (d.capabilities || []).length; j++) {
           var cap = d.capabilities[j];
-          if (cap.type === 'sensor') sensors.push({ device: d, cap: cap, dname: dname });
-          else if (cap.type === 'switch' || cap.type === 'slider' || cap.type === 'color') controls.push({ device: d, cap: cap, dname: dname });
+          var entry = { device: d, cap: cap, dname: dname };
+          var capFav = homeFavorites.has(d.id + ':' + cap.id);
+          if (cap.type === 'sensor') (capFav ? favSensors : sensors).push(entry);
+          else if (cap.type === 'switch' || cap.type === 'slider' || cap.type === 'color') (capFav ? favControls : controls).push(entry);
         }
       }
+
+      var hasFavorites = favSensors.length > 0 || favControls.length > 0;
 
       // Status strip
       var statusHtml = '<div class="home-status-strip">';
@@ -1101,8 +1121,44 @@
       statusHtml += '<div style="flex:1"></div><span style="font-size:0.75rem;color:#52525b">' + devices.length + ' device' + (devices.length !== 1 ? 's' : '') + '</span>';
       statusHtml += '</div>';
 
+      function starBtn(deviceId, capId) {
+        if (isViewer) return '';
+        var isFav = homeFavorites.has(deviceId + ':' + capId);
+        return '<button class="home-fav-star' + (isFav ? ' active' : '') + '" onclick="event.stopPropagation();toggleFavoriteCapability(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')" title="' + (isFav ? 'Remove from favorites' : 'Add to favorites') + '">' + (isFav ? '&#9733;' : '&#9734;') + '</button>';
+      }
+
+      // Favorites section
+      var favHtml = '';
+      if (hasFavorites) {
+        favHtml += '<div class="home-fav-section">';
+        favHtml += '<div class="home-section-title"><span class="home-icon" style="color:#fbbf24">&#9733;</span> Favorites</div>';
+        favHtml += '<div class="home-fav-grid">';
+        for (var fi = 0; fi < favSensors.length; fi++) {
+          var fs = favSensors[fi];
+          var fval = fs.cap.value != null ? fs.cap.value : '--';
+          var funit = fs.cap.unit || '';
+          favHtml += '<div class="home-sensor-card" onclick="switchToDevice(\'' + esc(fs.device.id) + '\')">';
+          favHtml += '<div class="home-sensor-device" style="display:flex;align-items:center;gap:4px"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(fs.dname) + '</span>' + starBtn(fs.device.id, fs.cap.id) + '</div>';
+          favHtml += '<div class="home-sensor-label">' + esc(fs.cap.label || fs.cap.id) + '</div>';
+          favHtml += '<div><span class="home-sensor-value">' + esc(typeof fval === 'number' ? fval.toFixed(1) : String(fval)) + '</span>';
+          if (funit) favHtml += '<span class="home-sensor-unit">' + esc(funit) + '</span>';
+          favHtml += '</div></div>';
+        }
+        for (var fci = 0; fci < favControls.length; fci++) {
+          var fc = favControls[fci];
+          var fcOffline = !fc.device.online ? ' style="opacity:0.5;pointer-events:none"' : '';
+          favHtml += '<div class="home-control-card">';
+          favHtml += '<div class="home-control-device"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(fc.dname) + '</span>';
+          if (!fc.device.online) favHtml += '<span class="home-control-offline">offline</span>';
+          favHtml += starBtn(fc.device.id, fc.cap.id) + '</div>';
+          favHtml += '<div' + fcOffline + '>' + renderControl(fc.device.id, fc.cap) + '</div>';
+          favHtml += '</div>';
+        }
+        favHtml += '</div></div>';
+      }
+
       // Main layout
-      var html = statusHtml + '<div class="home-layout">';
+      var html = statusHtml + favHtml + '<div class="home-layout">';
 
       // Left column: sensors + controls
       html += '<div>';
@@ -1116,7 +1172,7 @@
           var val = s.cap.value != null ? s.cap.value : '--';
           var unit = s.cap.unit || '';
           html += '<div class="home-sensor-card" onclick="switchToDevice(\'' + esc(s.device.id) + '\')">';
-          html += '<div class="home-sensor-device">' + esc(s.dname) + '</div>';
+          html += '<div class="home-sensor-device" style="display:flex;align-items:center;gap:4px"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(s.dname) + '</span>' + starBtn(s.device.id, s.cap.id) + '</div>';
           html += '<div class="home-sensor-label">' + esc(s.cap.label || s.cap.id) + '</div>';
           html += '<div><span class="home-sensor-value">' + esc(typeof val === 'number' ? val.toFixed(1) : String(val)) + '</span>';
           if (unit) html += '<span class="home-sensor-unit">' + esc(unit) + '</span>';
@@ -1133,16 +1189,16 @@
           var c = controls[ci];
           var offlineAttr = !c.device.online ? ' style="opacity:0.5;pointer-events:none"' : '';
           html += '<div class="home-control-card">';
-          html += '<div class="home-control-device"><span>' + esc(c.dname) + '</span>';
+          html += '<div class="home-control-device"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(c.dname) + '</span>';
           if (!c.device.online) html += '<span class="home-control-offline">offline</span>';
-          html += '</div>';
+          html += starBtn(c.device.id, c.cap.id) + '</div>';
           html += '<div' + offlineAttr + '>' + renderControl(c.device.id, c.cap) + '</div>';
           html += '</div>';
         }
         html += '</div>';
       }
 
-      if (sensors.length === 0 && controls.length === 0) {
+      if (sensors.length === 0 && controls.length === 0 && !hasFavorites) {
         html += '<div class="home-empty">No capabilities found. Connect a device with sensors or controls to see them here.</div>';
       }
 
@@ -1180,6 +1236,25 @@
       html += '</div></div>';
 
       el.innerHTML = html;
+    }
+
+    async function toggleFavoriteCapability(deviceId, capId) {
+      if (isViewer) return;
+      var key = deviceId + ':' + capId;
+      var was = homeFavorites.has(key);
+      // Optimistic update
+      if (was) homeFavorites.delete(key); else homeFavorites.add(key);
+      renderHome();
+      try {
+        await api('/api/favorites/toggle', {
+          method: 'POST',
+          body: { device_id: deviceId, capability_id: capId },
+        });
+      } catch (e) {
+        console.error('Failed to toggle favorite:', e);
+        if (was) homeFavorites.add(key); else homeFavorites.delete(key);
+        renderHome();
+      }
     }
 
     function switchToDevice(deviceId) {

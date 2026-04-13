@@ -988,6 +988,29 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_nickname(ctx, id, &req.body)
         }
 
+        ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/favorite") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id = &p["/api/devices/".len()..p.len() - "/favorite".len()];
+            handle_set_device_favorite(ctx, id, &req.body)
+        }
+
+        ("GET", "/api/favorites") => {
+            match ctx.db.get_favorite_capabilities() {
+                Ok(favs) => {
+                    let list: Vec<serde_json::Value> = favs.iter().map(|(d, c)| {
+                        serde_json::json!({"device_id": d, "capability_id": c})
+                    }).collect();
+                    json_ok(&list)
+                }
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("POST", "/api/favorites/toggle") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_toggle_favorite_capability(ctx, &req.body)
+        }
+
         ("PUT", "/api/devices/reorder") => {
             if let Some(denied) = require_admin(role) { return denied; }
             handle_reorder_devices(ctx, &req.body)
@@ -1448,6 +1471,38 @@ fn handle_set_device_group(ctx: &ApiContext, device_id: &str, body: &str) -> (u1
     let group_id = v["group_id"].as_i64();
 
     match ctx.db.set_device_group(device_id, group_id) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_toggle_favorite_capability(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let device_id = match v["device_id"].as_str() {
+        Some(id) => id,
+        None => return json_error(400, "missing device_id"),
+    };
+    let capability_id = match v["capability_id"].as_str() {
+        Some(id) => id,
+        None => return json_error(400, "missing capability_id"),
+    };
+    match ctx.db.toggle_favorite_capability(device_id, capability_id) {
+        Ok(is_fav) => json_ok(&serde_json::json!({"favorite": is_fav})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_device_favorite(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let favorite = v["favorite"].as_bool().unwrap_or(false);
+
+    match ctx.db.set_device_favorite(device_id, favorite) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
