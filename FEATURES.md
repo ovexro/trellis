@@ -241,6 +241,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device/capability/value selector per action
 - [x] **Backend-backed scenes (post-v0.7.0)** — scenes persisted in SQLite (`scenes` + `scene_actions` tables) instead of localStorage. Full CRUD via Tauri commands (`create_scene`, `get_scenes`, `delete_scene`, `run_scene`) and REST API (`GET/POST /api/scenes`, `DELETE /api/scenes/{id}`, `POST /api/scenes/{id}/run`). Scene execution moved to backend (ConnectionManager sends commands to each device) so both desktop app and web dashboard can trigger scenes. New "Scenes" tab in `:9090` web dashboard with Run button per scene. Admin-only for create/delete/run.
 - [x] **Scene editing (post-v0.8.0)** — edit existing scenes (rename + add/remove/reorder actions). `update_scene` Tauri command and `PUT /api/scenes/{id}` REST endpoint replace all actions atomically. Edit button on scene cards in both desktop app and `:9090` web dashboard opens inline form pre-filled with current name and actions. Offline devices preserved in edit dropdowns with "(offline)" label so actions aren't silently lost. Admin-only.
+- [x] **Web dashboard scene CRUD (post-v0.8.0)** — full scene management in `:9090` web dashboard: "New Scene" button opens inline create form with device/capability/value selectors and action rows, Delete button on scene cards with confirmation. Previously only the desktop app could create/delete scenes. Admin-only (hidden for viewers).
 
 ## MQTT Bridge
 
