@@ -16,6 +16,7 @@ use crate::db::Database;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig};
 use crate::secret_store::{self, SecretStore};
+use crate::sinric::{SinricBridge, SinricConfig};
 
 /// Fan-out broadcaster for :9090 WebSocket dashboard clients.
 /// Each connected browser gets a `mpsc::Sender`; dead senders are
@@ -56,6 +57,7 @@ struct ApiContext {
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
+    sinric_bridge: Arc<SinricBridge>,
     secret_store: Arc<SecretStore>,
     rate_limiter: RateLimiter,
     ws_broadcaster: Arc<WsBroadcaster>,
@@ -68,7 +70,7 @@ struct ApiContext {
 /// is visible to anyone on the LAN. These keys must be accessed via their
 /// dedicated typed endpoints (e.g. `GET /api/settings/mqtt`) which return a
 /// password-redacted view.
-const SENSITIVE_SETTING_KEYS: &[&str] = &["mqtt_config"];
+const SENSITIVE_SETTING_KEYS: &[&str] = &["mqtt_config", "sinric_config"];
 
 /// Maximum allowed Content-Length for incoming requests (1 MB). The REST API
 /// only processes JSON payloads — the largest legitimate body is an MQTT config
@@ -87,6 +89,7 @@ pub fn start_api_server(
     discovery: Arc<Discovery>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<MqttBridge>,
+    sinric_bridge: Arc<SinricBridge>,
     secret_store: Arc<SecretStore>,
     ws_broadcaster: Arc<WsBroadcaster>,
     app_handle: tauri::AppHandle,
@@ -104,6 +107,7 @@ pub fn start_api_server(
             discovery,
             connection_manager,
             mqtt_bridge,
+            sinric_bridge,
             secret_store,
             rate_limiter: RateLimiter::new(),
             app_handle,
@@ -1191,6 +1195,65 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             json_ok(&ctx.mqtt_bridge.get_status())
         }
 
+        // ─── Sinric Pro ─────────────────────────────────────────────
+        ("GET", "/api/settings/sinric") => {
+            json_ok(&ctx.sinric_bridge.get_config_public())
+        }
+
+        ("PUT", "/api/settings/sinric") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let cfg: SinricConfig = match serde_json::from_str(&req.body) {
+                Ok(c) => c,
+                Err(e) => return json_error(400, &format!("Invalid Sinric config JSON: {}", e)),
+            };
+            if let Err(e) = ctx.sinric_bridge.apply_config_from_user(cfg) {
+                return json_error(500, &e);
+            }
+            let mut merged = ctx.sinric_bridge.get_config();
+            if let Err(e) = secret_store::encrypt_sinric_secret(
+                ctx.secret_store.as_ref(),
+                &mut merged,
+            ) {
+                return json_error(500, &e);
+            }
+            match serde_json::to_string(&merged) {
+                Ok(json) => {
+                    if let Err(e) = ctx.db.set_setting("sinric_config", &json) {
+                        return json_error(500, &e);
+                    }
+                }
+                Err(e) => return json_error(500, &e.to_string()),
+            }
+            json_ok(&ctx.sinric_bridge.get_status())
+        }
+
+        ("POST", "/api/sinric/clear-secret") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            if let Err(e) = ctx.sinric_bridge.clear_secret() {
+                return json_error(500, &e);
+            }
+            let mut cleared = ctx.sinric_bridge.get_config();
+            if let Err(e) = secret_store::encrypt_sinric_secret(
+                ctx.secret_store.as_ref(),
+                &mut cleared,
+            ) {
+                return json_error(500, &e);
+            }
+            match serde_json::to_string(&cleared) {
+                Ok(json) => {
+                    if let Err(e) = ctx.db.set_setting("sinric_config", &json) {
+                        return json_error(500, &e);
+                    }
+                }
+                Err(e) => return json_error(500, &e.to_string()),
+            }
+            json_ok(&ctx.sinric_bridge.get_status())
+        }
+
+        ("GET", "/api/sinric/status") => {
+            json_ok(&ctx.sinric_bridge.get_status())
+        }
+
         // ─── Settings ───────────────────────────────────────────────
         ("GET", p) if p.starts_with("/api/settings/") => {
             let key = &p["/api/settings/".len()..];
@@ -1200,7 +1263,7 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             if is_sensitive_key(key) {
                 return json_error(
                     403,
-                    "This setting key is restricted. Use its dedicated endpoint (e.g. /api/settings/mqtt for MQTT config).",
+                    "This setting key is restricted. Use its dedicated endpoint (e.g. /api/settings/mqtt, /api/settings/sinric).",
                 );
             }
             match ctx.db.get_setting(key) {

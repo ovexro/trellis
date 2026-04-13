@@ -2,6 +2,7 @@ import { useState } from "react";
 import ConfigSection from "./ConfigSection";
 import NotificationsSection from "./NotificationsSection";
 import MqttSection from "./MqttSection";
+import SinricSection from "./SinricSection";
 import ApiTokensSection from "./ApiTokensSection";
 import RemoteAccessSection from "./RemoteAccessSection";
 import DiagnosticsAboutSection from "./DiagnosticsAboutSection";
@@ -17,6 +18,7 @@ export default function Settings() {
         <ConfigSection />
         <NotificationsSection />
         <MqttSection />
+        <SinricSection />
         <ApiTokensSection onTokenCountChange={setApiTokenCount} />
         <RemoteAccessSection apiTokenCount={apiTokenCount} />
         <DiagnosticsAboutSection />

@@ -10,6 +10,7 @@ use tungstenite::{connect, Message};
 
 use crate::api::WsBroadcaster;
 use crate::mqtt::MqttBridge;
+use crate::sinric::SinricBridge;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceEvent {
@@ -29,6 +30,7 @@ pub struct ConnectionManager {
     connections: Arc<Mutex<HashMap<String, DeviceConnection>>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    sinric_bridge: Arc<Mutex<Option<Arc<SinricBridge>>>>,
     ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
 }
 
@@ -38,6 +40,7 @@ impl ConnectionManager {
             connections: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
             mqtt_bridge: Arc::new(Mutex::new(None)),
+            sinric_bridge: Arc::new(Mutex::new(None)),
             ws_broadcaster: Arc::new(Mutex::new(None)),
         }
     }
@@ -49,6 +52,10 @@ impl ConnectionManager {
 
     pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
         *self.mqtt_bridge.lock().unwrap() = Some(bridge);
+    }
+
+    pub fn set_sinric_bridge(&self, bridge: Arc<SinricBridge>) {
+        *self.sinric_bridge.lock().unwrap() = Some(bridge);
     }
 
     pub fn set_ws_broadcaster(&self, broadcaster: Arc<WsBroadcaster>) {
@@ -67,13 +74,14 @@ impl ConnectionManager {
         let stop_clone = stop_flag.clone();
         let app_handle = self.app_handle.clone();
         let mqtt_bridge = self.mqtt_bridge.clone();
+        let sinric_bridge = self.sinric_bridge.clone();
         let ws_broadcaster = self.ws_broadcaster.clone();
         let id = device_id.to_string();
         let url = format!("ws://{}:{}", ip, ws_port);
         let (command_tx, command_rx) = mpsc::channel::<String>();
 
         let thread = thread::spawn(move || {
-            ws_reader_loop(&id, &url, stop_clone, app_handle, mqtt_bridge, ws_broadcaster, command_rx);
+            ws_reader_loop(&id, &url, stop_clone, app_handle, mqtt_bridge, sinric_bridge, ws_broadcaster, command_rx);
         });
 
         conns.insert(
@@ -151,6 +159,7 @@ fn ws_reader_loop(
     stop_flag: Arc<Mutex<bool>>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    sinric_bridge: Arc<Mutex<Option<Arc<SinricBridge>>>>,
     ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     command_rx: mpsc::Receiver<String>,
 ) {
@@ -225,6 +234,11 @@ fn ws_reader_loop(
                                             mqtt_bridge.lock().unwrap().as_ref()
                                         {
                                             bridge.publish_state(device_id, cap_id, value);
+                                        }
+                                        if let Some(bridge) =
+                                            sinric_bridge.lock().unwrap().as_ref()
+                                        {
+                                            bridge.on_state_change(device_id, cap_id, value);
                                         }
                                     }
                                 } else if event_type == "heartbeat" {

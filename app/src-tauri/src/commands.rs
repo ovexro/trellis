@@ -7,6 +7,7 @@ use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
 use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
+use crate::sinric::{SinricBridge, SinricConfig, SinricConfigPublic, SinricStatus};
 use serde::Serialize;
 use serde_json::Value;
 use std::io::Read as _;
@@ -19,6 +20,7 @@ pub struct AppState {
     pub connection_manager: Arc<ConnectionManager>,
     pub serial_manager: Arc<SerialManager>,
     pub mqtt_bridge: Arc<MqttBridge>,
+    pub sinric_bridge: Arc<SinricBridge>,
 }
 
 // ─── Device discovery ────────────────────────────────────────────────────────
@@ -774,6 +776,57 @@ pub fn test_mqtt_connection(
     // Same preserve-blank rule as set_mqtt_config: if the user didn't retype
     // the password, exercise the test against the stored one.
     state.mqtt_bridge.test_connection_from_user(config)
+}
+
+// ─── Sinric Pro bridge ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_sinric_config(state: State<'_, AppState>) -> Result<SinricConfigPublic, String> {
+    Ok(state.sinric_bridge.get_config_public())
+}
+
+#[tauri::command]
+pub fn set_sinric_config(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    secret_store: State<'_, Arc<SecretStore>>,
+    config: SinricConfig,
+) -> Result<SinricStatus, String> {
+    state.sinric_bridge.apply_config_from_user(config)?;
+
+    let mut merged = state.sinric_bridge.get_config();
+    secret_store::encrypt_sinric_secret(secret_store.inner().as_ref(), &mut merged)?;
+    let json = serde_json::to_string(&merged).map_err(|e| e.to_string())?;
+    db.set_setting("sinric_config", &json)?;
+
+    Ok(state.sinric_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn clear_sinric_secret(
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    secret_store: State<'_, Arc<SecretStore>>,
+) -> Result<SinricStatus, String> {
+    state.sinric_bridge.clear_secret()?;
+    let mut cleared = state.sinric_bridge.get_config();
+    secret_store::encrypt_sinric_secret(secret_store.inner().as_ref(), &mut cleared)?;
+    let json = serde_json::to_string(&cleared).map_err(|e| e.to_string())?;
+    db.set_setting("sinric_config", &json)?;
+    Ok(state.sinric_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn get_sinric_status(state: State<'_, AppState>) -> Result<SinricStatus, String> {
+    Ok(state.sinric_bridge.get_status())
+}
+
+#[tauri::command]
+pub fn test_sinric_connection(
+    state: State<'_, AppState>,
+    config: SinricConfig,
+) -> Result<(), String> {
+    state.sinric_bridge.test_connection_from_user(config)
 }
 
 // ─── Device ordering ────────────────────────────────────────────────────────

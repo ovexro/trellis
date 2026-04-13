@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["full"] }
 mdns-sd = "0.11"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serialport = "4"
-tungstenite = "0.24"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "2", features = ["json"] }
 chrono = "0.4"
 flate2 = "1"
@@ -49,6 +49,7 @@ keyring = { version = "3", features = ["sync-secret-service", "vendored"] }
 # the SQLite row only ever holds the digest, so a leaked database can't be
 # used to authenticate against the REST API.
 sha2 = "0.10"
+hmac = "0.12"
 # Cryptographically secure RNG for API token byte generation. We use 32
 # bytes from the OS RNG → base64url-encoded → prefixed `trls_`.
 rand = "0.8"

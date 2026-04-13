@@ -205,6 +205,32 @@ pub fn decrypt_mqtt_password(store: &SecretStore, cfg: &mut MqttConfig) -> Resul
     Ok(())
 }
 
+// ─── SinricConfig field-level helpers ─────────────────────────────────────
+//
+// Same pattern as the MqttConfig helpers above. The `api_secret` field is
+// encrypted at rest; everything else (api_key, device_mappings) is plaintext.
+
+use crate::sinric::SinricConfig;
+
+pub fn encrypt_sinric_secret(store: &SecretStore, cfg: &mut SinricConfig) -> Result<(), String> {
+    if cfg.api_secret.is_empty() {
+        return Ok(());
+    }
+    if is_encrypted(&cfg.api_secret) {
+        return Ok(());
+    }
+    cfg.api_secret = store.encrypt(&cfg.api_secret)?;
+    Ok(())
+}
+
+pub fn decrypt_sinric_secret(store: &SecretStore, cfg: &mut SinricConfig) -> Result<(), String> {
+    if !is_encrypted(&cfg.api_secret) {
+        return Ok(());
+    }
+    cfg.api_secret = store.decrypt(&cfg.api_secret)?;
+    Ok(())
+}
+
 // ─── Keyring backend ───────────────────────────────────────────────────────
 
 fn load_from_keyring() -> Result<Option<Identity>, String> {

@@ -12,6 +12,7 @@ use crate::connection::ConnectionManager;
 use crate::db::Database;
 use crate::device::{Device, DeviceInfo, SystemInfo};
 use crate::mqtt::MqttBridge;
+use crate::sinric::SinricBridge;
 
 const SERVICE_TYPE: &str = "_trellis._tcp.local.";
 const DEFAULT_HEALTH_CHECK_SECS: u64 = 30;
@@ -26,6 +27,7 @@ pub struct Discovery {
     devices: Arc<Mutex<HashMap<String, Device>>>,
     connection_manager: Arc<ConnectionManager>,
     mqtt_bridge: Arc<Mutex<Option<Arc<MqttBridge>>>>,
+    sinric_bridge: Arc<Mutex<Option<Arc<SinricBridge>>>>,
     ws_broadcaster: Arc<Mutex<Option<Arc<WsBroadcaster>>>>,
     stop_flag: Arc<Mutex<bool>>,
 }
@@ -36,6 +38,7 @@ impl Discovery {
             devices: Arc::new(Mutex::new(HashMap::new())),
             connection_manager,
             mqtt_bridge: Arc::new(Mutex::new(None)),
+            sinric_bridge: Arc::new(Mutex::new(None)),
             ws_broadcaster: Arc::new(Mutex::new(None)),
             stop_flag: Arc::new(Mutex::new(false)),
         }
@@ -43,6 +46,10 @@ impl Discovery {
 
     pub fn set_mqtt_bridge(&self, bridge: Arc<MqttBridge>) {
         *self.mqtt_bridge.lock().unwrap() = Some(bridge);
+    }
+
+    pub fn set_sinric_bridge(&self, bridge: Arc<SinricBridge>) {
+        *self.sinric_bridge.lock().unwrap() = Some(bridge);
     }
 
     pub fn set_ws_broadcaster(&self, broadcaster: Arc<WsBroadcaster>) {

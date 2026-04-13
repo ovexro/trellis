@@ -55,6 +55,39 @@ export type MqttStatus = {
   messages_received: number;
 };
 
+// ─── Sinric Pro ──────────────────────────────────────────────────────────
+
+export type SinricDeviceMapping = {
+  sinric_device_id: string;
+  trellis_device_id: string;
+};
+
+export type SinricConfig = {
+  enabled: boolean;
+  api_key: string;
+  api_secret: string;
+  device_mappings: SinricDeviceMapping[];
+};
+
+export type SinricConfigPublic = Omit<SinricConfig, "api_secret"> & { has_secret: boolean };
+
+export type SinricStatus = {
+  enabled: boolean;
+  connected: boolean;
+  last_error: string | null;
+  messages_sent: number;
+  messages_received: number;
+};
+
+export const DEFAULT_SINRIC_CONFIG: SinricConfig = {
+  enabled: false,
+  api_key: "",
+  api_secret: "",
+  device_mappings: [],
+};
+
+// ─── MQTT ────────────────────────────────────────────────────────────────
+
 export const DEFAULT_MQTT_CONFIG: MqttConfig = {
   enabled: false,
   broker_host: "localhost",

@@ -10,6 +10,7 @@ mod ota;
 mod scheduler;
 mod secret_store;
 mod serial;
+mod sinric;
 
 use commands::*;
 use connection::ConnectionManager;
@@ -17,6 +18,7 @@ use discovery::Discovery;
 use mqtt::MqttBridge;
 use secret_store::SecretStore;
 use serial::SerialManager;
+use sinric::SinricBridge;
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -28,28 +30,30 @@ pub fn run() {
 
     let connection_manager = Arc::new(ConnectionManager::new());
     let mqtt_bridge = Arc::new(MqttBridge::new(connection_manager.clone()));
+    let sinric_bridge = Arc::new(SinricBridge::new(connection_manager.clone()));
     let discovery = Arc::new(Discovery::new(connection_manager.clone()));
     let serial_manager = Arc::new(SerialManager::new());
 
-    // Wire the bridge into ConnectionManager so device-event updates are
-    // mirrored to MQTT in real time, and into Discovery so HA discovery
-    // configs are republished when devices appear or change. Also give the
-    // bridge a back-reference to Discovery so polish #1 (instant discovery
-    // on enable) and polish #2 (republish on broker reconnect) can read the
-    // current device list.
+    // Wire bridges into ConnectionManager so device-event updates are
+    // mirrored to MQTT and Sinric in real time, and into Discovery so HA
+    // discovery configs are republished when devices appear or change.
     let ws_broadcaster = Arc::new(api::WsBroadcaster::new());
 
     connection_manager.set_mqtt_bridge(mqtt_bridge.clone());
+    connection_manager.set_sinric_bridge(sinric_bridge.clone());
     connection_manager.set_ws_broadcaster(ws_broadcaster.clone());
     discovery.set_mqtt_bridge(mqtt_bridge.clone());
+    discovery.set_sinric_bridge(sinric_bridge.clone());
     discovery.set_ws_broadcaster(ws_broadcaster.clone());
     mqtt_bridge.set_discovery(discovery.clone());
+    sinric_bridge.set_discovery(discovery.clone());
 
     let app_state = AppState {
         discovery: discovery.clone(),
         connection_manager: connection_manager.clone(),
         serial_manager,
         mqtt_bridge: mqtt_bridge.clone(),
+        sinric_bridge: sinric_bridge.clone(),
     };
 
     tauri::Builder::default()
@@ -128,6 +132,11 @@ pub fn run() {
             reorder_devices,
             check_github_releases,
             start_github_ota,
+            get_sinric_config,
+            set_sinric_config,
+            clear_sinric_secret,
+            get_sinric_status,
+            test_sinric_connection,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;
@@ -288,6 +297,7 @@ pub fn run() {
                 discovery.clone(),
                 connection_manager.clone(),
                 mqtt_bridge.clone(),
+                sinric_bridge.clone(),
                 secret_store.clone(),
                 ws_broadcaster.clone(),
                 app.handle().clone(),
@@ -338,6 +348,45 @@ pub fn run() {
                         }
                         Err(e) => {
                             log::warn!("[MQTT] Failed to parse saved config JSON: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // Restore saved Sinric Pro bridge config (same pattern as MQTT above)
+            if let Some(db_state) = app.try_state::<db::Database>() {
+                if let Ok(Some(json)) = db_state.get_setting("sinric_config") {
+                    match serde_json::from_str::<sinric::SinricConfig>(&json) {
+                        Ok(mut cfg) => {
+                            let was_legacy_plaintext = !cfg.api_secret.is_empty()
+                                && !secret_store::is_encrypted(&cfg.api_secret);
+                            if let Err(e) = secret_store::decrypt_sinric_secret(
+                                secret_store.as_ref(),
+                                &mut cfg,
+                            ) {
+                                log::warn!("[Sinric] Failed to decrypt stored secret: {}", e);
+                            }
+                            if let Err(e) = sinric_bridge.apply_config(cfg.clone()) {
+                                log::warn!("[Sinric] Failed to start bridge from saved config: {}", e);
+                            }
+                            if was_legacy_plaintext {
+                                let mut to_save = cfg;
+                                if let Err(e) = secret_store::encrypt_sinric_secret(
+                                    secret_store.as_ref(),
+                                    &mut to_save,
+                                ) {
+                                    log::warn!("[Sinric] Migration encrypt failed: {}", e);
+                                } else if let Ok(json) = serde_json::to_string(&to_save) {
+                                    if let Err(e) = db_state.set_setting("sinric_config", &json) {
+                                        log::warn!("[Sinric] Migration save failed: {}", e);
+                                    } else {
+                                        log::info!("[Sinric] Migrated legacy plaintext secret to enc:v1");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[Sinric] Failed to parse saved config JSON: {}", e);
                         }
                     }
                 }
