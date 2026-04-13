@@ -287,6 +287,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] **Scene scheduling (post-v0.7.0)** — schedules can fire entire scenes on a cron schedule. Schedule creation form has a type toggle (Single Action / Scene). `scene_id` column on `schedules` table. Scheduler loads all scene actions and executes sequentially. Scene name shown in schedule cards in both desktop app and web dashboard.
 - [x] Conditional rules ("if temp > 30, turn on fan")
 - [x] Rule evaluation engine (checks on sensor updates, 30s debounce)
+- [x] **Compound rule conditions with AND/OR logic (post-v0.9.0)** — rules support multiple conditions combined with AND or OR logic. Each condition can reference a different device and sensor, enabling cross-device rules like "if temp > 30 AND humidity < 40, turn on fan". Four operators: above, below, equals, not_equals. Multi-condition form in desktop app with add/remove condition rows and AND/OR toggle. Evaluation reads current device states from the Zustand store for cross-device conditions (offline devices' conditions evaluate as "not met"). Legacy single-condition rules continue to work via fallback. New `logic` and `conditions` (JSON) columns on the rules table. Config import/export preserves compound conditions. Web dashboard shows compound conditions with AND/OR labels.
 - [x] Webhooks (POST to URL on device_offline, device_online, alert_triggered, sensor_update)
 - [x] Device templates (save/load capability configs for firmware generator)
 - [x] CSV data export (download sensor history from charts)
