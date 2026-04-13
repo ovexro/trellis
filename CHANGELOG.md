@@ -2,6 +2,21 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.5.0] — 2026-04-13
+
+Desktop Metrics page release. New top-level monitoring overview in the desktop app, plus polish fixes for chart loading states and CSV exports.
+
+### Added
+
+- **Metrics page.** Top-level monitoring overview in the desktop app showing all devices with uptime ribbon, RSSI/heap/sensor charts in a 2-column grid, global time range picker (1h/6h/24h/7d), device status indicators, and "Details" links to device detail. Reuses existing MetricChart and UptimeTimeline components via new `externalHours` prop. Matches the `:9090` web dashboard Metrics tab layout.
+- **Online device count in Metrics header.** Subtitle now shows "N devices · M online" with green highlight.
+- **Device name in CSV export filenames.** Exported CSVs now include the device name (e.g. `MyESP32_rssi_24h.csv`) instead of bare metric ID.
+
+### Fixed
+
+- **Unreachable empty-state message in MetricChart.** The "Waiting for data from device..." message was dead code — `loading` was derived from `data.length === 0` inside the `data.length === 0` branch, so it was always `true`. Replaced with a `fetchedOnce` flag that correctly distinguishes initial load from no-data.
+- **Offline device context in empty charts.** Charts for offline devices with no data in the selected range now show "Device is offline — no data in this range" instead of spinning on "Loading..." indefinitely.
+
 ## [0.4.9] — 2026-04-13
 
 GitHub OTA polish release. Download progress, friendlier error messages, pre-release filtering, and asset name filtering — all surfaced in both the desktop app and web dashboard.
