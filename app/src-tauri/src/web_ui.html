@@ -831,6 +831,16 @@
     .fp-bg-btn.danger:hover { color: #f87171; }
     .fp-remove-btn { display: flex; align-items: center; gap: 0.4rem; width: 100%; padding: 0.35rem 0.5rem; font-size: 0.75rem; color: rgba(248,113,113,0.7); border: none; background: none; border-radius: var(--radius-sm); cursor: pointer; transition: background 0.15s, color 0.15s; }
     .fp-remove-btn:hover { background: rgba(39,39,42,0.5); color: #f87171; }
+    .fp-room { position: absolute; border-radius: 8px; user-select: none; cursor: grab; z-index: 5; }
+    .fp-room:active { cursor: grabbing; }
+    .fp-room-label { position: absolute; top: 4px; left: 8px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em; text-shadow: 0 1px 2px rgba(0,0,0,0.6); pointer-events: none; }
+    .fp-room-handle { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize; border-top-left-radius: 4px; opacity: 0.85; }
+    .fp-room-edit { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.5rem 0.35rem; }
+    .fp-room-edit input { padding: 0.25rem 0.4rem; font-size: 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); width: 100%; }
+    .fp-room-edit input:focus { outline: none; border-color: var(--accent); }
+    .fp-room-swatches { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+    .fp-room-swatch { width: 18px; height: 18px; border-radius: 4px; border: 2px solid transparent; cursor: pointer; }
+    .fp-room-swatch.active { border-color: var(--text); transform: scale(1.1); }
     @media (max-width: 640px) {
       .fp-layout { flex-direction: column; height: auto; }
       .fp-sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 180px; }
@@ -953,6 +963,7 @@
                 <div style="font-size:0.9rem;color:var(--text-dim);">Drag devices from the sidebar to place them</div>
                 <div style="font-size:0.75rem;color:var(--text-dim);margin-top:0.3rem;">Tip: set a background image of your floor plan</div>
               </div>
+              <div id="fpRooms"></div>
               <div id="fpNodes"></div>
               <div class="fp-popup hidden" id="fpPopup"></div>
             </div>
@@ -3540,6 +3551,9 @@
     var fpCompactNodes = false;
     var fpUndoEntry = null; // { type: 'place'|'move'|'remove', deviceId, floorId, prevX?, prevY? }
     var FP_GRID_STEP = 4;
+    var fpRooms = [];
+    var fpSelectedRoomId = null;
+    var FP_ROOM_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#8b5cf6', '#64748b'];
 
     function fpSnap(v) {
       if (!fpSnapToGrid) return v;
@@ -3594,8 +3608,93 @@
       }
       await fpLoadFloorData();
       await fpLoadAllPositions();
+      await fpLoadRooms();
       renderFloorTabs();
       renderFloorPlan();
+    }
+
+    async function fpLoadRooms() {
+      fpRooms = [];
+      if (fpActiveFloorId === null) return;
+      try {
+        fpRooms = await api('/api/floor-plans/' + fpActiveFloorId + '/rooms');
+      } catch (e) { fpRooms = []; }
+    }
+
+    async function fpAddRoom() {
+      if (fpActiveFloorId === null) return;
+      var count = fpRooms.length;
+      var color = FP_ROOM_COLORS[count % FP_ROOM_COLORS.length];
+      try {
+        var result = await api('/api/floor-plans/' + fpActiveFloorId + '/rooms', {
+          method: 'POST',
+          body: { name: 'Room ' + (count + 1), color: color, x: 20, y: 20, w: 30, h: 25 }
+        });
+        await fpLoadRooms();
+        fpSelectedRoomId = result.id;
+        fpSelected = null;
+        renderFloorPlan();
+      } catch (e) { console.error('Failed to create room:', e); }
+    }
+
+    async function fpUpdateRoom(id, fields) {
+      // Optimistic
+      fpRooms.forEach(function(r) { if (r.id === id) Object.assign(r, fields); });
+      renderFloorPlan();
+      try {
+        await api('/api/rooms/' + id, { method: 'PUT', body: fields });
+      } catch (e) {
+        console.error('Failed to update room:', e);
+        await fpLoadRooms();
+        renderFloorPlan();
+      }
+    }
+
+    async function fpDeleteRoom(id) {
+      fpRooms = fpRooms.filter(function(r) { return r.id !== id; });
+      if (fpSelectedRoomId === id) fpSelectedRoomId = null;
+      renderFloorPlan();
+      try { await api('/api/rooms/' + id, { method: 'DELETE' }); }
+      catch (e) { await fpLoadRooms(); renderFloorPlan(); }
+    }
+
+    function fpStartRoomDrag(roomId, mode, evt) {
+      evt.preventDefault();
+      evt.stopPropagation();
+      var canvas = document.getElementById('fpCanvas');
+      var room = fpRooms.find(function(r) { return r.id === roomId; });
+      if (!room) return;
+      var origX = room.x, origY = room.y, origW = room.w, origH = room.h;
+      var sX = evt.clientX, sY = evt.clientY;
+      fpSelectedRoomId = roomId;
+      fpSelected = null;
+      document.getElementById('fpPopup').classList.add('hidden');
+      renderFloorPlan();
+
+      function clampMove(v, size) { return Math.max(0, Math.min(100 - size, v)); }
+
+      function onMove(e) {
+        var rect = canvas.getBoundingClientRect();
+        var dx = ((e.clientX - sX) / rect.width) * 100;
+        var dy = ((e.clientY - sY) / rect.height) * 100;
+        if (mode === 'move') {
+          room.x = clampMove(origX + dx, origW);
+          room.y = clampMove(origY + dy, origH);
+        } else {
+          room.w = Math.max(5, Math.min(100 - origX, origW + dx));
+          room.h = Math.max(5, Math.min(100 - origY, origH + dy));
+        }
+        renderFloorPlan();
+      }
+      async function onUp() {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        try {
+          await api('/api/rooms/' + roomId, { method: 'PUT', body: { x: room.x, y: room.y, w: room.w, h: room.h } });
+        } catch (e) { await fpLoadRooms(); renderFloorPlan(); }
+      }
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
     }
 
     async function fpLoadFloorData() {
@@ -3623,8 +3722,10 @@
     async function fpSwitchFloor(floorId) {
       fpActiveFloorId = floorId;
       fpSelected = null;
+      fpSelectedRoomId = null;
       document.getElementById('fpPopup').classList.add('hidden');
       await fpLoadFloorData();
+      await fpLoadRooms();
       renderFloorTabs();
       renderFloorPlan();
     }
@@ -3772,8 +3873,32 @@
         ? 'radial-gradient(circle, rgba(45,212,191,0.25) 1px, transparent 1px)'
         : 'radial-gradient(circle, rgba(113,113,122,0.15) 1px, transparent 1px)';
 
-      // Empty state
-      emptyState.classList.toggle('hidden', fpPositions.length > 0);
+      // Empty state (hide if rooms OR devices are present)
+      emptyState.classList.toggle('hidden', fpPositions.length > 0 || fpRooms.length > 0);
+
+      // Rooms
+      var roomsEl = document.getElementById('fpRooms');
+      roomsEl.innerHTML = '';
+      fpRooms.forEach(function(room) {
+        var isSel = fpSelectedRoomId === room.id;
+        var el = document.createElement('div');
+        el.className = 'fp-room' + (isSel ? ' selected' : '');
+        el.style.left = room.x + '%';
+        el.style.top = room.y + '%';
+        el.style.width = room.w + '%';
+        el.style.height = room.h + '%';
+        el.style.backgroundColor = room.color + '14';
+        el.style.border = '1.5px ' + (isSel ? 'solid' : 'dashed') + ' ' + room.color + (isSel ? 'cc' : '66');
+        el.innerHTML = '<div class="fp-room-label" style="color:' + room.color + ';">' + esc(room.name) + '</div>' +
+          (isSel ? '<div class="fp-room-handle" style="background:' + room.color + ';"></div>' : '');
+        el.addEventListener('mousedown', function(e) { fpStartRoomDrag(room.id, 'move', e); });
+        el.addEventListener('click', function(e) { e.stopPropagation(); });
+        if (isSel) {
+          var handle = el.querySelector('.fp-room-handle');
+          handle.addEventListener('mousedown', function(e) { fpStartRoomDrag(room.id, 'resize', e); });
+        }
+        roomsEl.appendChild(el);
+      });
 
       // Counter
       counter.textContent = fpPositions.length + ' / ' + devices.length + ' placed';
@@ -3822,6 +3947,11 @@
       compactBtn.innerHTML = '&#9724; Compact labels';
       compactBtn.onclick = function() { fpCompactNodes = !fpCompactNodes; renderFloorPlan(); };
       footer.appendChild(compactBtn);
+      var addRoomBtn = document.createElement('button');
+      addRoomBtn.className = 'fp-bg-btn';
+      addRoomBtn.innerHTML = '&#9634; Add room';
+      addRoomBtn.onclick = fpAddRoom;
+      footer.appendChild(addRoomBtn);
       var bgBtn = document.createElement('button');
       bgBtn.className = 'fp-bg-btn';
       bgBtn.innerHTML = '&#128444; ' + (fpBackground ? 'Change background' : 'Set background');
@@ -3840,6 +3970,38 @@
         rmBtn.innerHTML = '&#128465; Remove from floor plan';
         rmBtn.onclick = function() { fpRemoveDevice(fpSelected); };
         footer.appendChild(rmBtn);
+      }
+
+      // Room edit panel (when a room is selected)
+      var selRoom = fpSelectedRoomId != null ? fpRooms.find(function(r) { return r.id === fpSelectedRoomId; }) : null;
+      if (selRoom) {
+        var edit = document.createElement('div');
+        edit.className = 'fp-room-edit';
+        edit.innerHTML =
+          '<div style="font-size:0.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.04em;">Room</div>' +
+          '<input id="fpRoomName" type="text" value="' + esc(selRoom.name) + '">' +
+          '<div class="fp-room-swatches" id="fpRoomSwatches"></div>';
+        footer.appendChild(edit);
+        var nameInput = edit.querySelector('#fpRoomName');
+        nameInput.addEventListener('change', function() {
+          var v = nameInput.value.trim() || 'Room';
+          fpUpdateRoom(selRoom.id, { name: v });
+        });
+        nameInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') nameInput.blur(); });
+        var sw = edit.querySelector('#fpRoomSwatches');
+        FP_ROOM_COLORS.forEach(function(c) {
+          var dot = document.createElement('div');
+          dot.className = 'fp-room-swatch' + (c.toLowerCase() === (selRoom.color || '').toLowerCase() ? ' active' : '');
+          dot.style.background = c;
+          dot.title = c;
+          dot.onclick = function() { fpUpdateRoom(selRoom.id, { color: c }); renderFloorPlan(); };
+          sw.appendChild(dot);
+        });
+        var delRoomBtn = document.createElement('button');
+        delRoomBtn.className = 'fp-remove-btn';
+        delRoomBtn.innerHTML = '&#128465; Delete room';
+        delRoomBtn.onclick = function() { fpDeleteRoom(selRoom.id); };
+        footer.appendChild(delRoomBtn);
       }
 
       // Placed nodes
@@ -3919,6 +4081,7 @@
       canvas.addEventListener('click', function(e) {
         if (e.target === canvas || e.target.classList.contains('fp-grid-dots') || e.target.classList.contains('fp-empty-state')) {
           fpSelected = null;
+          fpSelectedRoomId = null;
           document.getElementById('fpPopup').classList.add('hidden');
           renderFloorPlan();
         }

@@ -25,6 +25,19 @@ pub struct DevicePosition {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct FloorPlanRoom {
+    pub id: i64,
+    pub floor_id: i64,
+    pub name: String,
+    pub color: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MetricPoint {
     pub value: f64,
     pub timestamp: String,
@@ -885,6 +898,141 @@ impl Database {
         Ok(())
     }
 
+    // ─── Floor plan rooms ───────────────────────────────────────────────
+
+    pub fn get_rooms(&self, floor_id: i64) -> Result<Vec<FloorPlanRoom>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, floor_id, name, color, x, y, w, h, sort_order
+                 FROM floor_plan_rooms WHERE floor_id = ?1
+                 ORDER BY sort_order, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![floor_id], |r| {
+                Ok(FloorPlanRoom {
+                    id: r.get(0)?,
+                    floor_id: r.get(1)?,
+                    name: r.get(2)?,
+                    color: r.get(3)?,
+                    x: r.get(4)?,
+                    y: r.get(5)?,
+                    w: r.get(6)?,
+                    h: r.get(7)?,
+                    sort_order: r.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    pub fn create_room(
+        &self,
+        floor_id: i64,
+        name: &str,
+        color: &str,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        let sort_order: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM floor_plan_rooms WHERE floor_id = ?1",
+                rusqlite::params![floor_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO floor_plan_rooms (floor_id, name, color, x, y, w, h, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![floor_id, name, color, x, y, w, h, sort_order],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn update_room(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        color: Option<&str>,
+        x: Option<f64>,
+        y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(n) = name {
+            conn.execute(
+                "UPDATE floor_plan_rooms SET name = ?1 WHERE id = ?2",
+                rusqlite::params![n, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        if let Some(c) = color {
+            conn.execute(
+                "UPDATE floor_plan_rooms SET color = ?1 WHERE id = ?2",
+                rusqlite::params![c, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // x/y/w/h typically move together on resize/move; batch when all 4 supplied.
+        if let (Some(xv), Some(yv), Some(wv), Some(hv)) = (x, y, w, h) {
+            conn.execute(
+                "UPDATE floor_plan_rooms SET x = ?1, y = ?2, w = ?3, h = ?4 WHERE id = ?5",
+                rusqlite::params![xv, yv, wv, hv, id],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            if let Some(v) = x {
+                conn.execute(
+                    "UPDATE floor_plan_rooms SET x = ?1 WHERE id = ?2",
+                    rusqlite::params![v, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if let Some(v) = y {
+                conn.execute(
+                    "UPDATE floor_plan_rooms SET y = ?1 WHERE id = ?2",
+                    rusqlite::params![v, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if let Some(v) = w {
+                conn.execute(
+                    "UPDATE floor_plan_rooms SET w = ?1 WHERE id = ?2",
+                    rusqlite::params![v, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            if let Some(v) = h {
+                conn.execute(
+                    "UPDATE floor_plan_rooms SET h = ?1 WHERE id = ?2",
+                    rusqlite::params![v, id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete_room(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM floor_plan_rooms WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     // ─── Settings ────────────────────────────────────────────────────────
 
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
@@ -1652,6 +1800,25 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ).map_err(|e| e.to_string())?;
         }
     }
+
+    // Floor plan rooms (post-v0.10.1 — named rectangular regions on a floor).
+    // Devices placed inside a room inherit a derived `room` property in the UI
+    // (computed, not stored on the device). Rectangles only in v1; polygons and
+    // rotation deferred to a future Floor Plan v3 if demand shows up.
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS floor_plan_rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            floor_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#6366f1',
+            x REAL NOT NULL DEFAULT 10.0,
+            y REAL NOT NULL DEFAULT 10.0,
+            w REAL NOT NULL DEFAULT 30.0,
+            h REAL NOT NULL DEFAULT 30.0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (floor_id) REFERENCES floor_plans(id) ON DELETE CASCADE
+        );
+    ").map_err(|e| e.to_string())?;
 
     // Scenes + scene actions (backend-backed scenes, replaces localStorage)
     conn.execute_batch("

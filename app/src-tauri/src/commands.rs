@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
@@ -756,6 +756,57 @@ pub fn set_device_position(db: State<'_, Database>, device_id: String, floor_id:
 #[tauri::command]
 pub fn remove_device_position(db: State<'_, Database>, device_id: String) -> Result<(), String> {
     db.remove_device_position(&device_id)
+}
+
+// ─── Floor plan rooms ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_rooms(db: State<'_, Database>, floor_id: i64) -> Result<Vec<FloorPlanRoom>, String> {
+    db.get_rooms(floor_id)
+}
+
+#[tauri::command]
+pub fn create_room(
+    db: State<'_, Database>,
+    floor_id: i64,
+    name: String,
+    color: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    w: Option<f64>,
+    h: Option<f64>,
+) -> Result<i64, String> {
+    let color = color.unwrap_or_else(|| "#6366f1".to_string());
+    let x = x.unwrap_or(10.0).clamp(0.0, 100.0);
+    let y = y.unwrap_or(10.0).clamp(0.0, 100.0);
+    let w = w.unwrap_or(30.0).clamp(1.0, 100.0).min(100.0 - x);
+    let h = h.unwrap_or(30.0).clamp(1.0, 100.0).min(100.0 - y);
+    db.create_room(floor_id, name.trim(), &color, x, y, w, h)
+}
+
+#[tauri::command]
+pub fn update_room(
+    db: State<'_, Database>,
+    id: i64,
+    name: Option<String>,
+    color: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+    w: Option<f64>,
+    h: Option<f64>,
+) -> Result<(), String> {
+    let name_ref = name.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let color_ref = color.as_deref().filter(|s| !s.is_empty());
+    let x = x.map(|v| v.clamp(0.0, 100.0));
+    let y = y.map(|v| v.clamp(0.0, 100.0));
+    let w = w.map(|v| v.clamp(1.0, 100.0));
+    let h = h.map(|v| v.clamp(1.0, 100.0));
+    db.update_room(id, name_ref, color_ref, x, y, w, h)
+}
+
+#[tauri::command]
+pub fn delete_room(db: State<'_, Database>, id: i64) -> Result<(), String> {
+    db.delete_room(id)
 }
 
 // ─── CSV export ─────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import {
   Layers,
   Grid3x3,
   Minimize2,
+  Square,
 } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type { Capability, Device } from "@/lib/types";
@@ -36,6 +37,23 @@ interface DevicePosition {
   x: number;
   y: number;
 }
+
+interface Room {
+  id: number;
+  floor_id: number;
+  name: string;
+  color: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  sort_order: number;
+}
+
+const ROOM_COLORS = [
+  "#6366f1", "#10b981", "#f59e0b", "#ef4444",
+  "#ec4899", "#14b8a6", "#8b5cf6", "#64748b",
+];
 
 // "place" = device was newly placed (undo = remove it)
 // "move"  = device was repositioned (undo = restore old x,y)
@@ -474,6 +492,18 @@ export default function FloorPlan() {
   const [renameValue, setRenameValue] = useState("");
   const [showAddFloor, setShowAddFloor] = useState(false);
   const [newFloorName, setNewFloorName] = useState("");
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [selectedRoomId, setSelectedRoomId] = useState<number | null>(null);
+  const [roomDrag, setRoomDrag] = useState<{
+    id: number;
+    mode: "move" | "resize";
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    origW: number;
+    origH: number;
+  } | null>(null);
 
   useEffect(() => {
     initEventListeners();
@@ -516,6 +546,16 @@ export default function FloorPlan() {
     }
   }, []);
 
+  // Load rooms for a specific floor
+  const loadRooms = useCallback(async (floorId: number) => {
+    try {
+      const list = await invoke<Room[]>("get_rooms", { floorId });
+      setRooms(list);
+    } catch (err) {
+      console.error("Failed to load rooms:", err);
+    }
+  }, []);
+
   // Initial load
   useEffect(() => {
     (async () => {
@@ -531,10 +571,12 @@ export default function FloorPlan() {
   useEffect(() => {
     if (activeFloorId === null) return;
     loadFloorData(activeFloorId);
+    loadRooms(activeFloorId);
+    setSelectedRoomId(null);
     // Set background from the active floor
     const floor = floors.find((f) => f.id === activeFloorId);
     setBackground(floor?.background ?? null);
-  }, [activeFloorId, floors, loadFloorData]);
+  }, [activeFloorId, floors, loadFloorData, loadRooms]);
 
   // Reload helper
   const reloadCurrentFloor = useCallback(async () => {
@@ -654,6 +696,131 @@ export default function FloorPlan() {
       console.error("Failed to delete floor:", err);
     }
   };
+
+  // ─── Rooms ────────────────────────────────────────────────────
+  const handleAddRoom = async () => {
+    if (activeFloorId === null) return;
+    const count = rooms.length;
+    const color = ROOM_COLORS[count % ROOM_COLORS.length];
+    const name = `Room ${count + 1}`;
+    try {
+      const id = await invoke<number>("create_room", {
+        floorId: activeFloorId,
+        name,
+        color,
+        x: 20,
+        y: 20,
+        w: 30,
+        h: 25,
+      });
+      await loadRooms(activeFloorId);
+      setSelectedRoomId(id);
+      setSelected(null);
+      setPopup(null);
+    } catch (err) {
+      console.error("Failed to create room:", err);
+    }
+  };
+
+  const handleUpdateRoom = async (
+    id: number,
+    fields: Partial<Pick<Room, "name" | "color" | "x" | "y" | "w" | "h">>,
+  ) => {
+    // Optimistic
+    setRooms((prev) => prev.map((r) => (r.id === id ? { ...r, ...fields } : r)));
+    try {
+      await invoke("update_room", { id, ...fields });
+    } catch (err) {
+      console.error("Failed to update room:", err);
+      if (activeFloorId !== null) await loadRooms(activeFloorId);
+    }
+  };
+
+  const handleDeleteRoom = async (id: number) => {
+    setRooms((prev) => prev.filter((r) => r.id !== id));
+    if (selectedRoomId === id) setSelectedRoomId(null);
+    try {
+      await invoke("delete_room", { id });
+    } catch (err) {
+      console.error("Failed to delete room:", err);
+      if (activeFloorId !== null) await loadRooms(activeFloorId);
+    }
+  };
+
+  const handleRoomMouseDown = (
+    id: number,
+    mode: "move" | "resize",
+    e: React.MouseEvent,
+  ) => {
+    const room = rooms.find((r) => r.id === id);
+    if (!room) return;
+    e.stopPropagation();
+    setSelectedRoomId(id);
+    setSelected(null);
+    setPopup(null);
+    setRoomDrag({
+      id,
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: room.x,
+      origY: room.y,
+      origW: room.w,
+      origH: room.h,
+    });
+  };
+
+  useEffect(() => {
+    if (!roomDrag) return;
+
+    const clampMove = (v: number, size: number) =>
+      Math.max(0, Math.min(100 - size, v));
+
+    const onMove = (e: MouseEvent) => {
+      if (!canvasRef.current) return;
+      const rect = canvasRef.current.getBoundingClientRect();
+      const dxPct = ((e.clientX - roomDrag.startX) / rect.width) * 100;
+      const dyPct = ((e.clientY - roomDrag.startY) / rect.height) * 100;
+      if (roomDrag.mode === "move") {
+        const nx = clampMove(roomDrag.origX + dxPct, roomDrag.origW);
+        const ny = clampMove(roomDrag.origY + dyPct, roomDrag.origH);
+        setRooms((prev) =>
+          prev.map((r) => (r.id === roomDrag.id ? { ...r, x: nx, y: ny } : r)),
+        );
+      } else {
+        const nw = Math.max(5, Math.min(100 - roomDrag.origX, roomDrag.origW + dxPct));
+        const nh = Math.max(5, Math.min(100 - roomDrag.origY, roomDrag.origH + dyPct));
+        setRooms((prev) =>
+          prev.map((r) => (r.id === roomDrag.id ? { ...r, w: nw, h: nh } : r)),
+        );
+      }
+    };
+
+    const onUp = async () => {
+      const current = rooms.find((r) => r.id === roomDrag.id);
+      setRoomDrag(null);
+      if (!current) return;
+      try {
+        await invoke("update_room", {
+          id: roomDrag.id,
+          x: current.x,
+          y: current.y,
+          w: current.w,
+          h: current.h,
+        });
+      } catch (err) {
+        console.error("Failed to persist room geometry:", err);
+        if (activeFloorId !== null) await loadRooms(activeFloorId);
+      }
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [roomDrag, rooms, activeFloorId, loadRooms]);
 
   // ─── Canvas drag: drop a new device from the sidebar ──────────
   const handleCanvasDragOver = (e: React.DragEvent) => {
@@ -851,6 +1018,7 @@ export default function FloorPlan() {
     if (e.target === canvasRef.current || (e.target as HTMLElement).dataset.canvasBg) {
       setSelected(null);
       setPopup(null);
+      setSelectedRoomId(null);
     }
   };
 
@@ -936,6 +1104,13 @@ export default function FloorPlan() {
               Compact labels
             </button>
             <button
+              onClick={handleAddRoom}
+              className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 rounded-lg transition-colors"
+            >
+              <Square size={13} />
+              Add room
+            </button>
+            <button
               onClick={handleBackgroundUpload}
               className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 rounded-lg transition-colors"
             >
@@ -965,6 +1140,53 @@ export default function FloorPlan() {
               </button>
             </div>
           )}
+
+          {/* Selected room actions */}
+          {selectedRoomId !== null && rooms.find((r) => r.id === selectedRoomId) && (() => {
+            const room = rooms.find((r) => r.id === selectedRoomId)!;
+            return (
+              <div className="p-2 border-t border-zinc-800/50 space-y-2">
+                <div className="text-[11px] text-zinc-500 px-1 uppercase tracking-wide">
+                  Room
+                </div>
+                <input
+                  value={room.name}
+                  onChange={(e) =>
+                    setRooms((prev) =>
+                      prev.map((r) => (r.id === room.id ? { ...r, name: e.target.value } : r)),
+                    )
+                  }
+                  onBlur={(e) => handleUpdateRoom(room.id, { name: e.target.value.trim() || "Room" })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  }}
+                  className="w-full px-2 py-1 text-xs bg-zinc-800 border border-zinc-700 rounded-md text-zinc-200 focus:outline-none focus:border-trellis-500"
+                />
+                <div className="flex flex-wrap gap-1.5">
+                  {ROOM_COLORS.map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => handleUpdateRoom(room.id, { color: c })}
+                      className={`w-5 h-5 rounded-md border-2 transition-all ${
+                        room.color.toLowerCase() === c.toLowerCase()
+                          ? "border-zinc-200 scale-110"
+                          : "border-transparent hover:border-zinc-600"
+                      }`}
+                      style={{ background: c }}
+                      title={c}
+                    />
+                  ))}
+                </div>
+                <button
+                  onClick={() => handleDeleteRoom(room.id)}
+                  className="flex items-center gap-2 w-full px-2.5 py-1.5 text-xs text-red-400/70 hover:text-red-400 hover:bg-zinc-800/50 rounded-lg transition-colors"
+                >
+                  <Trash2 size={13} />
+                  Delete room
+                </button>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Canvas area */}
@@ -998,8 +1220,52 @@ export default function FloorPlan() {
               />
             )}
 
+            {/* Rooms (rendered beneath devices) */}
+            {rooms.map((room) => {
+              const isSel = selectedRoomId === room.id;
+              return (
+                <div
+                  key={room.id}
+                  onMouseDown={(e) => handleRoomMouseDown(room.id, "move", e)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute select-none"
+                  style={{
+                    left: `${room.x}%`,
+                    top: `${room.y}%`,
+                    width: `${room.w}%`,
+                    height: `${room.h}%`,
+                    backgroundColor: `${room.color}14`,
+                    border: `1.5px ${isSel ? "solid" : "dashed"} ${room.color}${isSel ? "cc" : "66"}`,
+                    borderRadius: 8,
+                    cursor: roomDrag?.id === room.id && roomDrag.mode === "move" ? "grabbing" : "grab",
+                    zIndex: 5,
+                  }}
+                >
+                  <div
+                    className="absolute top-1 left-2 text-[11px] font-semibold tracking-wide pointer-events-none"
+                    style={{ color: room.color, textShadow: "0 1px 2px rgba(0,0,0,0.6)" }}
+                  >
+                    {room.name}
+                  </div>
+                  {isSel && (
+                    <div
+                      onMouseDown={(e) => handleRoomMouseDown(room.id, "resize", e)}
+                      className="absolute bottom-0 right-0 w-3.5 h-3.5"
+                      style={{
+                        cursor: "nwse-resize",
+                        background: room.color,
+                        borderTopLeftRadius: 4,
+                        opacity: 0.85,
+                      }}
+                      title="Resize"
+                    />
+                  )}
+                </div>
+              );
+            })}
+
             {/* Empty state */}
-            {positions.length === 0 && (
+            {positions.length === 0 && rooms.length === 0 && (
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div className="text-center">
                   <Map size={48} className="text-zinc-700 mx-auto mb-3" />

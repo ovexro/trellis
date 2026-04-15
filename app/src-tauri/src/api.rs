@@ -1100,6 +1100,50 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        // ─── Floor plan rooms ───────────────────────────────────────
+        ("GET", p) if p.starts_with("/api/floor-plans/") && p.ends_with("/rooms") => {
+            let floor_str = &p["/api/floor-plans/".len()..p.len() - "/rooms".len()];
+            let floor_id: i64 = match floor_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid floor plan id"),
+            };
+            match ctx.db.get_rooms(floor_id) {
+                Ok(rooms) => json_ok(&rooms),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("POST", p) if p.starts_with("/api/floor-plans/") && p.ends_with("/rooms") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let floor_str = &p["/api/floor-plans/".len()..p.len() - "/rooms".len()];
+            let floor_id: i64 = match floor_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid floor plan id"),
+            };
+            handle_create_room(ctx, floor_id, &req.body)
+        }
+
+        ("PUT", p) if p.starts_with("/api/rooms/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id: i64 = match p["/api/rooms/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid room id"),
+            };
+            handle_update_room(ctx, id, &req.body)
+        }
+
+        ("DELETE", p) if p.starts_with("/api/rooms/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id: i64 = match p["/api/rooms/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "invalid room id"),
+            };
+            match ctx.db.delete_room(id) {
+                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("DELETE", p) if p.starts_with("/api/devices/") && !p["/api/devices/".len()..].contains('/') => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..];
@@ -1704,6 +1748,46 @@ fn handle_update_floor_plan(ctx: &ApiContext, id: i64, body: &str) -> (u16, Stri
     // Convert Option<Option<&str>> to the right shape for the DB method
     let bg_param: Option<Option<&str>> = background;
     match ctx.db.update_floor_plan(id, name, bg_param) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_create_room(ctx: &ApiContext, floor_id: i64, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = match v["name"].as_str() {
+        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => return json_error(400, "missing or empty name"),
+    };
+    let color = v["color"].as_str().unwrap_or("#6366f1").to_string();
+    let x = v["x"].as_f64().unwrap_or(10.0).clamp(0.0, 100.0);
+    let y = v["y"].as_f64().unwrap_or(10.0).clamp(0.0, 100.0);
+    let w = v["w"].as_f64().unwrap_or(30.0).clamp(1.0, 100.0);
+    let h = v["h"].as_f64().unwrap_or(30.0).clamp(1.0, 100.0);
+    // Clamp so a room can't extend past the canvas.
+    let w = w.min(100.0 - x);
+    let h = h.min(100.0 - y);
+    match ctx.db.create_room(floor_id, &name, &color, x, y, w, h) {
+        Ok(id) => json_ok(&serde_json::json!({"id": id})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_update_room(ctx: &ApiContext, id: i64, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let name = v["name"].as_str().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let color = v["color"].as_str().filter(|s| !s.is_empty());
+    let x = v["x"].as_f64().map(|n| n.clamp(0.0, 100.0));
+    let y = v["y"].as_f64().map(|n| n.clamp(0.0, 100.0));
+    let w = v["w"].as_f64().map(|n| n.clamp(1.0, 100.0));
+    let h = v["h"].as_f64().map(|n| n.clamp(1.0, 100.0));
+    match ctx.db.update_room(id, name, color, x, y, w, h) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
