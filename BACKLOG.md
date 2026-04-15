@@ -46,13 +46,39 @@ Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anyt
 ### Not tested yet
 
 - **Arduino LM indexer pickup of each release** — verify at next session start. Don't re-investigate unless stale >7 days per `feedback_arduino_lm_indexer.md`.
-- **Real Cloudflare Tunnel / Tailscale Funnel end-to-end test** — transport code shipped, never exercised against a real tunnel.
-- **MQTT `tls_skip_verify` end-to-end with a real self-signed broker** — shipped in v0.4.5 (uses rustls `dangerous()` API with a custom `NoVerifier`) but never exercised against an actual self-signed cert. Code path looks right, needs a hardware-adjacent smoke test.
-- **PWA install flow on a real phone** — not tested.
-- **Browser notifications on mobile** — not tested.
-- **Uptime strip + stat line on a real phone** — 30px height + legend at ≤640px relies on SVG `width:100%`; stat line uses `flex-wrap:wrap`. Should work, unverified.
-- **DnD device card reorder** — only tested with 1 device.
+- ~~**MQTT `tls_skip_verify` end-to-end with a real self-signed broker**~~ — VERIFIED 2026-04-15 with local mosquitto on 18883 + self-signed cert: `tls_skip_verify=true` connects and publishes; `tls_skip_verify=false` returns `TLS: I/O: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`. Config applied via `PUT /api/settings/mqtt`; rustls rejection message is the expected one for a self-signed-CA-as-end-entity.
+- ~~**DnD device card reorder** — only tested with 1 device.~~ — VERIFIED 2026-04-15 via `PUT /api/devices/reorder` with 3 seeded devices: sparse and dense orderings both persisted; non-array and missing-`sort_order` payloads return 400; unknown IDs are no-ops (UPDATE-only). Live DOM drag-drop still unverified (needs multi-device discovery).
+- **PWA install flow on a real phone** — not tested *from a phone*. Headless Chrome smoke on 2026-04-15 confirmed: manifest has required fields (name, start_url=/, display=standalone, theme/background colors, 192+512 icons), SW registers and controls `/`, `beforeinstallprompt` handler present in page, script calls `Notification.requestPermission`, offline banner hidden when `navigator.onLine` is true. Only the final Android/iOS install-prompt UX is unverified.
+- **Browser notifications on mobile** — see PWA note above; API + wiring verified in headless, only the real mobile permission prompt path unverified.
+- **Uptime strip + stat line on a real phone** — 30px height + legend at ≤640px relies on SVG `width:100%`; stat line uses `flex-wrap:wrap`. Embedded web UI smoke passed at 375/640/1280 (no horizontal overflow, no console errors). Uptime strip itself only renders on per-device detail views in the React desktop app (not the embedded web UI), so phone-visibility of the strip is specifically the React path when wrapped in a tunnel/PWA launch.
 - **WebSocket push through a tunnel** — not tested.
+
+- **Real Cloudflare Tunnel / Tailscale Funnel end-to-end test** — transport code shipped, never exercised against a real tunnel. Numbered recipe (run at your convenience, ~10 min):
+
+  **A. Prepare**
+  1. Open Trellis → **Settings → API Tokens** → click **Create token** → name it `tunnel-smoke` → copy the `trls_…` value.
+  2. In **Settings → Remote Access**, note the **Test reachability** widget — you'll use it in steps B5 and C4.
+
+  **B. Cloudflare Tunnel (quick, no domain needed — uses `trycloudflare.com`)**
+  1. `curl -L --output /tmp/cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 && chmod +x /tmp/cloudflared` (skip if `cloudflared` is already installed).
+  2. `/tmp/cloudflared tunnel --url http://localhost:9090` — it prints `https://<random>.trycloudflare.com` on stdout. Copy that URL.
+  3. In a **second terminal**: `curl -s -H "Authorization: Bearer trls_…" https://<random>.trycloudflare.com/api/devices | head -c 300` — expect a JSON array starting with your real device.
+  4. Open the URL from step B2 in your **phone's browser**; at the token prompt paste the `trls_…` from A1. Dashboard should load with live data.
+  5. Back on desktop, in **Settings → Remote Access → Test reachability**: paste the tunnel URL + token, click **Test**. Expect green `success` with a latency number.
+  6. Stop cloudflared (`Ctrl-C` in terminal from B2). Optional: for a named tunnel with your own domain, follow `docs/guide.md §Cloudflare Tunnel`.
+
+  **C. Tailscale Funnel (one-liner if Tailscale is set up)**
+  1. `tailscale status` — confirm this machine is on your tailnet. If not: `sudo tailscale up` and sign in.
+  2. `sudo tailscale funnel 9090 on` — prints `https://<hostname>.<tailnet>.ts.net/`. Copy that.
+  3. `curl -s -H "Authorization: Bearer trls_…" https://<hostname>.<tailnet>.ts.net/api/devices | head -c 300` — expect JSON array.
+  4. In **Settings → Remote Access → Test reachability**: paste URL + token, click **Test**. Expect `success`.
+  5. `sudo tailscale funnel 9090 off` to tear down.
+
+  **D. Record findings**
+  - If both B5 and C4 return `success` in the UI probe, remove this item from "Not tested yet" and tick `feedback_hardware_test.md` for the next release.
+  - If either fails with `auth_failed`, re-mint the token (step A1) and retry.
+  - If it fails with `tunnel_down` / `timeout`, verify Trellis is running (`curl http://localhost:9090/api/mqtt/status`) and retry the `curl` in B3/C3 first.
+  - Report back any result other than `success` so the probe categories (`tunnel_down`, `not_trellis`, etc.) can be re-checked against real error shapes.
 
 ### External
 

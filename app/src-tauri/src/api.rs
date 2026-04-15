@@ -416,6 +416,34 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
         return Ok(());
     }
 
+    // SPA fallback: the embedded web UI (`web_ui.html`) is a single-page
+    // app whose own navigation is JS-driven from `/`. But browsers, PWA
+    // launchers, and third parties can legitimately land on other paths —
+    // refreshes, bookmarks, stale notification URLs, or a future version of
+    // the UI that adopts URL-based routing. Without a fallback those all
+    // return a bare JSON 404. Serving the index HTML instead lets the SPA
+    // boot; it can then route internally or surface the user on the Home
+    // tab, which is strictly better UX than a raw error body.
+    //
+    // Same pre-auth rationale as `GET /`: the HTML itself is inert and
+    // gates every data fetch behind `/api/*` auth.
+    //
+    // Heuristic: GET whose path is not an API/proxy/WS route and whose
+    // final segment has no file extension. Covers current and future SPA
+    // routes without an allowlist, while letting unknown static assets
+    // (e.g. `/favicon.ico`) fall through to a clean 404.
+    if req.method == "GET"
+        && !req.path.starts_with("/api/")
+        && !req.path.starts_with("/proxy/")
+        && req.path != "/ws"
+    {
+        let last_seg = req.path.rsplit('/').next().unwrap_or("");
+        if !last_seg.contains('.') {
+            send_html(&mut stream, &get_web_ui());
+            return Ok(());
+        }
+    }
+
     // Rate limiter: reject early if this IP has too many recent failures.
     if let Some((status, msg)) = ctx.rate_limiter.check(&peer_addr) {
         log::warn!(
