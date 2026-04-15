@@ -2,6 +2,14 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.10.1] — 2026-04-15
+
+Targeted polish release. Fixes a latent timezone bug in the embedded web dashboard so chart tooltips and x-axis labels show the viewer's local time correctly.
+
+### Fixed
+
+- **Web dashboard chart times displayed in wrong timezone.** `fmtChartTime` and `fmtTooltipTime` in the on-device chart code parsed SQLite UTC timestamps as local time, so tooltips and x-axis labels were shifted by the viewer's timezone offset. Now both functions parse the timestamp as UTC (by appending `Z`) and call `getHours()` / `getMinutes()` to render the viewer's local wall-clock time. Affects every chart in the `:9090` web dashboard: metric charts, uptime tooltips, annotation tooltips, and chart x-axis labels.
+
 ## [0.10.0] — 2026-04-14
 
 Dashboard experience, automation, and webhook reliability release. Inline controls on device cards, compound rule conditions with AND/OR logic, and webhook retry with delivery logging.

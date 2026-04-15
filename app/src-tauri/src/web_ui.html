@@ -1753,7 +1753,9 @@
     }
 
     function fmtChartTime(ts, hours) {
-      var d = new Date(ts.replace(' ', 'T'));
+      // SQLite timestamps are UTC ("YYYY-MM-DD HH:MM:SS") — append Z so
+      // Date parses as UTC and getHours() returns the viewer's local hour.
+      var d = new Date(ts.replace(' ', 'T') + 'Z');
       if (isNaN(d.getTime())) return ts;
       var hh = String(d.getHours()).padStart(2, '0');
       var mm = String(d.getMinutes()).padStart(2, '0');
@@ -1763,7 +1765,7 @@
     }
 
     function fmtTooltipTime(ts) {
-      var d = new Date(ts.replace(' ', 'T'));
+      var d = new Date(ts.replace(' ', 'T') + 'Z');
       if (isNaN(d.getTime())) return ts;
       var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       return months[d.getMonth()] + ' ' + d.getDate() + ' '
