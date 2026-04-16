@@ -15,7 +15,9 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Scene editing**~~ — SHIPPED (post-v0.8.0, commit f100ef7).
 - ~~**Config import/export update**~~ — SHIPPED (post-v0.8.0, commit b02a7a9).
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
-- ~~**Floor plan v2: remaining enhancements**~~ — partial: rooms SHIPPED (post-v0.10.1, see FEATURES.md). Walls and auto-placement deferred pending user demand (low value at current single-digit device counts).
+- ~~**Floor plan v2: remaining enhancements**~~ — partial: rooms SHIPPED (post-v0.10.1, see FEATURES.md), device room indicator SHIPPED (post-v0.10.1, commit d82c113). Walls and auto-placement deferred pending user demand (low value at current single-digit device counts).
+- **Room-filtered dashboard view** — Devices tab filter chip that narrows to a specific room. Depends on the derived room property (now shipped). Unblocks scene-from-room ("turn on all lights in Greenhouse").
+- **Double-encode sweep in web_ui.html** — `api()` helper stringifies `opts.body` itself; older call sites at ~lines 3161, 3359, 3399, 3600 still pass `body: JSON.stringify(...)` which double-encodes. Unreachable today (POST paths guarded by empty-state checks), but worth sweeping if touching scenes or webhooks POST.
 
 ## Known follow-ups
 
