@@ -2,6 +2,23 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.11.0] — 2026-04-16
+
+Floor Plan v2 release. Rooms as named spatial regions, device-room association, and deep-link-safe web dashboard.
+
+### Added
+
+- **Floor plan rooms.** Named rectangular regions on the floor plan canvas. Add Room button spawns a colored rectangle; drag to move, resize via SE handle, rename inline, pick from 8-color palette. New `floor_plan_rooms` SQLite table (cascades on floor delete). REST endpoints for full CRUD. Both desktop React app and embedded web UI.
+- **Device room indicator.** Devices placed inside a room rectangle show the room name as a subtle label beneath the device name. Derived property computed on each render — no schema change. Updates instantly on drag or room resize. Hidden in compact mode.
+
+### Fixed
+
+- **SPA fallback for deep links.** Non-API/proxy/ws GET requests with no file extension now serve the embedded index HTML instead of returning a JSON 404. Prevents broken bookmarks, browser reloads, and notification click-throughs. `/favicon.ico` still 404s cleanly.
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
 ## [0.10.1] — 2026-04-15
 
 Targeted polish release. Fixes a latent timezone bug in the embedded web dashboard so chart tooltips and x-axis labels show the viewer's local time correctly.
