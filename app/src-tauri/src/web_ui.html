@@ -812,6 +812,7 @@
     .fp-node-val { font-size: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; color: var(--text); }
     .fp-node-val.offline { color: var(--text-dim); }
     .fp-node-name { font-size: 0.65rem; color: var(--text-dim); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+    .fp-node-room { font-size: 0.6rem; color: #71717a; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
     .fp-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
     .fp-dot.online { background: #34d399; }
     .fp-dot.offline { background: #52525b; }
@@ -4010,6 +4011,7 @@
         var device = devices.find(function(d) { return d.id === pos.device_id; });
         if (!device) return;
         var cap = fpPrimaryCap(device);
+        var room = fpRoomForPosition(pos.x, pos.y);
         var node = document.createElement('div');
         node.className = 'fp-node' + (fpSelected === pos.device_id ? ' selected' : '') + (fpCompactNodes ? ' compact' : '');
         node.style.left = pos.x + '%';
@@ -4021,6 +4023,7 @@
               (cap ? '<span class="fp-node-val' + (device.online ? '' : ' offline') + '">' + esc(fpCapSummary(cap)) + '</span>' : '') +
             '</div>' +
             (fpCompactNodes ? '' : '<span class="fp-node-name">' + esc(device.nickname || device.name) + '</span>') +
+            (!fpCompactNodes && room ? '<span class="fp-node-room">' + esc(room.name) + '</span>' : '') +
           '</div>';
 
         node.addEventListener('mousedown', function(e) {
@@ -4036,6 +4039,14 @@
         }, { passive: false });
         nodesEl.appendChild(node);
       });
+    }
+
+    function fpRoomForPosition(x, y) {
+      for (var i = 0; i < fpRooms.length; i++) {
+        var r = fpRooms[i];
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r;
+      }
+      return null;
     }
 
     function fpPrimaryCap(device) {

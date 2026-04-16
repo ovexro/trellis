@@ -78,6 +78,10 @@ function clampSnap(v: number, enabled: boolean): number {
   return Math.max(2, Math.min(98, snap(v, enabled)));
 }
 
+function roomForPosition(x: number, y: number, rooms: Room[]): Room | null {
+  return rooms.find((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) ?? null;
+}
+
 function capIcon(type: string) {
   switch (type) {
     case "sensor":
@@ -167,6 +171,7 @@ function PlacedNode({
   pos,
   selected,
   compact,
+  roomName,
   onSelect,
   onDragStart,
 }: {
@@ -174,6 +179,7 @@ function PlacedNode({
   pos: DevicePosition;
   selected: boolean;
   compact: boolean;
+  roomName: string | null;
   onSelect: () => void;
   onDragStart: (e: React.MouseEvent) => void;
 }) {
@@ -226,6 +232,11 @@ function PlacedNode({
         {!compact && (
           <span className="text-[11px] text-zinc-400 max-w-[120px] truncate text-center">
             {device.nickname || device.name}
+          </span>
+        )}
+        {!compact && roomName && (
+          <span className="text-[10px] text-zinc-500 max-w-[120px] truncate text-center">
+            {roomName}
           </span>
         )}
       </div>
@@ -1285,6 +1296,7 @@ export default function FloorPlan() {
             {positions.map((pos) => {
               const device = devices.find((d) => d.id === pos.device_id);
               if (!device) return null;
+              const room = roomForPosition(pos.x, pos.y, rooms);
               return (
                 <PlacedNode
                   key={pos.device_id}
@@ -1292,6 +1304,7 @@ export default function FloorPlan() {
                   pos={pos}
                   selected={selected === pos.device_id}
                   compact={compactNodes}
+                  roomName={room?.name ?? null}
                   onSelect={() => setSelected(pos.device_id)}
                   onDragStart={(e) => handleNodeDragStart(pos.device_id, e)}
                 />
