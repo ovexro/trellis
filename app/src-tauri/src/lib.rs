@@ -120,6 +120,7 @@ pub fn run() {
             set_device_position,
             remove_device_position,
             get_rooms,
+            get_all_rooms,
             create_room,
             update_room,
             delete_room,

@@ -931,6 +931,37 @@ impl Database {
         Ok(out)
     }
 
+    pub fn get_all_rooms(&self) -> Result<Vec<FloorPlanRoom>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, floor_id, name, color, x, y, w, h, sort_order
+                 FROM floor_plan_rooms
+                 ORDER BY floor_id, sort_order, id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(FloorPlanRoom {
+                    id: r.get(0)?,
+                    floor_id: r.get(1)?,
+                    name: r.get(2)?,
+                    color: r.get(3)?,
+                    x: r.get(4)?,
+                    y: r.get(5)?,
+                    w: r.get(6)?,
+                    h: r.get(7)?,
+                    sort_order: r.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     pub fn create_room(
         &self,
         floor_id: i64,

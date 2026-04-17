@@ -17,6 +17,26 @@ const GROUP_COLORS = [
   '#06b6d4', // cyan
 ];
 
+interface DevicePositionLite {
+  device_id: string;
+  floor_id: number;
+  x: number;
+  y: number;
+}
+
+interface RoomLite {
+  id: number;
+  floor_id: number;
+  name: string;
+  color: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+type RoomFilter = number | "unplaced" | null;
+
 export default function Dashboard() {
   const { devices, initEventListeners, addDeviceByIp, updateCapability } = useDeviceStore();
   const navigate = useNavigate();
@@ -32,6 +52,11 @@ export default function Dashboard() {
   const [groups, setGroups] = useState<DeviceGroup[]>([]);
   const [showGroupManager, setShowGroupManager] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number | "ungrouped">>(new Set());
+
+  // Room filter state
+  const [allRooms, setAllRooms] = useState<RoomLite[]>([]);
+  const [allPositions, setAllPositions] = useState<DevicePositionLite[]>([]);
+  const [roomFilter, setRoomFilter] = useState<RoomFilter>(null);
 
   useEffect(() => {
     initEventListeners();
@@ -49,6 +74,23 @@ export default function Dashboard() {
   useEffect(() => {
     loadGroups();
   }, [loadGroups]);
+
+  const loadRoomsAndPositions = useCallback(async () => {
+    try {
+      const [rooms, positions] = await Promise.all([
+        invoke<RoomLite[]>("get_all_rooms"),
+        invoke<DevicePositionLite[]>("get_all_device_positions"),
+      ]);
+      setAllRooms(rooms);
+      setAllPositions(positions);
+    } catch (err) {
+      console.error("Failed to load rooms/positions:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRoomsAndPositions();
+  }, [loadRoomsAndPositions]);
 
   // Close modals on Escape key
   useEffect(() => {
@@ -118,6 +160,25 @@ export default function Dashboard() {
     }
   }, [updateCapability]);
 
+  // Map: deviceId -> room it sits inside (or null = unplaced / outside any room)
+  const deviceRoom = new Map<string, RoomLite | null>();
+  for (const device of devices) {
+    const pos = allPositions.find((p) => p.device_id === device.id);
+    if (!pos) {
+      deviceRoom.set(device.id, null);
+      continue;
+    }
+    const room = allRooms.find(
+      (r) =>
+        r.floor_id === pos.floor_id &&
+        pos.x >= r.x &&
+        pos.x <= r.x + r.w &&
+        pos.y >= r.y &&
+        pos.y <= r.y + r.h,
+    );
+    deviceRoom.set(device.id, room ?? null);
+  }
+
   // Filter and sort devices
   const filteredDevices = devices
     .filter((d) => {
@@ -133,7 +194,24 @@ export default function Dashboard() {
         (d.tags || "").toLowerCase().includes(q)
       );
     })
+    .filter((d) => {
+      if (roomFilter === null) return true;
+      const room = deviceRoom.get(d.id);
+      if (roomFilter === "unplaced") return room == null;
+      return room?.id === roomFilter;
+    })
     .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+
+  // Build chip list: rooms that actually contain at least one device + unplaced
+  const roomCounts = new Map<number, number>();
+  let unplacedCount = 0;
+  for (const device of devices) {
+    const room = deviceRoom.get(device.id);
+    if (room) roomCounts.set(room.id, (roomCounts.get(room.id) ?? 0) + 1);
+    else unplacedCount += 1;
+  }
+  const chipRooms = allRooms.filter((r) => roomCounts.has(r.id));
+  const showRoomFilter = chipRooms.length > 0;
 
   const persistOrder = useCallback(async (ordered: Device[]) => {
     const order: [string, number][] = ordered.map((d, i) => [d.id, i]);
@@ -274,6 +352,53 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {showRoomFilter && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-4">
+          <button
+            onClick={() => setRoomFilter(null)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-colors ${
+              roomFilter === null
+                ? "bg-zinc-700 text-zinc-100"
+                : "bg-zinc-800/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+            }`}
+          >
+            All
+            <span className="text-[10px] text-zinc-500">{devices.length}</span>
+          </button>
+          {chipRooms.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => setRoomFilter(r.id)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-colors ${
+                roomFilter === r.id
+                  ? "bg-zinc-700 text-zinc-100"
+                  : "bg-zinc-800/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              <span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ backgroundColor: r.color }}
+              />
+              {r.name}
+              <span className="text-[10px] text-zinc-500">{roomCounts.get(r.id)}</span>
+            </button>
+          ))}
+          {unplacedCount > 0 && (
+            <button
+              onClick={() => setRoomFilter("unplaced")}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-colors ${
+                roomFilter === "unplaced"
+                  ? "bg-zinc-700 text-zinc-100"
+                  : "bg-zinc-800/60 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+              }`}
+            >
+              Unplaced
+              <span className="text-[10px] text-zinc-500">{unplacedCount}</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {showAddDialog && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowAddDialog(false)}>

@@ -16,7 +16,8 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - ~~**Config import/export update**~~ — SHIPPED (post-v0.8.0, commit b02a7a9).
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
 - ~~**Floor plan v2: remaining enhancements**~~ — partial: rooms SHIPPED (post-v0.10.1, see FEATURES.md), device room indicator SHIPPED (post-v0.10.1, commit d82c113). Walls and auto-placement deferred pending user demand (low value at current single-digit device counts).
-- **Room-filtered dashboard view** — Devices tab filter chip that narrows to a specific room. Depends on the derived room property (now shipped). Unblocks scene-from-room ("turn on all lights in Greenhouse").
+- ~~**Room-filtered dashboard view**~~ — SHIPPED (post-v0.11.0). Pill chips above the device grid filter by floor-plan room or "Unplaced". Both desktop React app and embedded web UI. Unblocks scene-from-room as the next step.
+- **Scene from room** — "turn on all lights in Kitchen" scene scaffolded from the devices currently in a given room. Pick the room, pick the capability type (switch, slider, color), pick the target value, save as a scene. Depends on Room-filtered dashboard (shipped).
 - **Double-encode sweep in web_ui.html** — `api()` helper stringifies `opts.body` itself; older call sites at ~lines 3161, 3359, 3399, 3600 still pass `body: JSON.stringify(...)` which double-encodes. Unreachable today (POST paths guarded by empty-state checks), but worth sweeping if touching scenes or webhooks POST.
 
 ## Known follow-ups

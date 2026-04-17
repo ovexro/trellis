@@ -766,6 +766,11 @@ pub fn get_rooms(db: State<'_, Database>, floor_id: i64) -> Result<Vec<FloorPlan
 }
 
 #[tauri::command]
+pub fn get_all_rooms(db: State<'_, Database>) -> Result<Vec<FloorPlanRoom>, String> {
+    db.get_all_rooms()
+}
+
+#[tauri::command]
 pub fn create_room(
     db: State<'_, Database>,
     floor_id: i64,

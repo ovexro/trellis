@@ -343,6 +343,29 @@
     .group-body { }
     .group-header.collapsed + .group-body { display: none; }
 
+    /* ── Room Filter Chips ── */
+    .room-chip-row {
+      display: flex; flex-wrap: wrap; gap: 0.35rem;
+      margin-bottom: 1rem;
+    }
+    .room-chip {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.3rem 0.65rem; border-radius: 999px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+      color: var(--text-faint); font-size: 0.75rem; cursor: pointer;
+      transition: background var(--transition), color var(--transition), border-color var(--transition);
+    }
+    .room-chip:hover { color: var(--text); background: rgba(255,255,255,0.07); }
+    .room-chip.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+    }
+    .room-chip-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .room-chip-count {
+      font-size: 0.65rem; opacity: 0.7;
+    }
+
     /* ── Section Header ── */
     .section-title {
       font-size: 0.8rem; font-weight: 600; color: var(--text-faint);
@@ -1042,6 +1065,11 @@
     let pollTimer = null;
     let initialLoad = true;
     let isViewer = false;
+    // Room filter (Devices tab): derived from floor plan room rectangles +
+    // device positions. Null = show all; number = room id; "unplaced" = no room.
+    let allRooms = [];
+    let allPositions = [];
+    let currentRoomFilter = null;
 
     /* ────────────────────────── API Helpers ────────────────────────── */
     /*
@@ -1462,14 +1490,18 @@
     /* ────────────────────────── Devices ────────────────────────── */
     async function loadDevices() {
       try {
-        const [devs, grps, saved] = await Promise.all([
+        const [devs, grps, saved, rooms, positions] = await Promise.all([
           api('/api/devices'),
           api('/api/groups'),
           api('/api/saved-devices'),
+          api('/api/rooms').catch(function() { return []; }),
+          api('/api/floor-plan/positions').catch(function() { return []; }),
         ]);
         devices = devs || [];
         groups = grps || [];
         savedDevices = saved || [];
+        allRooms = rooms || [];
+        allPositions = positions || [];
         // Enrich devices with persisted sort order
         const orderById = {};
         (savedDevices || []).forEach(s => { orderById[s.id] = s.sort_order || 0; });
@@ -1481,6 +1513,28 @@
           document.getElementById('devicesContent').innerHTML = renderEmpty('Could not reach Trellis server', 'Make sure the app is running on this machine.');
         }
       }
+    }
+
+    // Returns the room a (floor_id, x, y) point sits inside, or null.
+    function roomForPos(pos, rooms) {
+      if (!pos) return null;
+      for (let i = 0; i < rooms.length; i++) {
+        const r = rooms[i];
+        if (r.floor_id === pos.floor_id &&
+            pos.x >= r.x && pos.x <= r.x + r.w &&
+            pos.y >= r.y && pos.y <= r.y + r.h) return r;
+      }
+      return null;
+    }
+
+    function roomForDevice(deviceId) {
+      const pos = allPositions.find(p => p.device_id === deviceId);
+      return roomForPos(pos, allRooms);
+    }
+
+    function setRoomFilter(val) {
+      currentRoomFilter = val;
+      renderDevices();
     }
 
     function getNickname(dev) {
@@ -1500,8 +1554,26 @@
         return;
       }
 
+      // Count devices per room to decide which chips to show.
+      const roomCounts = {};
+      let unplacedCount = 0;
+      devices.forEach(function(d) {
+        const r = roomForDevice(d.id);
+        if (r) roomCounts[r.id] = (roomCounts[r.id] || 0) + 1;
+        else unplacedCount++;
+      });
+      const chipRooms = allRooms.filter(function(r) { return roomCounts[r.id]; });
+
+      // Apply room filter before grouping.
+      const filtered = devices.filter(function(d) {
+        if (currentRoomFilter === null) return true;
+        const r = roomForDevice(d.id);
+        if (currentRoomFilter === 'unplaced') return !r;
+        return r && r.id === currentRoomFilter;
+      });
+
       // Sort by user-defined order, then by group
-      const sorted = [...devices].sort((a, b) => (a._sort_order || 0) - (b._sort_order || 0));
+      const sorted = [...filtered].sort((a, b) => (a._sort_order || 0) - (b._sort_order || 0));
       const grouped = {};
       const ungrouped = [];
       sorted.forEach(dev => {
@@ -1515,6 +1587,25 @@
       });
 
       let html = '';
+
+      // Room filter chip row (only shown when at least one room contains a device)
+      if (chipRooms.length) {
+        function chipClass(active) {
+          return 'room-chip' + (active ? ' active' : '');
+        }
+        let chips = '<button class="' + chipClass(currentRoomFilter === null) + '" onclick="setRoomFilter(null)">All <span class="room-chip-count">' + devices.length + '</span></button>';
+        chipRooms.forEach(function(r) {
+          chips += '<button class="' + chipClass(currentRoomFilter === r.id) + '" onclick="setRoomFilter(' + r.id + ')">' +
+            '<span class="room-chip-dot" style="background:' + esc(r.color) + '"></span>' +
+            esc(r.name) +
+            ' <span class="room-chip-count">' + roomCounts[r.id] + '</span></button>';
+        });
+        if (unplacedCount > 0) {
+          chips += '<button class="' + chipClass(currentRoomFilter === 'unplaced') + "\" onclick=\"setRoomFilter('unplaced')\">" +
+            'Unplaced <span class="room-chip-count">' + unplacedCount + '</span></button>';
+        }
+        html += '<div class="room-chip-row">' + chips + '</div>';
+      }
 
       // Render grouped
       groups.forEach(g => {

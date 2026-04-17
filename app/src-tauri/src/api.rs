@@ -1085,6 +1085,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_get_floor_plan(ctx, &req.query)
         }
 
+        ("GET", "/api/floor-plan/positions") => {
+            match ctx.db.get_all_device_positions() {
+                Ok(positions) => json_ok(&positions),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("PUT", "/api/floor-plan/position") => {
             if let Some(denied) = require_admin(role) { return denied; }
             handle_set_device_position(ctx, &req.body)
@@ -1101,6 +1108,13 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
         }
 
         // ─── Floor plan rooms ───────────────────────────────────────
+        ("GET", "/api/rooms") => {
+            match ctx.db.get_all_rooms() {
+                Ok(rooms) => json_ok(&rooms),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("GET", p) if p.starts_with("/api/floor-plans/") && p.ends_with("/rooms") => {
             let floor_str = &p["/api/floor-plans/".len()..p.len() - "/rooms".len()];
             let floor_id: i64 = match floor_str.parse() {
