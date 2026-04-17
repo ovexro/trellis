@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil, Sparkles, GripVertical } from "lucide-react";
+import { Radar, Plus, Wifi, Search, FolderOpen, ChevronDown, ChevronRight, Palette, X, Trash2, Pencil, Sparkles, GripVertical, Wand2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import DeviceCard from "@/components/DeviceCard";
-import type { Device, DeviceGroup } from "@/lib/types";
+import type { Capability, Device, DeviceGroup } from "@/lib/types";
 
 const GROUP_COLORS = [
   '#6366f1', // indigo
@@ -57,6 +57,7 @@ export default function Dashboard() {
   const [allRooms, setAllRooms] = useState<RoomLite[]>([]);
   const [allPositions, setAllPositions] = useState<DevicePositionLite[]>([]);
   const [roomFilter, setRoomFilter] = useState<RoomFilter>(null);
+  const [sceneFromRoomOpen, setSceneFromRoomOpen] = useState(false);
 
   useEffect(() => {
     initEventListeners();
@@ -355,6 +356,20 @@ export default function Dashboard() {
 
       {showRoomFilter && (
         <div className="flex items-center gap-1.5 flex-wrap mb-4">
+          {typeof roomFilter === "number" && (() => {
+            const activeRoom = allRooms.find((r) => r.id === roomFilter);
+            if (!activeRoom) return null;
+            return (
+              <button
+                onClick={() => setSceneFromRoomOpen(true)}
+                title={`Create a scene that targets every controllable device in ${activeRoom.name}`}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-trellis-500/10 text-trellis-300 hover:bg-trellis-500/20 transition-colors mr-1"
+              >
+                <Wand2 size={12} />
+                Scene from {activeRoom.name}
+              </button>
+            );
+          })()}
           <button
             onClick={() => setRoomFilter(null)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs transition-colors ${
@@ -503,6 +518,26 @@ export default function Dashboard() {
           ))}
         </div>
       )}
+
+      {sceneFromRoomOpen && typeof roomFilter === "number" && (() => {
+        const room = allRooms.find((r) => r.id === roomFilter);
+        if (!room) return null;
+        return (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setSceneFromRoomOpen(false)}>
+            <div onClick={(e) => e.stopPropagation()}>
+              <SceneFromRoomDialog
+                room={room}
+                devices={filteredDevices}
+                onClose={() => setSceneFromRoomOpen(false)}
+                onCreated={() => {
+                  setSceneFromRoomOpen(false);
+                  navigate("/scenes");
+                }}
+              />
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -920,6 +955,223 @@ function AddDialog({
         </button>
         <button
           onClick={onCancel}
+          className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-sm transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Scene From Room Dialog ───────────────────────────────────────────
+
+type TemplateState = {
+  switch: { enabled: boolean; value: boolean };
+  slider: { enabled: boolean; value: number };
+  color: { enabled: boolean; value: string };
+};
+
+function SceneFromRoomDialog({
+  room,
+  devices,
+  onClose,
+  onCreated,
+}: {
+  room: RoomLite;
+  devices: Device[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [name, setName] = useState(`${room.name} scene`);
+  const [templates, setTemplates] = useState<TemplateState>({
+    switch: { enabled: true, value: true },
+    slider: { enabled: false, value: 50 },
+    color: { enabled: false, value: "#ffffff" },
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  // Bucket capabilities by type across all filtered devices
+  const capsByType: Record<"switch" | "slider" | "color", Array<{ device: Device; cap: Capability }>> = {
+    switch: [],
+    slider: [],
+    color: [],
+  };
+  for (const device of devices) {
+    for (const cap of device.capabilities) {
+      if (cap.type === "switch" || cap.type === "slider" || cap.type === "color") {
+        capsByType[cap.type].push({ device, cap });
+      }
+    }
+  }
+
+  const plannedActions: Array<{ device_id: string; capability_id: string; value: string }> = [];
+  if (templates.switch.enabled) {
+    for (const { device, cap } of capsByType.switch) {
+      plannedActions.push({ device_id: device.id, capability_id: cap.id, value: String(templates.switch.value) });
+    }
+  }
+  if (templates.slider.enabled) {
+    for (const { device, cap } of capsByType.slider) {
+      plannedActions.push({ device_id: device.id, capability_id: cap.id, value: String(templates.slider.value) });
+    }
+  }
+  if (templates.color.enabled) {
+    for (const { device, cap } of capsByType.color) {
+      plannedActions.push({ device_id: device.id, capability_id: cap.id, value: templates.color.value });
+    }
+  }
+
+  const uniqueDeviceCount = new Set(plannedActions.map((a) => a.device_id)).size;
+  const totalCaps = capsByType.switch.length + capsByType.slider.length + capsByType.color.length;
+  const offlineDeviceCount = devices.filter((d) => !d.online).length;
+  const canSave = name.trim().length > 0 && plannedActions.length > 0 && !saving;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    setError("");
+    try {
+      await invoke("create_scene", { name: name.trim(), actions: plannedActions });
+      onCreated();
+    } catch (err) {
+      setError(String(err));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 w-[440px] max-w-[90vw]">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: room.color }} />
+        <h2 className="text-sm font-semibold text-zinc-100">New scene from {room.name}</h2>
+      </div>
+      <p className="text-xs text-zinc-500 mb-4">
+        Scaffolds a scene that targets every controllable device currently inside this room.
+      </p>
+
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Scene name"
+        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 mb-4 focus:border-trellis-500 focus:outline-none"
+        autoFocus
+      />
+
+      <div className="space-y-3 mb-4">
+        {/* Switches */}
+        <div className={`p-3 rounded-lg border ${capsByType.switch.length === 0 ? "opacity-40" : "border-zinc-800"}`}>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={templates.switch.enabled}
+              disabled={capsByType.switch.length === 0}
+              onChange={(e) => setTemplates((t) => ({ ...t, switch: { ...t.switch, enabled: e.target.checked } }))}
+              className="accent-trellis-500"
+            />
+            <span className="text-xs text-zinc-300 flex-1">
+              Switches <span className="text-zinc-500">({capsByType.switch.length})</span>
+            </span>
+            {templates.switch.enabled && capsByType.switch.length > 0 && (
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setTemplates((t) => ({ ...t, switch: { ...t.switch, value: true } }))}
+                  className={`px-2 py-0.5 rounded text-[11px] ${templates.switch.value ? "bg-trellis-500 text-white" : "bg-zinc-800 text-zinc-400"}`}
+                >
+                  On
+                </button>
+                <button
+                  onClick={() => setTemplates((t) => ({ ...t, switch: { ...t.switch, value: false } }))}
+                  className={`px-2 py-0.5 rounded text-[11px] ${!templates.switch.value ? "bg-trellis-500 text-white" : "bg-zinc-800 text-zinc-400"}`}
+                >
+                  Off
+                </button>
+              </div>
+            )}
+          </label>
+        </div>
+
+        {/* Sliders */}
+        <div className={`p-3 rounded-lg border ${capsByType.slider.length === 0 ? "opacity-40" : "border-zinc-800"}`}>
+          <label className="flex items-center gap-2 cursor-pointer mb-2">
+            <input
+              type="checkbox"
+              checked={templates.slider.enabled}
+              disabled={capsByType.slider.length === 0}
+              onChange={(e) => setTemplates((t) => ({ ...t, slider: { ...t.slider, enabled: e.target.checked } }))}
+              className="accent-trellis-500"
+            />
+            <span className="text-xs text-zinc-300 flex-1">
+              Sliders <span className="text-zinc-500">({capsByType.slider.length})</span>
+            </span>
+            {templates.slider.enabled && capsByType.slider.length > 0 && (
+              <span className="text-xs text-zinc-400 tabular-nums">{templates.slider.value}</span>
+            )}
+          </label>
+          {templates.slider.enabled && capsByType.slider.length > 0 && (
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={templates.slider.value}
+              onChange={(e) => setTemplates((t) => ({ ...t, slider: { ...t.slider, value: Number(e.target.value) } }))}
+              className="w-full accent-trellis-500"
+            />
+          )}
+        </div>
+
+        {/* Colors */}
+        <div className={`p-3 rounded-lg border ${capsByType.color.length === 0 ? "opacity-40" : "border-zinc-800"}`}>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={templates.color.enabled}
+              disabled={capsByType.color.length === 0}
+              onChange={(e) => setTemplates((t) => ({ ...t, color: { ...t.color, enabled: e.target.checked } }))}
+              className="accent-trellis-500"
+            />
+            <span className="text-xs text-zinc-300 flex-1">
+              Colors <span className="text-zinc-500">({capsByType.color.length})</span>
+            </span>
+            {templates.color.enabled && capsByType.color.length > 0 && (
+              <input
+                type="color"
+                value={templates.color.value}
+                onChange={(e) => setTemplates((t) => ({ ...t, color: { ...t.color, value: e.target.value } }))}
+                className="w-8 h-6 bg-transparent border-0 rounded cursor-pointer"
+              />
+            )}
+          </label>
+        </div>
+      </div>
+
+      <div className="text-xs text-zinc-500 mb-4">
+        {plannedActions.length > 0 ? (
+          <>Will create <span className="text-zinc-300">{plannedActions.length}</span> action{plannedActions.length !== 1 ? "s" : ""} across <span className="text-zinc-300">{uniqueDeviceCount}</span> device{uniqueDeviceCount !== 1 ? "s" : ""}.</>
+        ) : totalCaps === 0 ? (
+          <span className="text-amber-400">
+            No controllable capabilities reported for devices in this room.
+            {offlineDeviceCount > 0 && ` ${offlineDeviceCount} device${offlineDeviceCount !== 1 ? "s are" : " is"} offline — capabilities are only read while online.`}
+          </span>
+        ) : (
+          <span className="text-amber-400">Pick at least one capability template to include.</span>
+        )}
+      </div>
+
+      {error && <div className="text-xs text-red-400 mb-3">{error}</div>}
+
+      <div className="flex gap-2">
+        <button
+          onClick={handleSave}
+          disabled={!canSave}
+          className="flex-1 px-3 py-2 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {saving ? "Creating..." : "Create scene"}
+        </button>
+        <button
+          onClick={onClose}
           className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-sm transition-colors"
         >
           Cancel
