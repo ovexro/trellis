@@ -4,6 +4,7 @@ mod commands;
 mod connection;
 mod db;
 mod device;
+mod diagnostics;
 mod discovery;
 mod mqtt;
 mod ota;
@@ -84,6 +85,7 @@ pub fn run() {
             delete_alert,
             toggle_alert,
             get_device_logs,
+            diagnose_device,
             store_log_entry,
             remove_device,
             create_schedule,

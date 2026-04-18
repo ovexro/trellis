@@ -21,6 +21,10 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 - **Scene from room: web UI parity** — embedded `:9090` Devices tab doesn't yet expose the "Scene from {Room}" scaffolder. Low-to-medium value since the Scenes tab on the web UI can author scenes directly; only useful for field scenarios where the user is on a phone and wants "everything in this room" in one tap.
 - **Offline-aware scene scaffolder** — Scene from room currently relies on live in-memory capabilities, which are empty for offline devices. Could fall back to a cached-capabilities source (last known descriptor from `device_templates` or equivalent) so offline rooms still get useful scaffolding. Defer until a real user hits this.
 - **Double-encode sweep in web_ui.html** — `api()` helper stringifies `opts.body` itself; older call sites at ~lines 3161, 3359, 3399, 3600 still pass `body: JSON.stringify(...)` which double-encodes. Unreachable today (POST paths guarded by empty-state checks), but worth sweeping if touching scenes or webhooks POST.
+- ~~**Device Diagnostics v1**~~ — SHIPPED (post-v0.11.0). Per-device Diagnose button runs a rule-based engine (8 checks: online, RSSI, heap low, heap trend, uptime %, reconnects, error rate, firmware age) and returns plain-English verdicts with suggestions. Desktop + embedded web UI.
+- **Device Diagnostics v2: fleet health overview** — Home-page widget rolling up diagnostics across all devices ("3 healthy, 1 attention, 0 unhealthy") with click-through. Unlocks bulk inspection.
+- **Device Diagnostics v3: auto-remediation** — some findings ("firmware N days old" + "GitHub release available") could expose a one-click fix button inline in the report. Rule-by-rule opt-in.
+- **Device Diagnostics v4: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency, OTA success rate.
 
 ## Known follow-ups
 

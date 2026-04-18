@@ -2166,6 +2166,74 @@
       if (detailChartDeviceId) loadDetailCharts(detailChartDeviceId, detailChartCaps);
     }
 
+    /* ── Diagnostics renderer ─────────────────────────────────────────
+       Hits GET /api/devices/:id/diagnose and renders the rule-based
+       health report. Viewer-safe (pure read). Re-render fires the same
+       endpoint; no caching so re-running picks up fresh metrics.
+       ────────────────────────────────────────────────────────────── */
+    async function runDiagnostics(deviceId) {
+      var container = document.getElementById('detailDiag');
+      if (!container) return;
+      container.innerHTML = '<div style="padding:0.75rem;">Running checks…</div>';
+      try {
+        var report = await api('/api/devices/' + encodeURIComponent(deviceId) + '/diagnose');
+        container.innerHTML = renderDiagnosticReport(deviceId, report);
+      } catch (e) {
+        container.innerHTML =
+          '<div style="padding:0.75rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:0.6rem;">'
+          + '<p style="margin:0 0 0.5rem 0;color:#fca5a5;">Diagnostics failed: ' + esc(String(e)) + '</p>'
+          + '<button class="btn btn-sm" onclick="runDiagnostics(\'' + esc(deviceId) + '\')">Try again</button>'
+          + '</div>';
+      }
+    }
+
+    function renderDiagnosticReport(deviceId, report) {
+      if (!report || !report.findings) return '<div>No report.</div>';
+      var overall = report.overall || 'good';
+      var banner = renderDiagBanner(deviceId, report);
+      var rows = report.findings.map(renderDiagFinding).join('');
+      return banner + '<div style="display:flex;flex-direction:column;gap:0.4rem;margin-top:0.6rem;">' + rows + '</div>';
+    }
+
+    function renderDiagBanner(deviceId, report) {
+      var overall = report.overall;
+      var palette = {
+        good:      { bg:'rgba(16,185,129,0.08)',  border:'rgba(16,185,129,0.3)',  text:'#34d399', label:'All checks passed' },
+        attention: { bg:'rgba(245,158,11,0.08)',  border:'rgba(245,158,11,0.3)',  text:'#fbbf24', label:'Needs attention' },
+        unhealthy: { bg:'rgba(239,68,68,0.08)',   border:'rgba(239,68,68,0.3)',   text:'#f87171', label:'Unhealthy' }
+      }[overall] || { bg:'var(--surface-alt)', border:'var(--border)', text:'var(--text)', label:'Report' };
+      var failCount = report.findings.filter(function(f){return f.level==='fail';}).length;
+      var warnCount = report.findings.filter(function(f){return f.level==='warn';}).length;
+      var generated = report.generated_at ? new Date(report.generated_at).toLocaleTimeString() : '';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.75rem;'
+        + 'background:' + palette.bg + ';border:1px solid ' + palette.border + ';border-radius:0.6rem;color:' + palette.text + ';">'
+        + '<div>'
+        + '<div style="font-weight:600;">' + esc(palette.label) + '</div>'
+        + '<div style="font-size:0.75rem;opacity:0.85;margin-top:0.15rem;">'
+        + failCount + ' critical, ' + warnCount + ' warning(s), checked ' + esc(generated)
+        + '</div>'
+        + '</div>'
+        + '<button class="btn btn-sm btn-ghost" title="Re-run" onclick="runDiagnostics(\'' + esc(deviceId) + '\')">Re-run</button>'
+        + '</div>';
+    }
+
+    function renderDiagFinding(f) {
+      var palette = {
+        ok:   { bg:'rgba(16,185,129,0.05)',  border:'rgba(16,185,129,0.25)', text:'#34d399' },
+        warn: { bg:'rgba(245,158,11,0.05)',  border:'rgba(245,158,11,0.25)', text:'#fbbf24' },
+        fail: { bg:'rgba(239,68,68,0.05)',   border:'rgba(239,68,68,0.25)',  text:'#f87171' },
+        info: { bg:'rgba(161,161,170,0.05)', border:'rgba(161,161,170,0.2)', text:'var(--text)' }
+      }[f.level] || { bg:'var(--surface-alt)', border:'var(--border)', text:'var(--text)' };
+      var sugg = f.suggestion
+        ? '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;font-style:italic;">Suggestion: ' + esc(f.suggestion) + '</div>'
+        : '';
+      return '<div style="padding:0.65rem;background:' + palette.bg + ';border:1px solid ' + palette.border + ';border-radius:0.5rem;">'
+        + '<div style="font-size:0.8rem;font-weight:600;color:' + palette.text + ';">' + esc(f.title) + '</div>'
+        + '<div style="font-size:0.75rem;color:var(--text-faint);margin-top:0.2rem;line-height:1.4;">' + esc(f.detail) + '</div>'
+        + sugg
+        + '</div>';
+    }
+
     /* ── Uptime Timeline renderer ─────────────────────────────────────
        Builds a horizontal ribbon of online/offline segments over the
        current chart time range. Driven by the same annotation set as
@@ -2771,6 +2839,18 @@
           </div>
         </div>`;
       }
+
+      // Diagnostics — rule-based health check. Pure read-only view,
+      // viewer-safe. Rendered empty; click "Run diagnostics" to populate.
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Diagnostics</div>
+        <div id="detailDiag" style="font-size:0.8rem;color:var(--text-faint);">
+          <div style="padding:0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.6rem;">
+            <p style="margin:0 0 0.5rem 0;">Run a full check on WiFi signal, free memory, uptime, reconnects, error rate, and firmware. Uses the last 24 hours of stored metrics and logs.</p>
+            <button class="btn btn-sm" onclick="runDiagnostics('${esc(dev.id)}')" id="detailDiagBtn">Run diagnostics</button>
+          </div>
+        </div>
+      </div>`;
 
       // Uptime timeline — populated by renderUptimeTimeline after
       // loadDetailCharts fetches the annotation set for this window.

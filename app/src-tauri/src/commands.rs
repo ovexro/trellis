@@ -2,6 +2,7 @@ use crate::auth;
 use crate::connection::ConnectionManager;
 use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
+use crate::diagnostics::{self, DiagnosticReport};
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
@@ -507,6 +508,23 @@ pub fn get_recent_activity(
     limit: u32,
 ) -> Result<Vec<ActivityEntry>, String> {
     db.get_recent_activity(limit)
+}
+
+// ─── Device diagnostics ──────────────────────────────────────────────────────
+
+/// Run the rule-based diagnostic engine for a single device and return a
+/// structured report. Pure read-only: the engine reads metrics, logs, and
+/// firmware history from SQLite plus the live `Device` from `Discovery` to
+/// decide whether the device is online. Safe to call as a `viewer`.
+#[tauri::command]
+pub fn diagnose_device(
+    db: State<'_, Database>,
+    state: State<'_, AppState>,
+    device_id: String,
+) -> Result<DiagnosticReport, String> {
+    let live_devices = state.discovery.get_devices();
+    let live = live_devices.iter().find(|d| d.id == device_id);
+    diagnostics::diagnose(&*db, &device_id, live)
 }
 
 // ─── Device logs ─────────────────────────────────────────────────────────────

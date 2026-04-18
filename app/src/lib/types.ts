@@ -61,3 +61,20 @@ export interface WsEvent {
   percent?: number;
   system?: SystemInfo;
 }
+
+export type DiagnosticLevel = "ok" | "warn" | "fail" | "info";
+
+export interface DiagnosticFinding {
+  id: string;
+  level: DiagnosticLevel;
+  title: string;
+  detail: string;
+  suggestion?: string;
+}
+
+export interface DiagnosticReport {
+  device_id: string;
+  overall: "good" | "attention" | "unhealthy";
+  generated_at: string;
+  findings: DiagnosticFinding[];
+}

@@ -12,6 +12,7 @@ import UptimeTimeline from "@/components/charts/UptimeTimeline";
 import DeviceNickname from "@/components/DeviceNickname";
 import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
+import DeviceDiagnostics from "@/components/DeviceDiagnostics";
 import type { Capability } from "@/lib/types";
 
 function SectionHeader({ title }: { title: string }) {
@@ -255,6 +256,10 @@ export default function DeviceDetail() {
           )}
         </div>
       </div>
+
+      {/* Diagnostics */}
+      <SectionHeader title="Diagnostics" />
+      <DeviceDiagnostics deviceId={device.id} />
 
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />

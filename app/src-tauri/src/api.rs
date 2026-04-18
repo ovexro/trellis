@@ -982,6 +982,16 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/diagnose") => {
+            let id = &p["/api/devices/".len()..p.len() - "/diagnose".len()];
+            let live_devices = ctx.discovery.get_devices();
+            let live = live_devices.iter().find(|d| d.id == id);
+            match crate::diagnostics::diagnose(&ctx.db, id, live) {
+                Ok(report) => json_ok(&report),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/alerts") => {
             let id = &p["/api/devices/".len()..p.len() - "/alerts".len()];
             match ctx.db.get_alerts(id) {
