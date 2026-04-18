@@ -6,22 +6,10 @@ Forward-looking list: candidate next tasks, speculative enhancements, and known 
 
 Concrete enough to pick up in a future session. Each has scope + what it unblocks. Not a priority order.
 
-- ~~**Floor plan / spatial device layout**~~ — SHIPPED (post-v0.6.0, commit 984de8a).
-- ~~**Floor plan v2: multi-floor support**~~ — SHIPPED (post-v0.7.0, commit 0c8fab7).
-- ~~**Floor plan v2: snap-to-grid**~~ — SHIPPED (post-v0.7.0, commit 84a1b95).
-- ~~**Floor plan v2: compact labels**~~ — SHIPPED (post-v0.7.0, commit cea5728).
-- ~~**Floor plan v2: undo last move**~~ — SHIPPED (post-v0.7.0, commit ae92d4f).
-- ~~**Scene scheduling**~~ — SHIPPED (post-v0.7.0, commit 650b302).
-- ~~**Scene editing**~~ — SHIPPED (post-v0.8.0, commit f100ef7).
-- ~~**Config import/export update**~~ — SHIPPED (post-v0.8.0, commit b02a7a9).
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
-- ~~**Floor plan v2: remaining enhancements**~~ — partial: rooms SHIPPED (post-v0.10.1, see FEATURES.md), device room indicator SHIPPED (post-v0.10.1, commit d82c113). Walls and auto-placement deferred pending user demand (low value at current single-digit device counts).
-- ~~**Room-filtered dashboard view**~~ — SHIPPED (post-v0.11.0). Pill chips above the device grid filter by floor-plan room or "Unplaced". Both desktop React app and embedded web UI. Unblocks scene-from-room as the next step.
-- ~~**Scene from room**~~ — SHIPPED (post-v0.11.0). Modal scaffolds switch/slider/color templates expanded across every controllable device in a room, then uses the existing `create_scene` path. Desktop React app only; web UI follow-up deferred.
 - **Scene from room: web UI parity** — embedded `:9090` Devices tab doesn't yet expose the "Scene from {Room}" scaffolder. Low-to-medium value since the Scenes tab on the web UI can author scenes directly; only useful for field scenarios where the user is on a phone and wants "everything in this room" in one tap.
 - **Offline-aware scene scaffolder** — Scene from room currently relies on live in-memory capabilities, which are empty for offline devices. Could fall back to a cached-capabilities source (last known descriptor from `device_templates` or equivalent) so offline rooms still get useful scaffolding. Defer until a real user hits this.
 - **Double-encode sweep in web_ui.html** — `api()` helper stringifies `opts.body` itself; older call sites at ~lines 3161, 3359, 3399, 3600 still pass `body: JSON.stringify(...)` which double-encodes. Unreachable today (POST paths guarded by empty-state checks), but worth sweeping if touching scenes or webhooks POST.
-- ~~**Device Diagnostics v1**~~ — SHIPPED (post-v0.11.0). Per-device Diagnose button runs a rule-based engine (8 checks: online, RSSI, heap low, heap trend, uptime %, reconnects, error rate, firmware age) and returns plain-English verdicts with suggestions. Desktop + embedded web UI.
 - **Device Diagnostics v2: fleet health overview** — Home-page widget rolling up diagnostics across all devices ("3 healthy, 1 attention, 0 unhealthy") with click-through. Unlocks bulk inspection.
 - **Device Diagnostics v3: auto-remediation** — some findings ("firmware N days old" + "GitHub release available") could expose a one-click fix button inline in the report. Rule-by-rule opt-in.
 - **Device Diagnostics v4: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency, OTA success rate.
@@ -55,8 +43,6 @@ Small tech debt, edge cases, or minor bugs noticed in passing. Not blocking anyt
 ### Not tested yet
 
 - **Arduino LM indexer pickup of each release** — verify at next session start. Don't re-investigate unless stale >7 days per `feedback_arduino_lm_indexer.md`.
-- ~~**MQTT `tls_skip_verify` end-to-end with a real self-signed broker**~~ — VERIFIED 2026-04-15 with local mosquitto on 18883 + self-signed cert: `tls_skip_verify=true` connects and publishes; `tls_skip_verify=false` returns `TLS: I/O: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))`. Config applied via `PUT /api/settings/mqtt`; rustls rejection message is the expected one for a self-signed-CA-as-end-entity.
-- ~~**DnD device card reorder** — only tested with 1 device.~~ — VERIFIED 2026-04-15 via `PUT /api/devices/reorder` with 3 seeded devices: sparse and dense orderings both persisted; non-array and missing-`sort_order` payloads return 400; unknown IDs are no-ops (UPDATE-only). Live DOM drag-drop still unverified (needs multi-device discovery).
 - **PWA install flow on a real phone** — not tested *from a phone*. Headless Chrome smoke on 2026-04-15 confirmed: manifest has required fields (name, start_url=/, display=standalone, theme/background colors, 192+512 icons), SW registers and controls `/`, `beforeinstallprompt` handler present in page, script calls `Notification.requestPermission`, offline banner hidden when `navigator.onLine` is true. Only the final Android/iOS install-prompt UX is unverified.
 - **Browser notifications on mobile** — see PWA note above; API + wiring verified in headless, only the real mobile permission prompt path unverified.
 - **Uptime strip + stat line on a real phone** — 30px height + legend at ≤640px relies on SVG `width:100%`; stat line uses `flex-wrap:wrap`. Embedded web UI smoke passed at 375/640/1280 (no horizontal overflow, no console errors). Uptime strip itself only renders on per-device detail views in the React desktop app (not the embedded web UI), so phone-visibility of the strip is specifically the React path when wrapped in a tunnel/PWA launch.

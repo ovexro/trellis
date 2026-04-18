@@ -61,7 +61,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Clear buffer
 - [x] Copy to clipboard
 
-### Device Diagnostics (post-v0.11.0)
+### Device Diagnostics (v0.12.0)
 - [x] **One-click health check per device** — new Diagnostics section on the device detail panel (desktop React app) and embedded `:9090` web UI, click "Run diagnostics" to get a plain-English verdict on WiFi signal, free memory, memory leak pattern, uptime %, reconnect count, error rate, and firmware age. Pure read-only aggregation over the last 24h of stored `_rssi` / `_heap` metrics, `device_logs` state transitions + error/warn rows, and `firmware_history`. No schema change. Rule catalog lives in `src-tauri/src/diagnostics.rs` with 18 unit tests covering each rule's pass/warn/fail boundary. Overall verdict rolls up to `good` / `attention` / `unhealthy` based on whether any rule returned `fail` / `warn`. Viewer-safe: new `diagnose_device` Tauri command + `GET /api/devices/:id/diagnose` REST endpoint both read-only. Each finding carries an `id`, `level`, `title`, `detail`, and optional human-readable `suggestion` that links the symptom to a likely cause ("43 reconnects + strong RSSI" → firmware/power instability, not weak signal). Falls back to live in-memory `SystemInfo` when no historical samples exist yet (e.g. a freshly discovered device), so the first-run experience is never empty.
 
 ### OTA Updates
