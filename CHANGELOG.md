@@ -2,6 +2,20 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.12.0] — 2026-04-18
+
+Device diagnostics release. One-click health check rolls up eight signals per device, plus room-filtered views and scene scaffolding from a filtered room.
+
+### Added
+
+- **Device diagnostics — one-click health check.** New Diagnostics section on the device detail page rolls up eight rules into a single overall status (good / attention / unhealthy) with per-finding explanations: online status, RSSI health, low heap, heap trend, uptime percent, reconnect count, error rate, firmware age. Rule engine in `src-tauri/src/diagnostics.rs` with 18 unit tests. New Tauri command `diagnose_device` and REST endpoint `GET /api/devices/:id/diagnose`. Renders in both desktop app (`DeviceDiagnostics.tsx`) and embedded web UI.
+- **Room-filtered dashboard view.** Filter the dashboard by room to show only devices placed in the selected room region on the floor plan. Desktop and web dashboard.
+- **Scene from filtered room.** When filtered by a room, "Create Scene" scaffolds a scene from only that room's devices — one click to capture a room-level scene (e.g. "Kitchen Evening").
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
 ## [0.11.0] — 2026-04-16
 
 Floor Plan v2 release. Rooms as named spatial regions, device-room association, and deep-link-safe web dashboard.
