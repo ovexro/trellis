@@ -3786,7 +3786,7 @@
       try {
         const scenes = await api('/api/scenes');
         const scene = scenes.find(s => s.id === id);
-        if (!scene) { showToast('Scene not found', 'error'); return; }
+        if (!scene) { toast('Scene not found', 'error'); return; }
         editingSceneId = id;
         const card = document.getElementById('scene-card-' + id);
         if (!card) return;
@@ -3806,7 +3806,7 @@
         </div>`;
         card.innerHTML = html;
       } catch (e) {
-        showToast('Failed to load scene: ' + e.message, 'error');
+        toast('Failed to load scene: ' + e.message, 'error');
       }
     }
 
@@ -3838,7 +3838,7 @@
       const container = document.getElementById('scene-edit-actions');
       if (!container) return;
       const onlineDev = devices.find(d => d.online);
-      if (!onlineDev) { showToast('No online devices', 'error'); return; }
+      if (!onlineDev) { toast('No online devices', 'error'); return; }
       const cap = onlineDev.capabilities.find(c => c.type !== 'sensor') || onlineDev.capabilities[0];
       const idx = container.querySelectorAll('.scene-action-row').length;
       container.insertAdjacentHTML('beforeend', renderSceneActionRow(idx, onlineDev.id, cap ? cap.id : '', cap ? String(cap.value != null ? cap.value : '') : ''));
@@ -3881,9 +3881,9 @@
       const nameInput = document.getElementById('scene-edit-name');
       if (!nameInput) return;
       const name = nameInput.value.trim();
-      if (!name) { showToast('Scene name is required', 'error'); return; }
+      if (!name) { toast('Scene name is required', 'error'); return; }
       const rows = document.querySelectorAll('#scene-edit-actions .scene-action-row');
-      if (!rows.length) { showToast('Scene must have at least one action', 'error'); return; }
+      if (!rows.length) { toast('Scene must have at least one action', 'error'); return; }
       const actions = [];
       rows.forEach(row => {
         const selects = row.querySelectorAll('select');
@@ -3893,14 +3893,13 @@
       try {
         await api('/api/scenes', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, actions })
+          body: { name, actions }
         });
         creatingScene = false;
-        showToast('Scene created', 'success');
+        toast('Scene created', 'success');
         loadScenes();
       } catch (e) {
-        showToast('Failed to create scene: ' + e.message, 'error');
+        toast('Failed to create scene: ' + e.message, 'error');
       }
     }
 
@@ -3910,10 +3909,10 @@
       if (!confirm('Delete scene "' + name + '"? This cannot be undone.')) return;
       try {
         await api('/api/scenes/' + id, { method: 'DELETE' });
-        showToast('Scene deleted', 'success');
+        toast('Scene deleted', 'success');
         loadScenes();
       } catch (e) {
-        showToast('Failed to delete scene: ' + e.message, 'error');
+        toast('Failed to delete scene: ' + e.message, 'error');
       }
     }
 
@@ -3921,9 +3920,9 @@
       const nameInput = document.getElementById('scene-edit-name');
       if (!nameInput) return;
       const name = nameInput.value.trim();
-      if (!name) { showToast('Scene name is required', 'error'); return; }
+      if (!name) { toast('Scene name is required', 'error'); return; }
       const rows = document.querySelectorAll('#scene-edit-actions .scene-action-row');
-      if (!rows.length) { showToast('Scene must have at least one action', 'error'); return; }
+      if (!rows.length) { toast('Scene must have at least one action', 'error'); return; }
       const actions = [];
       rows.forEach(row => {
         const selects = row.querySelectorAll('select');
@@ -3933,23 +3932,22 @@
       try {
         await api('/api/scenes/' + editingSceneId, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, actions })
+          body: { name, actions }
         });
         editingSceneId = null;
-        showToast('Scene updated', 'success');
+        toast('Scene updated', 'success');
         loadScenes();
       } catch (e) {
-        showToast('Failed to update scene: ' + e.message, 'error');
+        toast('Failed to update scene: ' + e.message, 'error');
       }
     }
 
     async function runSceneFromDashboard(id) {
       try {
         await api('/api/scenes/' + id + '/run', { method: 'POST' });
-        showToast('Scene executed', 'success');
+        toast('Scene executed', 'success');
       } catch (e) {
-        showToast('Failed to run scene: ' + e.message, 'error');
+        toast('Failed to run scene: ' + e.message, 'error');
       }
     }
 
@@ -4114,13 +4112,13 @@
         fpPositions.forEach(function(p) { if (p.device_id === entry.deviceId) { p.x = entry.prevX; p.y = entry.prevY; } });
         fpAllPositions.forEach(function(p) { if (p.device_id === entry.deviceId) { p.x = entry.prevX; p.y = entry.prevY; } });
         renderFloorPlan();
-        try { await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY }) }); } catch(e) {}
+        try { await api('/api/floor-plan/position', { method: 'PUT', body: { device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY } }); } catch(e) {}
       } else if (entry.type === 'remove') {
         var restored = { device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY };
         fpPositions.push(restored);
         fpAllPositions.push(restored);
         renderFloorPlan();
-        try { await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY }) }); } catch(e) {}
+        try { await api('/api/floor-plan/position', { method: 'PUT', body: { device_id: entry.deviceId, floor_id: entry.floorId, x: entry.prevX, y: entry.prevY } }); } catch(e) {}
       }
     }
 
@@ -4135,7 +4133,7 @@
       try {
         fpFloors = await api('/api/floor-plans');
         if (fpFloors.length === 0) {
-          var created = await api('/api/floor-plans', { method: 'POST', body: JSON.stringify({ name: 'Floor 1' }) });
+          var created = await api('/api/floor-plans', { method: 'POST', body: { name: 'Floor 1' } });
           fpFloors = [{ id: created.id, name: 'Floor 1', sort_order: 0, background: null }];
         }
         if (fpActiveFloorId === null || !fpFloors.find(function(f) { return f.id === fpActiveFloorId; })) {
@@ -4333,7 +4331,7 @@
     function fpShowAddFloorModal() {
       fpShowModal('Add Floor', 'e.g. Second Floor, Garage', '', async function(name) {
         try {
-          var result = await api('/api/floor-plans', { method: 'POST', body: JSON.stringify({ name: name }) });
+          var result = await api('/api/floor-plans', { method: 'POST', body: { name: name } });
           fpActiveFloorId = result.id;
           await loadFloorPlan();
         } catch (e) { console.error('Failed to create floor:', e); }
@@ -4343,7 +4341,7 @@
     function fpShowRenameFloorModal(floor) {
       fpShowModal('Rename Floor', '', floor.name, async function(name) {
         try {
-          await api('/api/floor-plans/' + floor.id, { method: 'PUT', body: JSON.stringify({ name: name }) });
+          await api('/api/floor-plans/' + floor.id, { method: 'PUT', body: { name: name } });
           await loadFloorPlan();
         } catch (e) { console.error('Failed to rename floor:', e); }
       });
@@ -4623,7 +4621,7 @@
         fpAllPositions.push({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y });
         renderFloorPlan();
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: { device_id: deviceId, floor_id: fpActiveFloorId, x: x, y: y } });
         } catch (e) { loadFloorPlan(); }
       });
       canvas.addEventListener('click', function(e) {
@@ -4665,7 +4663,7 @@
         fpUndoEntry = { type: 'move', deviceId: deviceId, floorId: fpActiveFloorId, prevX: origX, prevY: origY };
         if (fpActiveFloorId === null) return;
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: { device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y } });
         } catch (e) { loadFloorPlan(); }
       }
       window.addEventListener('mousemove', onMove);
@@ -4703,7 +4701,7 @@
         fpUndoEntry = { type: 'move', deviceId: deviceId, floorId: fpActiveFloorId, prevX: origX, prevY: origY };
         if (fpActiveFloorId === null) return;
         try {
-          await api('/api/floor-plan/position', { method: 'PUT', body: JSON.stringify({ device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y }) });
+          await api('/api/floor-plan/position', { method: 'PUT', body: { device_id: deviceId, floor_id: fpActiveFloorId, x: pos.x, y: pos.y } });
         } catch (e) { loadFloorPlan(); }
       }
       window.addEventListener('touchmove', onMove, { passive: false });
@@ -4783,7 +4781,7 @@
       try {
         await api('/api/devices/' + encodeURIComponent(deviceId) + '/command', {
           method: 'POST',
-          body: JSON.stringify({ command: 'set', id: capId, value: value })
+          body: { command: 'set', id: capId, value: value }
         });
       } catch (e) { console.error('Floor plan command failed:', e); }
     }
@@ -4826,7 +4824,7 @@
           fpBackground = reader.result;
           renderFloorPlan();
           try {
-            await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: JSON.stringify({ background: fpBackground }) });
+            await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: { background: fpBackground } });
           } catch (e) { console.error('Failed to save background:', e); }
         };
         reader.readAsDataURL(file);
@@ -4839,7 +4837,7 @@
       fpBackground = null;
       renderFloorPlan();
       try {
-        await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: JSON.stringify({ background: '' }) });
+        await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: { background: '' } });
       } catch (e) { console.error('Failed to clear background:', e); }
     }
 

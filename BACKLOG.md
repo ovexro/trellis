@@ -8,7 +8,6 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
 - **Offline-aware scene scaffolder** — Scene from room currently relies on live in-memory capabilities, which are empty for offline devices. Could fall back to a cached-capabilities source (last known descriptor from `device_templates` or equivalent) so offline rooms still get useful scaffolding. Defer until a real user hits this.
-- **Double-encode sweep in web_ui.html** — `api()` helper stringifies `opts.body` itself; older Scenes editor + webhooks call sites still pass `body: JSON.stringify(...)` which double-encodes. Same sweep could also define `showToast` as a `toast` alias — Scenes editor has ~18 `showToast` calls to a function that is never defined. Unreachable-ish today (POST paths guarded by empty-state checks), but the `showToast` calls swallow feedback when the user does hit them.
 - **Device Diagnostics v3: auto-remediation** — some findings ("firmware N days old" + "GitHub release available") could expose a one-click fix button inline in the report. Rule-by-rule opt-in.
 - **Device Diagnostics v4: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency, OTA success rate.
 
