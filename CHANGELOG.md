@@ -2,6 +2,24 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.14.0] — 2026-04-19
+
+Diagnostics gets smarter. The firmware_age rule now offers a one-click upgrade when a newer GitHub release is available for a device's bound repo, and a new error_rate_trend rule distinguishes "errors are still firing right now" from the existing 24h totals rule. Both render identically in the desktop Diagnostics section and the `:9090` web dashboard.
+
+### Added
+
+- **Firmware auto-remediation.** The `firmware_age` rule escalates from INFO to WARN when a newer release is published in the device's bound GitHub repo, and surfaces a one-click "Update to {tag}" button inline in the Diagnostics card. Each device gains a collapsible `owner/repo` binding panel at the top of Diagnostics (desktop + web); binding lives on two new columns on `devices`. The rule engine stays synchronous — callers pre-fetch eligible releases via a blocking `ureq` helper that dedupes by (owner, repo) so a 20-device fleet on one repo makes a single GitHub API call. Version comparison tolerates `v` prefix and `-prerelease` / `+build` suffixes; anything unparseable short-circuits to "skip" so the rule never nags about versions it can't compare. Desktop button invokes `start_github_ota`; web UI POSTs to the existing admin-gated `POST /api/github/ota` endpoint, reusing the blocking download + `ota::serve_firmware` path and the `gh_download_progress` WebSocket broadcast. New findings carry an optional structured `action { label, action_type, data }` slot, opening the door for more self-healing actions later. 22 → 30 diagnostics unit tests.
+- **Error rate trend rule.** New `error_rate_trend` rule splits the same `error`/`warn` log set the existing `error_rate` rule watches into last-hour vs preceding 23h, computes a per-hour baseline, and surfaces `fail` at ≥10 events/hr with ≥3× baseline (or any 10+ with zero baseline), `warn` at ≥5/hr with ≥2× baseline, else `ok`. Detail string reads either "N events in last hour vs M.M/h baseline (X.Xx)" or "N events in last hour with no prior events in 23h window." Pure read from `device_logs` — no schema change, no UI change (rule renders generically via both desktop `DeviceDiagnostics.tsx` and web `renderDiagFinding`). Verified live on a real ESP32: with 110 errors + 109 warns over 24h and 0 in the last hour, `error_rate` stays FAIL while `error_rate_trend` correctly reads OK with the baseline printed. 30 → 36 diagnostics unit tests.
+
+### Fixed
+
+- **Web dashboard Diagnostics binding inputs now pre-fill.** The owner/repo inputs on the per-device Diagnostics binding panel were rendering empty on load even when a binding existed in SQLite, forcing admins to retype before each save. Root cause: the panel mounted before the fetch that populated the binding state completed. Fixed by wiring the inputs to read the saved binding on expand.
+- **Web dashboard `showToast` → `toast` + double-encoded response bodies.** Renamed the UI helper to match the rest of the dashboard's toast API, and stripped a layer of double-JSON-encoding from the shared `api()` fetch wrapper so error messages render as plain strings instead of quoted strings.
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
 ## [0.13.0] — 2026-04-19
 
 Fleet health release. A top-level widget on the Home page rolls up every device's diagnostics into three buckets, surfaces the most urgent finding inline for each device, and closes the last desktop-only gap in the v0.12.0 Scene-from-room scaffolder.
