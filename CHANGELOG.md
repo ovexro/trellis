@@ -2,6 +2,20 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.13.0] — 2026-04-19
+
+Fleet health release. A top-level widget on the Home page rolls up every device's diagnostics into three buckets, surfaces the most urgent finding inline for each device, and closes the last desktop-only gap in the v0.12.0 Scene-from-room scaffolder.
+
+### Added
+
+- **Fleet Health widget on Home.** At-a-glance rollup of per-device diagnostics on the Home page (both desktop React app and `:9090` web dashboard). Three color-coded tiles (`Healthy` / `Attention` / `Unhealthy`) with device counts; click any non-empty tile to expand a list of the devices in that bucket. Widget defaults to the most-urgent non-empty bucket on load. New `diagnose_fleet` Tauri command and `GET /api/diagnostics/fleet` REST endpoint (viewer-safe) reuse the per-device `diagnose` engine — zero new rules, zero schema changes. Results sorted most-urgent-first; per-device errors skip silently so one bad row can't hide the rest.
+- **Fleet Health drill-in — top finding inline.** Each device row in the Fleet Health widget now surfaces its most urgent finding (e.g. `Connection stability · 13 reconnect events in last 24h.`) severity-colored, without requiring a click-through. Pick semantics: first FAIL in rule-evaluation order, else first WARN, else none. Three new unit tests cover the selection rules (22 diagnostics tests total). Desktop (`FleetHealth.tsx`) and web UI (`renderFleetHealth`) parity.
+- **Scene-from-room scaffolder in the web dashboard.** Ports the v0.12.0 desktop Scene-from-room feature to `:9090`. When Devices is filtered to a single room, admins see a "Scene from {Room}" chip that opens three template cards (Switches / Sliders / Colors) identical to the desktop version. Uses the existing `POST /api/scenes` endpoint; tab-switches to Scenes on success.
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
 ## [0.12.0] — 2026-04-18
 
 Device diagnostics release. One-click health check rolls up eight signals per device, plus room-filtered views and scene scaffolding from a filtered room.
