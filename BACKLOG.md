@@ -8,7 +8,8 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
 - **Offline-aware scene scaffolder** — Scene from room currently relies on live in-memory capabilities, which are empty for offline devices. Could fall back to a cached-capabilities source (last known descriptor from `device_templates` or equivalent) so offline rooms still get useful scaffolding. Defer until a real user hits this.
-- **Device Diagnostics v4: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency, OTA success rate.
+- **Device Diagnostics v5: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency. First two need library-side instrumentation; mDNS latency needs a timed-resolve wrapper in `discovery.rs`. All three require a schema change or new data source before a rule can read them.
+- **OTA outcome persistence + success-rate rule** — `ota_delivered` / `ota_delivery_failed` events currently emit as in-memory Tauri events only (`app/src-tauri/src/ota.rs`). Add `delivery_status TEXT` + `delivered_at TEXT` columns to `firmware_history`, have `ota.rs` call a new `db.mark_firmware_delivery(...)` when those events fire, then add a diagnostics rule that reads the ratio. Estimated ~2-3 hrs including live ESP32 round-trip verification. Candidate originally considered for v0.14.0 but deferred because the "derivable from existing data" premise was false.
 
 ## Known follow-ups
 
