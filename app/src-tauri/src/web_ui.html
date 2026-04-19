@@ -365,6 +365,13 @@
     .room-chip-count {
       font-size: 0.65rem; opacity: 0.7;
     }
+    .scene-from-room-btn {
+      background: rgba(99, 102, 241, 0.12); color: var(--accent); border-color: rgba(99, 102, 241, 0.30);
+      margin-right: 0.3rem;
+    }
+    .scene-from-room-btn:hover {
+      background: rgba(99, 102, 241, 0.22); color: var(--accent);
+    }
 
     /* ── Section Header ── */
     .section-title {
@@ -1110,6 +1117,7 @@
     let allRooms = [];
     let allPositions = [];
     let currentRoomFilter = null;
+    var sceneFromRoom = null; // { roomId, name, templates: {switch, slider, color} }
 
     /* ────────────────────────── API Helpers ────────────────────────── */
     /*
@@ -1676,6 +1684,206 @@
       renderDevices();
     }
 
+    function openSceneFromRoom(roomId) {
+      if (isViewer) return;
+      var room = allRooms.find(function(r) { return r.id === roomId; });
+      if (!room) return;
+      sceneFromRoom = {
+        roomId: roomId,
+        name: room.name + ' scene',
+        templates: {
+          'switch': { enabled: true, value: true },
+          'slider': { enabled: false, value: 50 },
+          'color':  { enabled: false, value: '#ffffff' }
+        }
+      };
+      renderDevices();
+    }
+
+    function closeSceneFromRoom() {
+      sceneFromRoom = null;
+      renderDevices();
+    }
+
+    function sceneFromRoomCapsByType(filteredDevices) {
+      var buckets = { 'switch': [], 'slider': [], 'color': [] };
+      for (var i = 0; i < filteredDevices.length; i++) {
+        var d = filteredDevices[i];
+        var caps = d.capabilities || [];
+        for (var j = 0; j < caps.length; j++) {
+          var c = caps[j];
+          if (c.type === 'switch' || c.type === 'slider' || c.type === 'color') {
+            buckets[c.type].push({ device: d, cap: c });
+          }
+        }
+      }
+      return buckets;
+    }
+
+    function toggleSceneTemplate(type) {
+      if (!sceneFromRoom) return;
+      var t = sceneFromRoom.templates[type];
+      if (!t) return;
+      t.enabled = !t.enabled;
+      renderDevices();
+    }
+
+    function setSceneSwitchValue(v) {
+      if (!sceneFromRoom) return;
+      sceneFromRoom.templates['switch'].value = v;
+      renderDevices();
+    }
+
+    function setSceneSliderValue(v) {
+      if (!sceneFromRoom) return;
+      sceneFromRoom.templates['slider'].value = parseInt(v, 10);
+      var el = document.getElementById('sceneSliderDisplay');
+      if (el) el.textContent = v;
+    }
+
+    function setSceneColorValue(v) {
+      if (!sceneFromRoom) return;
+      sceneFromRoom.templates['color'].value = v;
+    }
+
+    function setSceneName(v) {
+      if (!sceneFromRoom) return;
+      sceneFromRoom.name = v;
+    }
+
+    async function saveSceneFromRoom() {
+      if (!sceneFromRoom) return;
+      var name = (sceneFromRoom.name || '').trim();
+      if (!name) { toast('Scene name is required', 'error'); return; }
+      // Use whatever devices are currently filtered — caller stashed them on the
+      // window during render so the save path doesn't have to rediscover them.
+      var filteredDevices = window.__sceneFromRoomDevices || [];
+      var buckets = sceneFromRoomCapsByType(filteredDevices);
+      var actions = [];
+      var t = sceneFromRoom.templates;
+      if (t['switch'].enabled) {
+        for (var si = 0; si < buckets['switch'].length; si++) {
+          actions.push({ device_id: buckets['switch'][si].device.id, capability_id: buckets['switch'][si].cap.id, value: String(t['switch'].value) });
+        }
+      }
+      if (t['slider'].enabled) {
+        for (var li = 0; li < buckets['slider'].length; li++) {
+          actions.push({ device_id: buckets['slider'][li].device.id, capability_id: buckets['slider'][li].cap.id, value: String(t['slider'].value) });
+        }
+      }
+      if (t['color'].enabled) {
+        for (var ci = 0; ci < buckets['color'].length; ci++) {
+          actions.push({ device_id: buckets['color'][ci].device.id, capability_id: buckets['color'][ci].cap.id, value: t['color'].value });
+        }
+      }
+      if (actions.length === 0) {
+        toast('Pick at least one capability template', 'error');
+        return;
+      }
+      var saveBtn = document.getElementById('sceneFromRoomSaveBtn');
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
+      try {
+        await api('/api/scenes', { method: 'POST', body: { name: name, actions: actions } });
+        toast('Scene created', 'success');
+        sceneFromRoom = null;
+        // Jump to the Scenes tab so the user sees their new scene.
+        var scenesBtn = document.querySelector('.tab-btn[data-tab="scenes"]');
+        if (scenesBtn) scenesBtn.click();
+      } catch (e) {
+        toast('Failed to create scene: ' + (e.message || e), 'error');
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Create scene'; }
+      }
+    }
+
+    function renderSceneFromRoomModal(filteredDevices) {
+      if (!sceneFromRoom) return '';
+      var room = allRooms.find(function(r) { return r.id === sceneFromRoom.roomId; });
+      if (!room) return '';
+      // Stash the devices snapshot for saveSceneFromRoom to consume.
+      window.__sceneFromRoomDevices = filteredDevices;
+
+      var buckets = sceneFromRoomCapsByType(filteredDevices);
+      var totalCaps = buckets['switch'].length + buckets['slider'].length + buckets['color'].length;
+      var offlineCount = filteredDevices.filter(function(d) { return !d.online; }).length;
+
+      var t = sceneFromRoom.templates;
+      var plannedActions = 0;
+      var plannedDeviceIds = {};
+      if (t['switch'].enabled) {
+        plannedActions += buckets['switch'].length;
+        buckets['switch'].forEach(function(x) { plannedDeviceIds[x.device.id] = 1; });
+      }
+      if (t['slider'].enabled) {
+        plannedActions += buckets['slider'].length;
+        buckets['slider'].forEach(function(x) { plannedDeviceIds[x.device.id] = 1; });
+      }
+      if (t['color'].enabled) {
+        plannedActions += buckets['color'].length;
+        buckets['color'].forEach(function(x) { plannedDeviceIds[x.device.id] = 1; });
+      }
+      var plannedDeviceCount = Object.keys(plannedDeviceIds).length;
+
+      function tmplCard(type, label, headerRight, afterLabel) {
+        var count = buckets[type].length;
+        var enabled = t[type].enabled;
+        var disabledStyle = count === 0 ? 'opacity:0.4;' : '';
+        var checkedAttr = enabled ? ' checked' : '';
+        var disabledAttr = count === 0 ? ' disabled' : '';
+        return '<div style="padding:0.7rem;border:1px solid var(--border);border-radius:0.55rem;' + disabledStyle + '">'
+          + '<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">'
+          + '<input type="checkbox"' + checkedAttr + disabledAttr + ' onchange="toggleSceneTemplate(\'' + type + '\')" style="accent-color:var(--accent);">'
+          + '<span style="font-size:0.75rem;flex:1;">' + esc(label) + ' <span style="color:var(--text-faint);">(' + count + ')</span></span>'
+          + (enabled && count > 0 ? headerRight : '')
+          + '</label>'
+          + (enabled && count > 0 ? afterLabel : '')
+          + '</div>';
+      }
+
+      var switchHeaderRight =
+        '<div style="display:flex;gap:0.25rem;">'
+        + '<button type="button" onclick="setSceneSwitchValue(true)" style="padding:0.15rem 0.5rem;border-radius:3px;font-size:0.7rem;border:none;cursor:pointer;' + (t['switch'].value ? 'background:var(--accent);color:#fff;' : 'background:var(--surface-alt);color:var(--text-faint);') + '">On</button>'
+        + '<button type="button" onclick="setSceneSwitchValue(false)" style="padding:0.15rem 0.5rem;border-radius:3px;font-size:0.7rem;border:none;cursor:pointer;' + (!t['switch'].value ? 'background:var(--accent);color:#fff;' : 'background:var(--surface-alt);color:var(--text-faint);') + '">Off</button>'
+        + '</div>';
+
+      var sliderHeaderRight = '<span id="sceneSliderDisplay" style="font-size:0.75rem;color:var(--text-dim);font-variant-numeric:tabular-nums;min-width:2.2em;text-align:right;">' + t['slider'].value + '</span>';
+      var sliderAfter = '<div style="margin-top:0.5rem;"><input type="range" min="0" max="100" value="' + t['slider'].value + '" oninput="setSceneSliderValue(this.value)" style="width:100%;accent-color:var(--accent);"></div>';
+
+      var colorHeaderRight = '<input type="color" value="' + esc(t['color'].value) + '" oninput="setSceneColorValue(this.value)" style="width:2rem;height:1.4rem;background:transparent;border:0;cursor:pointer;padding:0;">';
+
+      var summary;
+      if (plannedActions > 0) {
+        summary = 'Will create <strong style="color:var(--text);">' + plannedActions + '</strong> action' + (plannedActions !== 1 ? 's' : '')
+          + ' across <strong style="color:var(--text);">' + plannedDeviceCount + '</strong> device' + (plannedDeviceCount !== 1 ? 's' : '') + '.';
+      } else if (totalCaps === 0) {
+        summary = '<span style="color:#fbbf24;">No controllable capabilities reported for devices in this room.'
+          + (offlineCount > 0 ? ' ' + offlineCount + ' device' + (offlineCount !== 1 ? 's are' : ' is') + ' offline — capabilities are only read while online.' : '')
+          + '</span>';
+      } else {
+        summary = '<span style="color:#fbbf24;">Pick at least one capability template to include.</span>';
+      }
+
+      return '<div class="modal-overlay" onclick="closeSceneFromRoom()">'
+        + '<div class="modal" onclick="event.stopPropagation()" style="max-width:460px;">'
+        + '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.25rem;">'
+        + '<span style="width:10px;height:10px;border-radius:50%;background:' + esc(room.color) + ';flex-shrink:0;"></span>'
+        + '<div class="modal-title" style="margin:0;">New scene from ' + esc(room.name) + '</div>'
+        + '</div>'
+        + '<p style="font-size:0.75rem;color:var(--text-faint);margin:0 0 1rem 0;">Scaffolds a scene that targets every controllable device currently inside this room.</p>'
+        + '<input type="text" class="input-text" value="' + esc(sceneFromRoom.name) + '" oninput="setSceneName(this.value)" placeholder="Scene name" style="width:100%;margin-bottom:0.9rem;">'
+        + '<div style="display:flex;flex-direction:column;gap:0.5rem;">'
+        + tmplCard('switch', 'Switches', switchHeaderRight, '')
+        + tmplCard('slider', 'Sliders', sliderHeaderRight, sliderAfter)
+        + tmplCard('color',  'Colors',  colorHeaderRight,  '')
+        + '</div>'
+        + '<div style="font-size:0.75rem;color:var(--text-faint);margin-top:0.9rem;">' + summary + '</div>'
+        + '<div class="modal-actions">'
+        + '<button class="btn btn-ghost" onclick="closeSceneFromRoom()">Cancel</button>'
+        + '<button id="sceneFromRoomSaveBtn" class="btn btn-primary" onclick="saveSceneFromRoom()"' + (plannedActions === 0 ? ' disabled' : '') + '>Create scene</button>'
+        + '</div>'
+        + '</div>'
+        + '</div>';
+    }
+
     function getNickname(dev) {
       const s = savedDevices.find(d => d.id === dev.id);
       return (s && s.nickname) || dev.name || dev.id;
@@ -1732,7 +1940,16 @@
         function chipClass(active) {
           return 'room-chip' + (active ? ' active' : '');
         }
-        let chips = '<button class="' + chipClass(currentRoomFilter === null) + '" onclick="setRoomFilter(null)">All <span class="room-chip-count">' + devices.length + '</span></button>';
+        let chips = '';
+        // Scene-from-room call-to-action only appears when a single room is filtered.
+        if (typeof currentRoomFilter === 'number' && !isViewer) {
+          var activeRoom = allRooms.find(function(r) { return r.id === currentRoomFilter; });
+          if (activeRoom) {
+            chips += '<button class="room-chip scene-from-room-btn" onclick="openSceneFromRoom(' + activeRoom.id + ')" title="Create a scene that targets every controllable device in ' + esc(activeRoom.name) + '">' +
+              '&#10024; Scene from ' + esc(activeRoom.name) + '</button>';
+          }
+        }
+        chips += '<button class="' + chipClass(currentRoomFilter === null) + '" onclick="setRoomFilter(null)">All <span class="room-chip-count">' + devices.length + '</span></button>';
         chipRooms.forEach(function(r) {
           chips += '<button class="' + chipClass(currentRoomFilter === r.id) + '" onclick="setRoomFilter(' + r.id + ')">' +
             '<span class="room-chip-dot" style="background:' + esc(r.color) + '"></span>' +
@@ -1772,6 +1989,8 @@
           html += `<div class="grid">${ungrouped.map(d => renderDeviceCard(d)).join('')}</div>`;
         }
       }
+
+      html += renderSceneFromRoomModal(filtered);
 
       container.innerHTML = html;
     }
