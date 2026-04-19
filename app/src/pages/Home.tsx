@@ -15,6 +15,7 @@ import {
 import { useDeviceStore } from "@/stores/deviceStore";
 import Slider from "@/components/controls/Slider";
 import ColorPicker from "@/components/controls/ColorPicker";
+import FleetHealth from "@/components/FleetHealth";
 import type { Capability, Device } from "@/lib/types";
 
 interface ActivityEntry {
@@ -473,6 +474,9 @@ export default function Home() {
       <div className="p-3 bg-zinc-900/50 border border-zinc-800/50 rounded-lg">
         <StatusStrip devices={devices} mqtt={mqtt} sinric={sinric} />
       </div>
+
+      {/* Fleet health */}
+      <FleetHealth />
 
       {/* Favorites section */}
       {hasFavorites && (

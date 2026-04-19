@@ -2,7 +2,7 @@ use crate::auth;
 use crate::connection::ConnectionManager;
 use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
-use crate::diagnostics::{self, DiagnosticReport};
+use crate::diagnostics::{self, DiagnosticReport, FleetReport};
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
@@ -525,6 +525,16 @@ pub fn diagnose_device(
     let live_devices = state.discovery.get_devices();
     let live = live_devices.iter().find(|d| d.id == device_id);
     diagnostics::diagnose(&*db, &device_id, live)
+}
+
+/// Aggregate per-device diagnostics across the saved fleet. Safe for `viewer`.
+#[tauri::command]
+pub fn diagnose_fleet(
+    db: State<'_, Database>,
+    state: State<'_, AppState>,
+) -> Result<FleetReport, String> {
+    let live_devices = state.discovery.get_devices();
+    diagnostics::diagnose_fleet(&*db, &live_devices)
 }
 
 // ─── Device logs ─────────────────────────────────────────────────────────────

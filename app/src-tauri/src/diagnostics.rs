@@ -3,6 +3,28 @@ use crate::device::Device;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+/// Per-device entry in a fleet health report.
+#[derive(Debug, Clone, Serialize)]
+pub struct FleetDeviceEntry {
+    pub device_id: String,
+    pub name: String,
+    pub online: bool,
+    pub overall: String,
+    pub critical: u32,
+    pub warnings: u32,
+}
+
+/// Fleet-wide aggregate of per-device diagnostic rollups.
+#[derive(Debug, Clone, Serialize)]
+pub struct FleetReport {
+    pub generated_at: String,
+    pub total: u32,
+    pub good: u32,
+    pub attention: u32,
+    pub unhealthy: u32,
+    pub devices: Vec<FleetDeviceEntry>,
+}
+
 /// A single check result in the diagnostic report.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
@@ -567,6 +589,73 @@ fn roll_up(findings: &[Finding]) -> String {
     }
 }
 
+/// Aggregate per-device diagnostics across the known fleet.
+/// Pure read-only: re-uses `diagnose` per device and rolls the `overall`
+/// verdicts into totals. Devices whose individual check errors out are
+/// skipped (they simply don't contribute to any bucket) so one bad row
+/// can't hide the rest.
+pub fn diagnose_fleet(
+    db: &Database,
+    live_devices: &[Device],
+) -> Result<FleetReport, String> {
+    let saved = db.get_all_saved_devices()?;
+    let mut good = 0u32;
+    let mut attention = 0u32;
+    let mut unhealthy = 0u32;
+    let mut devices: Vec<FleetDeviceEntry> = Vec::with_capacity(saved.len());
+
+    for sd in &saved {
+        let live = live_devices.iter().find(|d| d.id == sd.id);
+        let report = match diagnose(db, &sd.id, live) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        match report.overall.as_str() {
+            "good" => good += 1,
+            "attention" => attention += 1,
+            "unhealthy" => unhealthy += 1,
+            _ => {}
+        }
+        let critical = report.findings.iter().filter(|f| f.level == LEVEL_FAIL).count() as u32;
+        let warnings = report.findings.iter().filter(|f| f.level == LEVEL_WARN).count() as u32;
+        let name = sd
+            .nickname
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| sd.name.clone());
+        devices.push(FleetDeviceEntry {
+            device_id: sd.id.clone(),
+            name,
+            online: live.map(|d| d.online).unwrap_or(false),
+            overall: report.overall,
+            critical,
+            warnings,
+        });
+    }
+
+    // Sort most-urgent first so the UI can take the top slice.
+    devices.sort_by(|a, b| severity_rank(&a.overall).cmp(&severity_rank(&b.overall)));
+
+    let total = devices.len() as u32;
+    Ok(FleetReport {
+        generated_at: Utc::now().to_rfc3339(),
+        total,
+        good,
+        attention,
+        unhealthy,
+        devices,
+    })
+}
+
+fn severity_rank(overall: &str) -> u8 {
+    match overall {
+        "unhealthy" => 0,
+        "attention" => 1,
+        "good" => 2,
+        _ => 3,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
@@ -776,6 +865,16 @@ mod tests {
             Finding { id: "b".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None },
         ];
         assert_eq!(roll_up(&findings), "attention");
+    }
+
+    #[test]
+    fn severity_rank_orders_most_urgent_first() {
+        let mut labels = vec!["good", "unhealthy", "attention", "good", "unhealthy"];
+        labels.sort_by_key(|l| severity_rank(l));
+        assert_eq!(
+            labels,
+            vec!["unhealthy", "unhealthy", "attention", "good", "good"]
+        );
     }
 
     #[test]

@@ -676,6 +676,46 @@
     .home-status-item { display: flex; align-items: center; gap: 0.4rem; }
     .home-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .home-status-sep { width: 1px; height: 16px; background: var(--border); }
+    .home-fleet-card {
+      margin-top: 0.9rem; padding: 0.9rem 1rem; background: var(--card);
+      border: 1px solid var(--border); border-radius: var(--radius);
+    }
+    .home-fleet-head {
+      display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.7rem;
+    }
+    .home-fleet-title {
+      font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--text-dim);
+    }
+    .home-fleet-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
+    .home-fleet-tile {
+      padding: 0.7rem 0.8rem; border-radius: var(--radius-sm); border: 1px solid transparent;
+      cursor: pointer; transition: filter var(--transition), border-color var(--transition);
+      display: flex; flex-direction: column; gap: 0.2rem; text-align: left;
+    }
+    .home-fleet-tile[disabled] { cursor: default; opacity: 0.4; }
+    .home-fleet-tile:not([disabled]):hover { filter: brightness(1.15); }
+    .home-fleet-tile.active { border-color: currentColor; }
+    .home-fleet-tile-head { display: flex; align-items: center; gap: 0.35rem; font-size: 0.65rem;
+      text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+    }
+    .home-fleet-tile-count { font-size: 1.5rem; font-weight: 700; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .home-fleet-list { margin-top: 0.8rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
+    .home-fleet-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.4rem 0.2rem; border-bottom: 1px solid rgba(39,39,42,0.5);
+      cursor: pointer; transition: background var(--transition);
+    }
+    .home-fleet-row:last-child { border-bottom: none; }
+    .home-fleet-row:hover { background: #1f1f23; }
+    .home-fleet-row-name { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0; }
+    .home-fleet-row-stat { font-size: 0.7rem; color: var(--text-faint); white-space: nowrap; margin-left: 0.75rem; }
+    .home-fleet-more { font-size: 0.65rem; color: var(--text-faint); margin-top: 0.4rem; }
+    .home-fleet-refresh {
+      background: none; border: none; padding: 0.2rem 0.3rem; cursor: pointer;
+      color: var(--text-faint); font-size: 0.8rem; transition: color var(--transition);
+    }
+    .home-fleet-refresh:hover { color: var(--text); }
     .home-layout { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; margin-top: 1.25rem; }
     .home-section-title {
       font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
@@ -1252,6 +1292,9 @@
     var homeSinricStatus = null;
 
     var homeFavorites = new Set();
+    var homeFleetReport = null;
+    var homeFleetFilter = null; // 'good' | 'attention' | 'unhealthy' | null
+    var homeFleetLoading = false;
 
     async function loadHome() {
       // Fetch devices (same data the Devices tab uses), activity, bridge statuses, and favorites in parallel.
@@ -1272,9 +1315,36 @@
         homeSinricStatus = results[4];
         homeFavorites = new Set((results[5] || []).map(function(f) { return f.device_id + ':' + f.capability_id; }));
         renderHome();
+        // Fleet diagnostics can be slow on big fleets, so it loads after
+        // the fast path renders rather than gating `loadHome`.
+        loadFleetHealth();
       } catch (e) {
         console.error('Failed to load home:', e);
       }
+    }
+
+    async function loadFleetHealth() {
+      if (homeFleetLoading) return;
+      homeFleetLoading = true;
+      renderHome();
+      try {
+        var r = await api('/api/diagnostics/fleet');
+        homeFleetReport = r;
+        if (r.unhealthy > 0) homeFleetFilter = 'unhealthy';
+        else if (r.attention > 0) homeFleetFilter = 'attention';
+        else homeFleetFilter = null;
+      } catch (e) {
+        console.error('Failed to load fleet diagnostics:', e);
+        homeFleetReport = { _error: String(e) };
+      } finally {
+        homeFleetLoading = false;
+        renderHome();
+      }
+    }
+
+    function toggleFleetFilter(level) {
+      homeFleetFilter = homeFleetFilter === level ? null : level;
+      renderHome();
     }
 
     function renderHome() {
@@ -1322,6 +1392,8 @@
       statusHtml += '<div style="flex:1"></div><span style="font-size:0.75rem;color:#52525b">' + devices.length + ' device' + (devices.length !== 1 ? 's' : '') + '</span>';
       statusHtml += '</div>';
 
+      var fleetHtml = renderFleetHealth();
+
       function starBtn(deviceId, capId) {
         if (isViewer) return '';
         var isFav = homeFavorites.has(deviceId + ':' + capId);
@@ -1359,7 +1431,7 @@
       }
 
       // Main layout
-      var html = statusHtml + favHtml + '<div class="home-layout">';
+      var html = statusHtml + fleetHtml + favHtml + '<div class="home-layout">';
 
       // Left column: sensors + controls
       html += '<div>';
@@ -1437,6 +1509,73 @@
       html += '</div></div>';
 
       el.innerHTML = html;
+    }
+
+    function renderFleetHealth() {
+      if (homeFleetLoading && !homeFleetReport) {
+        return '<div class="home-fleet-card"><div class="home-fleet-title">Fleet Health</div><div style="font-size:0.75rem;color:var(--text-faint);margin-top:0.4rem;">Running fleet health checks…</div></div>';
+      }
+      if (!homeFleetReport) return '';
+      if (homeFleetReport._error) {
+        return '<div class="home-fleet-card" style="border-color:rgba(239,68,68,0.3);"><div class="home-fleet-head"><div class="home-fleet-title" style="color:#fca5a5;">Fleet Health</div><button class="home-fleet-refresh" onclick="loadFleetHealth()" title="Retry">&#8634;</button></div><div style="font-size:0.75rem;color:#fca5a5;">Diagnostics failed: ' + esc(homeFleetReport._error) + '</div></div>';
+      }
+      if ((homeFleetReport.total || 0) === 0) return '';
+
+      var palette = {
+        good:      { label: 'Healthy',   color: '#34d399', bg: 'rgba(16,185,129,0.10)',  glyph: '&#10003;' },
+        attention: { label: 'Attention', color: '#fbbf24', bg: 'rgba(245,158,11,0.10)',  glyph: '&#9888;'  },
+        unhealthy: { label: 'Unhealthy', color: '#f87171', bg: 'rgba(239,68,68,0.10)',   glyph: '&#10005;' }
+      };
+      var buckets = ['good', 'attention', 'unhealthy'];
+      var tiles = '';
+      for (var ti = 0; ti < buckets.length; ti++) {
+        var b = buckets[ti];
+        var p = palette[b];
+        var count = homeFleetReport[b] || 0;
+        var active = homeFleetFilter === b;
+        var disabledAttr = count === 0 ? ' disabled' : '';
+        tiles += '<button class="home-fleet-tile' + (active ? ' active' : '') + '" style="background:' + p.bg + ';color:' + p.color + ';" onclick="toggleFleetFilter(\'' + b + '\')"' + disabledAttr + '>'
+          + '<div class="home-fleet-tile-head">' + p.glyph + ' ' + p.label + '</div>'
+          + '<div class="home-fleet-tile-count">' + count + '</div>'
+          + '</button>';
+      }
+
+      var listHtml = '';
+      if (homeFleetFilter) {
+        var matching = (homeFleetReport.devices || []).filter(function(d) { return d.overall === homeFleetFilter; });
+        var TILE_LIMIT = 6;
+        var shown = matching.slice(0, TILE_LIMIT);
+        if (shown.length > 0) {
+          listHtml += '<div class="home-fleet-list">';
+          for (var di = 0; di < shown.length; di++) {
+            var d = shown[di];
+            var dp = palette[d.overall] || palette.good;
+            var statParts = [];
+            if (d.critical > 0) statParts.push('<span style="color:#f87171;">' + d.critical + ' critical</span>');
+            if (d.warnings > 0) statParts.push('<span style="color:#fbbf24;">' + d.warnings + ' warn</span>');
+            var stat = statParts.length > 0
+              ? statParts.join(', ')
+              : '<span style="color:var(--text-faint);">all checks passed</span>';
+            var offlineBadge = d.online ? '' : '<span style="font-size:0.6rem;color:#f87171;text-transform:uppercase;letter-spacing:0.05em;">offline</span>';
+            listHtml += '<div class="home-fleet-row" onclick="switchToDevice(\'' + esc(d.device_id) + '\')">'
+              + '<div class="home-fleet-row-name"><span style="color:' + dp.color + ';">' + dp.glyph + '</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(d.name) + '</span>' + offlineBadge + '</div>'
+              + '<div class="home-fleet-row-stat">' + stat + '</div>'
+              + '</div>';
+          }
+          if (matching.length > shown.length) {
+            listHtml += '<div class="home-fleet-more">+' + (matching.length - shown.length) + ' more — click a device to drill in.</div>';
+          }
+          listHtml += '</div>';
+        }
+      }
+
+      var refreshBtn = '<button class="home-fleet-refresh" onclick="loadFleetHealth()" title="Re-run fleet diagnostics"' + (homeFleetLoading ? ' disabled' : '') + '>' + (homeFleetLoading ? '…' : '&#8634;') + '</button>';
+
+      return '<div class="home-fleet-card">'
+        + '<div class="home-fleet-head"><div class="home-fleet-title">Fleet Health</div>' + refreshBtn + '</div>'
+        + '<div class="home-fleet-grid">' + tiles + '</div>'
+        + listHtml
+        + '</div>';
     }
 
     async function toggleFavoriteCapability(deviceId, capId) {

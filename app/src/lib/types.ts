@@ -78,3 +78,23 @@ export interface DiagnosticReport {
   generated_at: string;
   findings: DiagnosticFinding[];
 }
+
+export type FleetOverall = "good" | "attention" | "unhealthy";
+
+export interface FleetDeviceEntry {
+  device_id: string;
+  name: string;
+  online: boolean;
+  overall: FleetOverall;
+  critical: number;
+  warnings: number;
+}
+
+export interface FleetReport {
+  generated_at: string;
+  total: number;
+  good: number;
+  attention: number;
+  unhealthy: number;
+  devices: FleetDeviceEntry[];
+}

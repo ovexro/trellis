@@ -86,6 +86,7 @@ pub fn run() {
             toggle_alert,
             get_device_logs,
             diagnose_device,
+            diagnose_fleet,
             store_log_entry,
             remove_device,
             create_schedule,
