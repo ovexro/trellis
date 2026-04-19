@@ -155,6 +155,7 @@ pub fn diagnose(
         .filter(|l| is_within_hours(&l.timestamp, WINDOW_HOURS))
         .collect();
     findings.push(check_error_rate(&errors_in_window));
+    findings.push(check_error_rate_trend(&errors_in_window));
 
     let history = db.get_firmware_history(device_id)?;
     findings.push(check_firmware_age(&history, live_device, eligible_update));
@@ -624,6 +625,73 @@ fn check_error_rate(error_logs: &[&LogEntry]) -> Finding {
     }
 }
 
+/// Compare error/warn events in the last hour to the preceding 23h baseline.
+/// Differentiates "something just started breaking" from the existing
+/// `check_error_rate` rule, which only looks at the 24h total and can't tell
+/// whether the noise is fresh or old-news.
+fn check_error_rate_trend(error_logs: &[&LogEntry]) -> Finding {
+    let mut last_hour = 0u32;
+    let mut prior = 0u32;
+    for l in error_logs {
+        match minutes_since(&l.timestamp) {
+            Some(m) if m <= 60 => last_hour += 1,
+            Some(m) if m <= (WINDOW_HOURS as u64) * 60 => prior += 1,
+            _ => {}
+        }
+    }
+    let baseline_per_hour = (prior as f64) / 23.0;
+
+    let zero_baseline = prior == 0;
+    let ratio = if zero_baseline {
+        f64::INFINITY
+    } else {
+        (last_hour as f64) / baseline_per_hour
+    };
+
+    let level = if last_hour >= 10 && (zero_baseline || ratio >= 3.0) {
+        LEVEL_FAIL
+    } else if last_hour >= 5 && (zero_baseline || ratio >= 2.0) {
+        LEVEL_WARN
+    } else {
+        LEVEL_OK
+    };
+
+    let detail = if last_hour == 0 {
+        format!(
+            "No error or warn events in the last hour ({:.1}/h average over preceding 23h).",
+            baseline_per_hour
+        )
+    } else if zero_baseline {
+        format!(
+            "{} error/warn events in the last hour with no prior events in the preceding 23h.",
+            last_hour
+        )
+    } else {
+        format!(
+            "{} error/warn events in the last hour vs {:.1}/h average over preceding 23h ({:.1}x).",
+            last_hour, baseline_per_hour, ratio
+        )
+    };
+
+    let suggestion = if level != LEVEL_OK {
+        Some(
+            "Error activity just accelerated. Open the device detail panel and scroll the Error/Warn log chips to see what started firing recently."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    Finding {
+        id: "error_rate_trend".to_string(),
+        level: level.to_string(),
+        title: "Error rate trend".to_string(),
+        detail,
+        suggestion,
+        action: None,
+    }
+}
+
 fn check_firmware_age(
     history: &[crate::db::FirmwareRecord],
     live: Option<&Device>,
@@ -990,6 +1058,78 @@ mod tests {
         let logs: Vec<LogEntry> = vec![];
         let refs: Vec<&LogEntry> = logs.iter().collect();
         let f = check_error_rate(&refs);
+        assert_eq!(f.level, LEVEL_OK);
+    }
+
+    // ─── Error-rate trend (acceleration detector) ────────────────────────────
+
+    fn err_log(mins_ago: i64) -> LogEntry {
+        LogEntry {
+            severity: "error".to_string(),
+            message: "boom".to_string(),
+            timestamp: (Utc::now() - Duration::minutes(mins_ago))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        }
+    }
+
+    #[test]
+    fn error_rate_trend_ok_when_silent() {
+        let logs: Vec<LogEntry> = vec![];
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
+        assert_eq!(f.level, LEVEL_OK);
+    }
+
+    #[test]
+    fn error_rate_trend_fail_for_sudden_spike_with_zero_baseline() {
+        // 12 events all within last hour, nothing prior.
+        let logs: Vec<LogEntry> = (0..12).map(|i| err_log(i * 4)).collect();
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
+        assert_eq!(f.level, LEVEL_FAIL);
+    }
+
+    #[test]
+    fn error_rate_trend_fail_for_3x_spike_with_baseline() {
+        // Last hour: 15 events. Preceding 23h: 23 events → baseline 1.0/h. Ratio 15x.
+        let mut logs: Vec<LogEntry> = (0..15).map(|i| err_log(i * 3)).collect();
+        logs.extend((0..23).map(|i| err_log(90 + i * 50))); // 90m → ~20h ago
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
+        assert_eq!(f.level, LEVEL_FAIL);
+    }
+
+    #[test]
+    fn error_rate_trend_warn_for_moderate_spike() {
+        // Last hour: 6 events. Preceding 23h: 23 events → baseline 1.0/h. Ratio 6x.
+        // Fails the >=10 bar so WARN, not FAIL.
+        let mut logs: Vec<LogEntry> = (0..6).map(|i| err_log(i * 8)).collect();
+        logs.extend((0..23).map(|i| err_log(90 + i * 50)));
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
+        assert_eq!(f.level, LEVEL_WARN);
+    }
+
+    #[test]
+    fn error_rate_trend_ok_when_ratio_below_threshold() {
+        // Last hour: 4 events. Preceding 23h: 69 events → baseline 3.0/h. Ratio 1.3x.
+        // Below the 5-event floor anyway → OK.
+        let mut logs: Vec<LogEntry> = (0..4).map(|i| err_log(i * 12)).collect();
+        logs.extend((0..69).map(|i| err_log(90 + i * 15)));
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
+        assert_eq!(f.level, LEVEL_OK);
+    }
+
+    #[test]
+    fn error_rate_trend_ok_when_noise_is_steady() {
+        // Last hour: 5 events. Preceding 23h: 115 events → baseline 5.0/h. Ratio 1.0x.
+        // Same rate as baseline — not a spike, even though total is noisy.
+        let mut logs: Vec<LogEntry> = (0..5).map(|i| err_log(i * 10)).collect();
+        logs.extend((0..115).map(|i| err_log(90 + i * 10)));
+        let refs: Vec<&LogEntry> = logs.iter().collect();
+        let f = check_error_rate_trend(&refs);
         assert_eq!(f.level, LEVEL_OK);
     }
 
