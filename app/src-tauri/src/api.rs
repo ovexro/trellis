@@ -1042,6 +1042,18 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_device_favorite(ctx, id, &req.body)
         }
 
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/github-repo") => {
+            let id = &p["/api/devices/".len()..p.len() - "/github-repo".len()];
+            match ctx.db.get_saved_device(id) {
+                Ok(Some(sd)) => json_ok(&serde_json::json!({
+                    "owner": sd.github_owner.unwrap_or_default(),
+                    "repo":  sd.github_repo.unwrap_or_default(),
+                })),
+                Ok(None) => json_ok(&serde_json::json!({"owner": "", "repo": ""})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/github-repo") => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/github-repo".len()];

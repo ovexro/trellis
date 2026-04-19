@@ -2561,12 +2561,9 @@
       var owner = '';
       var repo = '';
       try {
-        var devices = await api('/api/devices');
-        var sd = devices.find(function(d) { return d.id === deviceId; });
-        if (sd) {
-          owner = sd.github_owner || '';
-          repo = sd.github_repo || '';
-        }
+        var binding = await api('/api/devices/' + encodeURIComponent(deviceId) + '/github-repo');
+        owner = binding.owner || '';
+        repo = binding.repo || '';
       } catch (_) { /* non-fatal */ }
       var viewer = (window.__role === 'viewer');
       var saveBtn = viewer
