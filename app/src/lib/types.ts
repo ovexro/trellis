@@ -64,12 +64,19 @@ export interface WsEvent {
 
 export type DiagnosticLevel = "ok" | "warn" | "fail" | "info";
 
+export interface FindingAction {
+  label: string;
+  action_type: string;
+  data: Record<string, unknown>;
+}
+
 export interface DiagnosticFinding {
   id: string;
   level: DiagnosticLevel;
   title: string;
   detail: string;
   suggestion?: string;
+  action?: FindingAction;
 }
 
 export interface DiagnosticReport {

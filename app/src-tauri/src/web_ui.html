@@ -2540,16 +2540,63 @@
     async function runDiagnostics(deviceId) {
       var container = document.getElementById('detailDiag');
       if (!container) return;
-      container.innerHTML = '<div style="padding:0.75rem;">Running checks…</div>';
+      var binding = await renderGithubRepoBinding(deviceId);
+      container.innerHTML = binding + '<div style="padding:0.75rem;">Running checks…</div>';
       try {
         var report = await api('/api/devices/' + encodeURIComponent(deviceId) + '/diagnose');
-        container.innerHTML = renderDiagnosticReport(deviceId, report);
+        container.innerHTML = binding + renderDiagnosticReport(deviceId, report);
       } catch (e) {
-        container.innerHTML =
-          '<div style="padding:0.75rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:0.6rem;">'
+        container.innerHTML = binding
+          + '<div style="padding:0.75rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:0.6rem;">'
           + '<p style="margin:0 0 0.5rem 0;color:#fca5a5;">Diagnostics failed: ' + esc(String(e)) + '</p>'
           + '<button class="btn btn-sm" onclick="runDiagnostics(\'' + esc(deviceId) + '\')">Try again</button>'
           + '</div>';
+      }
+    }
+
+    /* Bind a device to a GitHub repo so the firmware_age rule can surface
+       one-click OTA updates when a newer release is published. Admin-only
+       (viewer role hides the Save button; the PUT endpoint enforces too). */
+    async function renderGithubRepoBinding(deviceId) {
+      var owner = '';
+      var repo = '';
+      try {
+        var devices = await api('/api/devices');
+        var sd = devices.find(function(d) { return d.id === deviceId; });
+        if (sd) {
+          owner = sd.github_owner || '';
+          repo = sd.github_repo || '';
+        }
+      } catch (_) { /* non-fatal */ }
+      var viewer = (window.__role === 'viewer');
+      var saveBtn = viewer
+        ? ''
+        : '<button class="btn btn-sm" onclick="saveGithubRepoBinding(\'' + esc(deviceId) + '\')">Save</button>';
+      var readOnly = viewer ? 'disabled' : '';
+      return '<div style="padding:0.55rem 0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.5rem;margin-bottom:0.6rem;">'
+        + '<div style="font-size:0.7rem;color:var(--text-faint);margin-bottom:0.35rem;">Firmware source (GitHub repo)</div>'
+        + '<div style="display:flex;gap:0.35rem;align-items:center;">'
+        + '<input id="diagGhOwner-' + esc(deviceId) + '" value="' + esc(owner) + '" placeholder="owner" ' + readOnly + ' style="flex:1;min-width:0;padding:0.3rem 0.5rem;font-size:0.75rem;">'
+        + '<span style="color:var(--text-faint);">/</span>'
+        + '<input id="diagGhRepo-' + esc(deviceId) + '" value="' + esc(repo) + '" placeholder="repo" ' + readOnly + ' style="flex:1;min-width:0;padding:0.3rem 0.5rem;font-size:0.75rem;">'
+        + saveBtn
+        + '</div>'
+        + '</div>';
+    }
+
+    async function saveGithubRepoBinding(deviceId) {
+      var o = document.getElementById('diagGhOwner-' + deviceId);
+      var r = document.getElementById('diagGhRepo-' + deviceId);
+      if (!o || !r) return;
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/github-repo', {
+          method: 'PUT',
+          body: { owner: o.value.trim(), repo: r.value.trim() }
+        });
+        toast('Firmware source saved', 'success');
+        runDiagnostics(deviceId);
+      } catch (e) {
+        toast('Failed to save: ' + e.message, 'error');
       }
     }
 
@@ -2593,10 +2640,16 @@
       var sugg = f.suggestion
         ? '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;font-style:italic;">Suggestion: ' + esc(f.suggestion) + '</div>'
         : '';
+      // Actions are desktop-only in this release — web users see the WARN but
+      // install the update from the desktop app. Make that explicit inline.
+      var action = f.action
+        ? '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;">Install via desktop app: <b>' + esc(f.action.label) + '</b></div>'
+        : '';
       return '<div style="padding:0.65rem;background:' + palette.bg + ';border:1px solid ' + palette.border + ';border-radius:0.5rem;">'
         + '<div style="font-size:0.8rem;font-weight:600;color:' + palette.text + ';">' + esc(f.title) + '</div>'
         + '<div style="font-size:0.75rem;color:var(--text-faint);margin-top:0.2rem;line-height:1.4;">' + esc(f.detail) + '</div>'
         + sugg
+        + action
         + '</div>';
     }
 

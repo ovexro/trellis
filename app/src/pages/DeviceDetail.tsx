@@ -259,7 +259,7 @@ export default function DeviceDetail() {
 
       {/* Diagnostics */}
       <SectionHeader title="Diagnostics" />
-      <DeviceDiagnostics deviceId={device.id} />
+      <DeviceDiagnostics deviceId={device.id} deviceIp={device.ip} devicePort={device.port} />
 
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />

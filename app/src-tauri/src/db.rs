@@ -58,6 +58,13 @@ pub struct SavedDevice {
     pub group_id: Option<i64>,
     pub sort_order: i64,
     pub favorite: bool,
+    /// GitHub owner/repo for firmware auto-remediation. When both are set the
+    /// diagnostics engine checks for newer releases and exposes a one-click
+    /// OTA button on the firmware_age finding.
+    #[serde(default)]
+    pub github_owner: Option<String>,
+    #[serde(default)]
+    pub github_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,7 +139,7 @@ impl Database {
     pub fn get_saved_device(&self, device_id: &str) -> Result<Option<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite FROM devices WHERE id = ?1")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo FROM devices WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query_map(rusqlite::params![device_id], |row| {
@@ -150,6 +157,8 @@ impl Database {
                     group_id: row.get(10)?,
                     sort_order: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
                     favorite: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+                    github_owner: row.get(13)?,
+                    github_repo: row.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -162,7 +171,7 @@ impl Database {
     pub fn get_all_saved_devices(&self) -> Result<Vec<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite FROM devices ORDER BY sort_order ASC, last_seen DESC")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo FROM devices ORDER BY sort_order ASC, last_seen DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -180,6 +189,8 @@ impl Database {
                     group_id: row.get(10)?,
                     sort_order: row.get::<_, Option<i64>>(11)?.unwrap_or(0),
                     favorite: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+                    github_owner: row.get(13)?,
+                    github_repo: row.get(14)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -188,6 +199,25 @@ impl Database {
             devices.push(row.map_err(|e| e.to_string())?);
         }
         Ok(devices)
+    }
+
+    /// Update per-device GitHub repo binding. Empty strings clear the binding
+    /// (stored as NULL) so the firmware_age rule reverts to INFO-only.
+    pub fn set_device_github_repo(
+        &self,
+        device_id: &str,
+        owner: Option<&str>,
+        repo: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let o = owner.filter(|s| !s.is_empty());
+        let r = repo.filter(|s| !s.is_empty());
+        conn.execute(
+            "UPDATE devices SET github_owner = ?1, github_repo = ?2 WHERE id = ?3",
+            rusqlite::params![o, r, device_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn reorder_devices(&self, order: &[(String, i64)]) -> Result<(), String> {
@@ -1753,6 +1783,10 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Add favorite column to devices if it doesn't exist (post-v0.6.0 — pinned devices, device-level, kept for compat)
     let _ = conn.execute("ALTER TABLE devices ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0", []);
+
+    // Per-device GitHub repo binding for Diagnostics v3 firmware auto-remediation (post-v0.13.0)
+    let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_owner TEXT", []);
+    let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_repo TEXT", []);
 
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("

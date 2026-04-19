@@ -37,6 +37,16 @@ pub struct FleetReport {
     pub devices: Vec<FleetDeviceEntry>,
 }
 
+/// Structured one-click remediation exposed on a finding. `action_type` tells
+/// the UI which button to render; `data` carries the payload the handler needs
+/// (for `firmware_update`: download url, release tag, asset name, device info).
+#[derive(Debug, Clone, Serialize)]
+pub struct FindingAction {
+    pub label: String,
+    pub action_type: String,
+    pub data: serde_json::Value,
+}
+
 /// A single check result in the diagnostic report.
 #[derive(Debug, Clone, Serialize)]
 pub struct Finding {
@@ -46,6 +56,8 @@ pub struct Finding {
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<FindingAction>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,10 +75,49 @@ const LEVEL_INFO: &str = "info";
 
 const WINDOW_HOURS: u32 = 24;
 
+/// A GitHub release considered eligible for firmware auto-remediation.
+/// Pre-computed by the caller of `diagnose` so the pure rule engine stays
+/// synchronous. When set, the firmware_age rule escalates to WARN and
+/// exposes a one-click OTA action.
+#[derive(Debug, Clone)]
+pub struct EligibleRelease {
+    pub release_tag: String,
+    pub asset_name: String,
+    pub download_url: String,
+}
+
+/// Parse a firmware / release version string into (major, minor, patch).
+/// Tolerates a leading `v` and a `-prerelease` suffix. Returns `None` if the
+/// string isn't a parseable numeric semver — callers should skip the "is
+/// newer" check rather than guess.
+pub fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = s.trim();
+    let core = trimmed.trim_start_matches('v').trim_start_matches('V');
+    let core = core.split(['-', '+']).next().unwrap_or(core);
+    let parts: Vec<&str> = core.split('.').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let major = parts.first().and_then(|p| p.parse().ok())?;
+    let minor = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(0);
+    let patch = parts.get(2).and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// True iff `candidate` parses to a strictly newer version than `current`.
+/// Anything unparseable returns false (don't nag users about unknown-shape versions).
+pub fn is_newer_version(candidate: &str, current: &str) -> bool {
+    match (parse_version(candidate), parse_version(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
+}
+
 pub fn diagnose(
     db: &Database,
     device_id: &str,
     live_device: Option<&Device>,
+    eligible_update: Option<&EligibleRelease>,
 ) -> Result<DiagnosticReport, String> {
     let mut findings: Vec<Finding> = Vec::new();
 
@@ -106,7 +157,7 @@ pub fn diagnose(
     findings.push(check_error_rate(&errors_in_window));
 
     let history = db.get_firmware_history(device_id)?;
-    findings.push(check_firmware_age(&history));
+    findings.push(check_firmware_age(&history, live_device, eligible_update));
 
     let overall = roll_up(&findings);
 
@@ -131,6 +182,7 @@ fn check_online_status(
                 title: "Device is online".to_string(),
                 detail: format!("Reachable at {}:{}.", d.ip, d.port),
                 suggestion: None,
+                action: None,
             });
         }
     }
@@ -172,6 +224,7 @@ fn check_online_status(
             "Check power to the device, verify it is on the expected WiFi network, and confirm the router is reachable."
                 .to_string(),
         ),
+        action: None,
     })
 }
 
@@ -187,6 +240,7 @@ fn check_rssi_health(samples: &[MetricPoint], live: Option<&Device>) -> Finding 
                 title: "WiFi signal strength".to_string(),
                 detail,
                 suggestion,
+                action: None,
             };
         }
         return Finding {
@@ -195,6 +249,7 @@ fn check_rssi_health(samples: &[MetricPoint], live: Option<&Device>) -> Finding 
             title: "WiFi signal strength".to_string(),
             detail: "No RSSI samples recorded in the last 24h.".to_string(),
             suggestion: None,
+            action: None,
         };
     }
 
@@ -231,6 +286,7 @@ fn check_rssi_health(samples: &[MetricPoint], live: Option<&Device>) -> Finding 
         title: "WiFi signal strength".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
@@ -273,6 +329,7 @@ fn check_heap_low(samples: &[MetricPoint], live: Option<&Device>) -> Finding {
                 } else {
                     None
                 },
+                action: None,
             };
         }
         return Finding {
@@ -281,6 +338,7 @@ fn check_heap_low(samples: &[MetricPoint], live: Option<&Device>) -> Finding {
             title: "Free memory".to_string(),
             detail: "No free-heap samples recorded in the last 24h.".to_string(),
             suggestion: None,
+            action: None,
         };
     }
 
@@ -313,6 +371,7 @@ fn check_heap_low(samples: &[MetricPoint], live: Option<&Device>) -> Finding {
         title: "Free memory".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
@@ -327,6 +386,7 @@ fn check_heap_trend(samples: &[MetricPoint]) -> Finding {
                 samples.len()
             ),
             suggestion: None,
+            action: None,
         };
     }
 
@@ -401,6 +461,7 @@ fn check_heap_trend(samples: &[MetricPoint]) -> Finding {
         title: "Memory leak pattern".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
@@ -416,6 +477,7 @@ fn check_uptime_percent(state_logs: &[&LogEntry]) -> Finding {
             title: "Uptime over last 24h".to_string(),
             detail: "No state transitions recorded — device has been steady.".to_string(),
             suggestion: None,
+            action: None,
         };
     }
 
@@ -463,6 +525,7 @@ fn check_uptime_percent(state_logs: &[&LogEntry]) -> Finding {
             title: "Uptime over last 24h".to_string(),
             detail: "Not enough data to compute uptime.".to_string(),
             suggestion: None,
+            action: None,
         };
     }
     let pct = (online_mins as f64) * 100.0 / (total as f64);
@@ -497,6 +560,7 @@ fn check_uptime_percent(state_logs: &[&LogEntry]) -> Finding {
         title: "Uptime over last 24h".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
@@ -527,6 +591,7 @@ fn check_reconnect_count(state_logs: &[&LogEntry]) -> Finding {
         title: "Connection stability".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
@@ -555,37 +620,85 @@ fn check_error_rate(error_logs: &[&LogEntry]) -> Finding {
         title: "Error log rate".to_string(),
         detail,
         suggestion,
+        action: None,
     }
 }
 
-fn check_firmware_age(history: &[crate::db::FirmwareRecord]) -> Finding {
-    if let Some(latest) = history.first() {
-        // firmware_history is ORDER BY uploaded_at DESC in the default get_firmware_history.
+fn check_firmware_age(
+    history: &[crate::db::FirmwareRecord],
+    live: Option<&Device>,
+    eligible_update: Option<&EligibleRelease>,
+) -> Finding {
+    // Pick the "current" firmware version for comparison against an eligible
+    // release. Prefer the live-reported value (authoritative); fall back to
+    // the most recent OTA record; fall back to empty.
+    let current_version: String = live
+        .map(|d| d.firmware.clone())
+        .filter(|v| !v.is_empty())
+        .or_else(|| history.first().map(|r| r.version.clone()))
+        .unwrap_or_default();
+
+    let age_detail = history.first().map(|latest| {
         let days = minutes_since(&latest.uploaded_at)
             .map(|m| m / 60 / 24)
             .unwrap_or(0);
-        let detail = if days == 0 {
+        if days == 0 {
             format!("Firmware v{} pushed today.", latest.version)
         } else if days == 1 {
             format!("Firmware v{} pushed yesterday.", latest.version)
         } else {
             format!("Firmware v{} pushed {} days ago.", latest.version, days)
-        };
-        Finding {
-            id: "firmware_age".to_string(),
-            level: LEVEL_INFO.to_string(),
-            title: "Firmware".to_string(),
-            detail,
-            suggestion: None,
         }
-    } else {
-        Finding {
-            id: "firmware_age".to_string(),
-            level: LEVEL_INFO.to_string(),
-            title: "Firmware".to_string(),
-            detail: "No firmware OTA updates recorded for this device.".to_string(),
-            suggestion: None,
+    });
+
+    // If an eligible release was pre-fetched AND it's strictly newer than
+    // the device's current version, escalate to WARN with a one-click action.
+    if let Some(release) = eligible_update {
+        if !current_version.is_empty()
+            && is_newer_version(&release.release_tag, &current_version)
+        {
+            let current_label = if current_version.starts_with('v') {
+                current_version.clone()
+            } else {
+                format!("v{}", current_version)
+            };
+            let detail = format!(
+                "{} is available (currently {}).",
+                release.release_tag, current_label
+            );
+            let action_data = serde_json::json!({
+                "release_tag": release.release_tag,
+                "asset_name": release.asset_name,
+                "download_url": release.download_url,
+            });
+            return Finding {
+                id: "firmware_age".to_string(),
+                level: LEVEL_WARN.to_string(),
+                title: "Firmware update available".to_string(),
+                detail,
+                suggestion: Some(
+                    "A newer firmware release is published in the bound GitHub repo. Click Update to flash it over the air.".to_string(),
+                ),
+                action: Some(FindingAction {
+                    label: format!("Update to {}", release.release_tag),
+                    action_type: "firmware_update".to_string(),
+                    data: action_data,
+                }),
+            };
         }
+    }
+
+    // Fallback: keep the existing INFO-only behavior.
+    let detail = age_detail.unwrap_or_else(|| {
+        "No firmware OTA updates recorded for this device.".to_string()
+    });
+    Finding {
+        id: "firmware_age".to_string(),
+        level: LEVEL_INFO.to_string(),
+        title: "Firmware".to_string(),
+        detail,
+        suggestion: None,
+        action: None,
     }
 }
 
@@ -609,6 +722,7 @@ fn roll_up(findings: &[Finding]) -> String {
 pub fn diagnose_fleet(
     db: &Database,
     live_devices: &[Device],
+    eligible_updates: &std::collections::HashMap<String, EligibleRelease>,
 ) -> Result<FleetReport, String> {
     let saved = db.get_all_saved_devices()?;
     let mut good = 0u32;
@@ -618,7 +732,8 @@ pub fn diagnose_fleet(
 
     for sd in &saved {
         let live = live_devices.iter().find(|d| d.id == sd.id);
-        let report = match diagnose(db, &sd.id, live) {
+        let eligible = eligible_updates.get(&sd.id);
+        let report = match diagnose(db, &sd.id, live, eligible) {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -881,9 +996,9 @@ mod tests {
     #[test]
     fn roll_up_unhealthy_if_any_fail() {
         let findings = vec![
-            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None },
-            Finding { id: "b".into(), level: LEVEL_FAIL.into(), title: "".into(), detail: "".into(), suggestion: None },
-            Finding { id: "c".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None },
+            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
+            Finding { id: "b".into(), level: LEVEL_FAIL.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
+            Finding { id: "c".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
         ];
         assert_eq!(roll_up(&findings), "unhealthy");
     }
@@ -891,8 +1006,8 @@ mod tests {
     #[test]
     fn roll_up_attention_for_warn_only() {
         let findings = vec![
-            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None },
-            Finding { id: "b".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None },
+            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
+            Finding { id: "b".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
         ];
         assert_eq!(roll_up(&findings), "attention");
     }
@@ -904,6 +1019,7 @@ mod tests {
             title: format!("Title {}", id),
             detail: format!("Detail {}", id),
             suggestion: None,
+            action: None,
         }
     }
 
@@ -957,9 +1073,110 @@ mod tests {
     #[test]
     fn roll_up_good_when_all_ok_or_info() {
         let findings = vec![
-            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None },
-            Finding { id: "b".into(), level: LEVEL_INFO.into(), title: "".into(), detail: "".into(), suggestion: None },
+            Finding { id: "a".into(), level: LEVEL_OK.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
+            Finding { id: "b".into(), level: LEVEL_INFO.into(), title: "".into(), detail: "".into(), suggestion: None, action: None },
         ];
         assert_eq!(roll_up(&findings), "good");
+    }
+
+    // ─── Version parsing + "is newer" ──────────────────────────────────────
+
+    #[test]
+    fn parse_version_tolerates_v_prefix_and_prerelease() {
+        assert_eq!(parse_version("0.13.0"), Some((0, 13, 0)));
+        assert_eq!(parse_version("v0.13.0"), Some((0, 13, 0)));
+        assert_eq!(parse_version("V1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_version("1.2.3-beta"), Some((1, 2, 3)));
+        assert_eq!(parse_version("1.2.3+build"), Some((1, 2, 3)));
+        // Missing minor / patch → zero-filled.
+        assert_eq!(parse_version("5"), Some((5, 0, 0)));
+        assert_eq!(parse_version("5.6"), Some((5, 6, 0)));
+    }
+
+    #[test]
+    fn parse_version_rejects_non_numeric() {
+        // Non-parseable major → None so callers skip the is-newer check.
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("release-2024-01"), None);
+        assert_eq!(parse_version("abc123"), None);
+        assert_eq!(parse_version("v"), None);
+    }
+
+    #[test]
+    fn is_newer_version_compares_semver_components() {
+        assert!(is_newer_version("0.14.0", "0.13.0"));
+        assert!(is_newer_version("1.0.0", "0.99.99"));
+        assert!(is_newer_version("v0.13.1", "v0.13.0"));
+        assert!(!is_newer_version("0.13.0", "0.13.0"));
+        assert!(!is_newer_version("0.12.9", "0.13.0"));
+    }
+
+    #[test]
+    fn is_newer_version_false_when_unparseable() {
+        // Release tag like "nightly-2024-01-01" can't be compared — skip, no nag.
+        assert!(!is_newer_version("nightly-build", "0.13.0"));
+        assert!(!is_newer_version("0.14.0", ""));
+    }
+
+    // ─── check_firmware_age with eligible update ──────────────────────────
+
+    fn fw_rec(version: &str, mins_ago: u64) -> crate::db::FirmwareRecord {
+        let ts = Utc::now() - chrono::Duration::minutes(mins_ago as i64);
+        crate::db::FirmwareRecord {
+            id: 1,
+            device_id: "test-dev".into(),
+            version: version.into(),
+            file_path: "".into(),
+            file_size: 0,
+            uploaded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    }
+
+    fn eligible(tag: &str) -> EligibleRelease {
+        EligibleRelease {
+            release_tag: tag.into(),
+            asset_name: "firmware.bin".into(),
+            download_url: format!("https://example.test/{}/firmware.bin", tag),
+        }
+    }
+
+    #[test]
+    fn firmware_age_info_without_eligible_update() {
+        let history = vec![fw_rec("0.13.0", 60)];
+        let f = check_firmware_age(&history, None, None);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.action.is_none());
+    }
+
+    #[test]
+    fn firmware_age_info_when_up_to_date() {
+        // Eligible pre-fetch returned a release with the SAME version → not newer.
+        let history = vec![fw_rec("0.13.0", 60)];
+        let elig = eligible("0.13.0");
+        let f = check_firmware_age(&history, None, Some(&elig));
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.action.is_none());
+    }
+
+    #[test]
+    fn firmware_age_warns_with_action_when_newer_available() {
+        let history = vec![fw_rec("0.13.0", 60)];
+        let elig = eligible("0.14.0");
+        let f = check_firmware_age(&history, None, Some(&elig));
+        assert_eq!(f.level, LEVEL_WARN);
+        assert_eq!(f.title, "Firmware update available");
+        let a = f.action.expect("action present when update available");
+        assert_eq!(a.action_type, "firmware_update");
+        assert_eq!(a.data["release_tag"], "0.14.0");
+        assert_eq!(a.data["asset_name"], "firmware.bin");
+    }
+
+    #[test]
+    fn firmware_age_no_action_when_current_version_unknown() {
+        // No firmware history, no live device → can't compare; stay INFO.
+        let elig = eligible("0.14.0");
+        let f = check_firmware_age(&[], None, Some(&elig));
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.action.is_none());
     }
 }

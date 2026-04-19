@@ -2,7 +2,7 @@ use crate::auth;
 use crate::connection::ConnectionManager;
 use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
-use crate::diagnostics::{self, DiagnosticReport, FleetReport};
+use crate::diagnostics::{self, DiagnosticReport, EligibleRelease, FleetReport};
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
 use crate::ota;
@@ -515,7 +515,10 @@ pub fn get_recent_activity(
 /// Run the rule-based diagnostic engine for a single device and return a
 /// structured report. Pure read-only: the engine reads metrics, logs, and
 /// firmware history from SQLite plus the live `Device` from `Discovery` to
-/// decide whether the device is online. Safe to call as a `viewer`.
+/// decide whether the device is online. When the device has a GitHub repo
+/// binding, also fetches the latest release and, if strictly newer than the
+/// current firmware version, exposes a one-click `firmware_update` action on
+/// the firmware_age finding. Safe to call as a `viewer`.
 #[tauri::command]
 pub fn diagnose_device(
     db: State<'_, Database>,
@@ -524,7 +527,8 @@ pub fn diagnose_device(
 ) -> Result<DiagnosticReport, String> {
     let live_devices = state.discovery.get_devices();
     let live = live_devices.iter().find(|d| d.id == device_id);
-    diagnostics::diagnose(&*db, &device_id, live)
+    let eligible = fetch_eligible_for_device(&*db, &device_id, live);
+    diagnostics::diagnose(&*db, &device_id, live, eligible.as_ref())
 }
 
 /// Aggregate per-device diagnostics across the saved fleet. Safe for `viewer`.
@@ -534,7 +538,152 @@ pub fn diagnose_fleet(
     state: State<'_, AppState>,
 ) -> Result<FleetReport, String> {
     let live_devices = state.discovery.get_devices();
-    diagnostics::diagnose_fleet(&*db, &live_devices)
+    let eligible = fetch_eligible_for_fleet(&*db, &live_devices);
+    diagnostics::diagnose_fleet(&*db, &live_devices, &eligible)
+}
+
+/// Bind (or clear) the GitHub repo used for firmware auto-remediation on a
+/// single device. Passing empty strings for both fields clears the binding.
+/// Admin-only via the REST wrapper; Tauri ACL gates the desktop command.
+#[tauri::command]
+pub fn set_device_github_repo(
+    db: State<'_, Database>,
+    device_id: String,
+    owner: String,
+    repo: String,
+) -> Result<(), String> {
+    db.set_device_github_repo(
+        &device_id,
+        Some(owner.as_str()),
+        Some(repo.as_str()),
+    )
+}
+
+/// Fetch the newest eligible firmware release for a single device, if any.
+/// Returns `None` unless the device has both `github_owner` and `github_repo`
+/// bound and a non-prerelease release exists whose tag parses to a strictly
+/// newer version than the device's current firmware. Network failure, unparsed
+/// versions, and assets without `.bin`/`.bin.gz` all fall back to `None` so
+/// the rule engine can stay INFO-only rather than emit a false positive.
+pub fn fetch_eligible_for_device(
+    db: &Database,
+    device_id: &str,
+    live: Option<&Device>,
+) -> Option<EligibleRelease> {
+    let saved = db.get_saved_device(device_id).ok().flatten()?;
+    let owner = saved.github_owner.as_ref().filter(|s| !s.is_empty())?;
+    let repo = saved.github_repo.as_ref().filter(|s| !s.is_empty())?;
+    let current_version = live
+        .map(|d| d.firmware.clone())
+        .filter(|v| !v.is_empty())
+        .or_else(|| saved.firmware.clone().into())
+        .filter(|v: &String| !v.is_empty())?;
+    fetch_eligible_release_blocking(owner, repo, &current_version)
+}
+
+/// Pre-compute eligible updates for every bound device in the fleet. Dedupes
+/// by (owner, repo) so a 20-device fleet on one repo makes a single GitHub
+/// API call instead of 20.
+pub fn fetch_eligible_for_fleet(
+    db: &Database,
+    live_devices: &[Device],
+) -> std::collections::HashMap<String, EligibleRelease> {
+    use std::collections::HashMap;
+    let saved = match db.get_all_saved_devices() {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let mut cache: HashMap<(String, String), Vec<(String, String, String)>> = HashMap::new();
+    let mut result: HashMap<String, EligibleRelease> = HashMap::new();
+    for sd in &saved {
+        let owner = match sd.github_owner.as_ref().filter(|s| !s.is_empty()) {
+            Some(o) => o.clone(),
+            None => continue,
+        };
+        let repo = match sd.github_repo.as_ref().filter(|s| !s.is_empty()) {
+            Some(r) => r.clone(),
+            None => continue,
+        };
+        let live = live_devices.iter().find(|d| d.id == sd.id);
+        let current = live
+            .map(|d| d.firmware.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| Some(sd.firmware.clone()))
+            .filter(|v| !v.is_empty());
+        let current = match current {
+            Some(c) => c,
+            None => continue,
+        };
+        let key = (owner.clone(), repo.clone());
+        let releases = cache
+            .entry(key)
+            .or_insert_with(|| fetch_releases_raw(&owner, &repo));
+        if let Some(r) = pick_newer(releases, &current) {
+            result.insert(sd.id.clone(), r);
+        }
+    }
+    result
+}
+
+fn fetch_releases_raw(owner: &str, repo: &str) -> Vec<(String, String, String)> {
+    let url = format!("https://api.github.com/repos/{}/{}/releases", owner, repo);
+    let resp = match ureq::get(&url)
+        .set("User-Agent", "Trellis-Desktop")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let releases: Vec<serde_json::Value> = match resp.into_json() {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for rel in releases.iter().take(20) {
+        if rel["prerelease"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let tag = rel["tag_name"].as_str().unwrap_or("").to_string();
+        if tag.is_empty() {
+            continue;
+        }
+        if let Some(assets) = rel["assets"].as_array() {
+            for asset in assets {
+                let aname = asset["name"].as_str().unwrap_or("");
+                if aname.ends_with(".bin") || aname.ends_with(".bin.gz") {
+                    let url = asset["browser_download_url"].as_str().unwrap_or("").to_string();
+                    out.push((tag.clone(), aname.to_string(), url));
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn pick_newer(
+    releases: &[(String, String, String)],
+    current_version: &str,
+) -> Option<EligibleRelease> {
+    releases
+        .iter()
+        .find(|(tag, _, _)| diagnostics::is_newer_version(tag, current_version))
+        .map(|(tag, asset, url)| EligibleRelease {
+            release_tag: tag.clone(),
+            asset_name: asset.clone(),
+            download_url: url.clone(),
+        })
+}
+
+fn fetch_eligible_release_blocking(
+    owner: &str,
+    repo: &str,
+    current_version: &str,
+) -> Option<EligibleRelease> {
+    let releases = fetch_releases_raw(owner, repo);
+    pick_newer(&releases, current_version)
 }
 
 // ─── Device logs ─────────────────────────────────────────────────────────────

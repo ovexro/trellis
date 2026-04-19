@@ -986,7 +986,8 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             let id = &p["/api/devices/".len()..p.len() - "/diagnose".len()];
             let live_devices = ctx.discovery.get_devices();
             let live = live_devices.iter().find(|d| d.id == id);
-            match crate::diagnostics::diagnose(&ctx.db, id, live) {
+            let eligible = crate::commands::fetch_eligible_for_device(&ctx.db, id, live);
+            match crate::diagnostics::diagnose(&ctx.db, id, live, eligible.as_ref()) {
                 Ok(report) => json_ok(&report),
                 Err(e) => json_error(500, &e),
             }
@@ -994,7 +995,8 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
 
         ("GET", "/api/diagnostics/fleet") => {
             let live_devices = ctx.discovery.get_devices();
-            match crate::diagnostics::diagnose_fleet(&ctx.db, &live_devices) {
+            let eligible = crate::commands::fetch_eligible_for_fleet(&ctx.db, &live_devices);
+            match crate::diagnostics::diagnose_fleet(&ctx.db, &live_devices, &eligible) {
                 Ok(report) => json_ok(&report),
                 Err(e) => json_error(500, &e),
             }
@@ -1038,6 +1040,12 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/favorite".len()];
             handle_set_device_favorite(ctx, id, &req.body)
+        }
+
+        ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/github-repo") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id = &p["/api/devices/".len()..p.len() - "/github-repo".len()];
+            handle_set_device_github_repo(ctx, id, &req.body)
         }
 
         ("GET", "/api/favorites") => {
@@ -1847,6 +1855,23 @@ fn handle_set_device_position(ctx: &ApiContext, body: &str) -> (u16, String) {
         None => return json_error(400, "missing y"),
     };
     match ctx.db.set_device_position(device_id, floor_id, x, y) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_device_github_repo(
+    ctx: &ApiContext,
+    device_id: &str,
+    body: &str,
+) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let owner = v["owner"].as_str().unwrap_or("");
+    let repo = v["repo"].as_str().unwrap_or("");
+    match ctx.db.set_device_github_repo(device_id, Some(owner), Some(repo)) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }

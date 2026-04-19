@@ -87,6 +87,7 @@ pub fn run() {
             get_device_logs,
             diagnose_device,
             diagnose_fleet,
+            set_device_github_repo,
             store_log_entry,
             remove_device,
             create_schedule,
