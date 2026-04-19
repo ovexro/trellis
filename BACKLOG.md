@@ -8,7 +8,6 @@ Concrete enough to pick up in a future session. Each has scope + what it unblock
 
 - **Dashboard card inline color picker** — color capabilities currently show a read-only swatch on cards; could add an inline color picker that opens without navigating to detail page. Low priority.
 - **Offline-aware scene scaffolder** — Scene from room currently relies on live in-memory capabilities, which are empty for offline devices. Could fall back to a cached-capabilities source (last known descriptor from `device_templates` or equivalent) so offline rooms still get useful scaffolding. Defer until a real user hits this.
-- **Device Diagnostics v3.1: web OTA trigger** — desktop gets the one-click firmware update button; web UI currently shows an "Install via desktop app" hint. Adding a `POST /api/devices/:id/ota/github` REST endpoint (admin) that reuses the existing blocking download + `ota::serve_firmware` path would close the gap. The REST server is sync so a `std::thread::spawn` + 202 Accepted response keeps the request snappy; progress events already stream over WebSocket.
 - **Device Diagnostics v4: more rules** — power-supply instability (if we can detect short uptime with clean exit), flash wear (NVS write frequency), mDNS resolution latency, OTA success rate.
 
 ## Known follow-ups

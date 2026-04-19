@@ -2601,7 +2601,7 @@
       if (!report || !report.findings) return '<div>No report.</div>';
       var overall = report.overall || 'good';
       var banner = renderDiagBanner(deviceId, report);
-      var rows = report.findings.map(renderDiagFinding).join('');
+      var rows = report.findings.map(function(f) { return renderDiagFinding(f, deviceId); }).join('');
       return banner + '<div style="display:flex;flex-direction:column;gap:0.4rem;margin-top:0.6rem;">' + rows + '</div>';
     }
 
@@ -2627,7 +2627,7 @@
         + '</div>';
     }
 
-    function renderDiagFinding(f) {
+    function renderDiagFinding(f, deviceId) {
       var palette = {
         ok:   { bg:'rgba(16,185,129,0.05)',  border:'rgba(16,185,129,0.25)', text:'#34d399' },
         warn: { bg:'rgba(245,158,11,0.05)',  border:'rgba(245,158,11,0.25)', text:'#fbbf24' },
@@ -2637,11 +2637,16 @@
       var sugg = f.suggestion
         ? '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;font-style:italic;">Suggestion: ' + esc(f.suggestion) + '</div>'
         : '';
-      // Actions are desktop-only in this release — web users see the WARN but
-      // install the update from the desktop app. Make that explicit inline.
-      var action = f.action
-        ? '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;">Install via desktop app: <b>' + esc(f.action.label) + '</b></div>'
-        : '';
+      var action = '';
+      if (f.action && f.action.action_type === 'firmware_update' && f.action.data && deviceId) {
+        var d = f.action.data;
+        action = '<div style="margin-top:0.5rem;"><button class="btn btn-sm" onclick="flashGhOta(\''
+          + esc(deviceId) + '\',\'' + esc(d.download_url || '') + '\',\''
+          + esc(d.release_tag || '') + '\',\'' + esc(d.asset_name || '') + '\')">'
+          + esc(f.action.label) + '</button></div>';
+      } else if (f.action) {
+        action = '<div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.4rem;">' + esc(f.action.label) + '</div>';
+      }
       return '<div style="padding:0.65rem;background:' + palette.bg + ';border:1px solid ' + palette.border + ';border-radius:0.5rem;">'
         + '<div style="font-size:0.8rem;font-weight:600;color:' + palette.text + ';">' + esc(f.title) + '</div>'
         + '<div style="font-size:0.75rem;color:var(--text-faint);margin-top:0.2rem;line-height:1.4;">' + esc(f.detail) + '</div>'
