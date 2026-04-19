@@ -81,6 +81,12 @@ export interface DiagnosticReport {
 
 export type FleetOverall = "good" | "attention" | "unhealthy";
 
+export interface TopFinding {
+  level: DiagnosticLevel;
+  title: string;
+  detail: string;
+}
+
 export interface FleetDeviceEntry {
   device_id: string;
   name: string;
@@ -88,6 +94,7 @@ export interface FleetDeviceEntry {
   overall: FleetOverall;
   critical: number;
   warnings: number;
+  top_finding?: TopFinding | null;
 }
 
 export interface FleetReport {

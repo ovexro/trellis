@@ -3,6 +3,16 @@ use crate::device::Device;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+/// The most urgent finding on a device, surfaced inline on the Fleet Health
+/// widget so users don't need to click-through to see *why* a device is in the
+/// attention/unhealthy bucket.
+#[derive(Debug, Clone, Serialize)]
+pub struct TopFinding {
+    pub level: String,
+    pub title: String,
+    pub detail: String,
+}
+
 /// Per-device entry in a fleet health report.
 #[derive(Debug, Clone, Serialize)]
 pub struct FleetDeviceEntry {
@@ -12,6 +22,8 @@ pub struct FleetDeviceEntry {
     pub overall: String,
     pub critical: u32,
     pub warnings: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_finding: Option<TopFinding>,
 }
 
 /// Fleet-wide aggregate of per-device diagnostic rollups.
@@ -618,6 +630,7 @@ pub fn diagnose_fleet(
         }
         let critical = report.findings.iter().filter(|f| f.level == LEVEL_FAIL).count() as u32;
         let warnings = report.findings.iter().filter(|f| f.level == LEVEL_WARN).count() as u32;
+        let top_finding = pick_top_finding(&report.findings);
         let name = sd
             .nickname
             .clone()
@@ -630,6 +643,7 @@ pub fn diagnose_fleet(
             overall: report.overall,
             critical,
             warnings,
+            top_finding,
         });
     }
 
@@ -645,6 +659,22 @@ pub fn diagnose_fleet(
         unhealthy,
         devices,
     })
+}
+
+/// Pick the most urgent finding for surfacing inline on the Fleet Health row:
+/// first FAIL (in the order rules were evaluated in `diagnose`), else first
+/// WARN, else None. OK/INFO never get surfaced — they're not actionable on a
+/// rollup widget.
+fn pick_top_finding(findings: &[Finding]) -> Option<TopFinding> {
+    findings
+        .iter()
+        .find(|f| f.level == LEVEL_FAIL)
+        .or_else(|| findings.iter().find(|f| f.level == LEVEL_WARN))
+        .map(|f| TopFinding {
+            level: f.level.clone(),
+            title: f.title.clone(),
+            detail: f.detail.clone(),
+        })
 }
 
 fn severity_rank(overall: &str) -> u8 {
@@ -865,6 +895,53 @@ mod tests {
             Finding { id: "b".into(), level: LEVEL_WARN.into(), title: "".into(), detail: "".into(), suggestion: None },
         ];
         assert_eq!(roll_up(&findings), "attention");
+    }
+
+    fn finding(id: &str, level: &str) -> Finding {
+        Finding {
+            id: id.into(),
+            level: level.into(),
+            title: format!("Title {}", id),
+            detail: format!("Detail {}", id),
+            suggestion: None,
+        }
+    }
+
+    #[test]
+    fn top_finding_prefers_fail_over_warn() {
+        let findings = vec![
+            finding("a", LEVEL_OK),
+            finding("b", LEVEL_WARN),
+            finding("c", LEVEL_FAIL),
+            finding("d", LEVEL_FAIL),
+        ];
+        let top = pick_top_finding(&findings).expect("should have a top finding");
+        assert_eq!(top.level, LEVEL_FAIL);
+        // First fail in iteration order wins, not the last.
+        assert_eq!(top.title, "Title c");
+    }
+
+    #[test]
+    fn top_finding_falls_back_to_warn_when_no_fail() {
+        let findings = vec![
+            finding("a", LEVEL_OK),
+            finding("b", LEVEL_INFO),
+            finding("c", LEVEL_WARN),
+            finding("d", LEVEL_WARN),
+        ];
+        let top = pick_top_finding(&findings).expect("should have a top finding");
+        assert_eq!(top.level, LEVEL_WARN);
+        assert_eq!(top.title, "Title c");
+    }
+
+    #[test]
+    fn top_finding_none_when_all_ok_or_info() {
+        let findings = vec![
+            finding("a", LEVEL_OK),
+            finding("b", LEVEL_INFO),
+            finding("c", LEVEL_OK),
+        ];
+        assert!(pick_top_finding(&findings).is_none());
     }
 
     #[test]

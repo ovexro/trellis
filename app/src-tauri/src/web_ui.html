@@ -716,7 +716,10 @@
     .home-fleet-row:last-child { border-bottom: none; }
     .home-fleet-row:hover { background: #1f1f23; }
     .home-fleet-row-name { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0; }
-    .home-fleet-row-stat { font-size: 0.7rem; color: var(--text-faint); white-space: nowrap; margin-left: 0.75rem; }
+    .home-fleet-row-stat { font-size: 0.7rem; color: var(--text-faint); white-space: nowrap; margin-left: 0.75rem; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+    .home-fleet-finding-fail { color: #f87171; }
+    .home-fleet-finding-warn { color: #fbbf24; }
+    .home-fleet-finding-detail { color: var(--text-dim); }
     .home-fleet-more { font-size: 0.65rem; color: var(--text-faint); margin-top: 0.4rem; }
     .home-fleet-refresh {
       background: none; border: none; padding: 0.2rem 0.3rem; cursor: pointer;
@@ -1558,16 +1561,21 @@
           for (var di = 0; di < shown.length; di++) {
             var d = shown[di];
             var dp = palette[d.overall] || palette.good;
-            var statParts = [];
-            if (d.critical > 0) statParts.push('<span style="color:#f87171;">' + d.critical + ' critical</span>');
-            if (d.warnings > 0) statParts.push('<span style="color:#fbbf24;">' + d.warnings + ' warn</span>');
-            var stat = statParts.length > 0
-              ? statParts.join(', ')
-              : '<span style="color:var(--text-faint);">all checks passed</span>';
+            var stat;
+            var statTitle = '';
+            if (d.top_finding) {
+              var findingCls = d.top_finding.level === 'fail' ? 'home-fleet-finding-fail' : 'home-fleet-finding-warn';
+              statTitle = ' title="' + esc(d.top_finding.title + ': ' + d.top_finding.detail) + '"';
+              stat = '<span class="' + findingCls + '">' + esc(d.top_finding.title) + '</span>'
+                + '<span style="color:var(--text-faint);"> · </span>'
+                + '<span class="home-fleet-finding-detail">' + esc(d.top_finding.detail) + '</span>';
+            } else {
+              stat = '<span style="color:var(--text-faint);">all checks passed</span>';
+            }
             var offlineBadge = d.online ? '' : '<span style="font-size:0.6rem;color:#f87171;text-transform:uppercase;letter-spacing:0.05em;">offline</span>';
             listHtml += '<div class="home-fleet-row" onclick="switchToDevice(\'' + esc(d.device_id) + '\')">'
               + '<div class="home-fleet-row-name"><span style="color:' + dp.color + ';">' + dp.glyph + '</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(d.name) + '</span>' + offlineBadge + '</div>'
-              + '<div class="home-fleet-row-stat">' + stat + '</div>'
+              + '<div class="home-fleet-row-stat"' + statTitle + '>' + stat + '</div>'
               + '</div>';
           }
           if (matching.length > shown.length) {

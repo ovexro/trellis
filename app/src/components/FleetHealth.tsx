@@ -140,22 +140,29 @@ export default function FleetHealth() {
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-zinc-500">
-                      {d.critical > 0 && (
-                        <span className="text-red-400">{d.critical} critical</span>
-                      )}
-                      {d.critical > 0 && d.warnings > 0 && (
-                        <span className="text-zinc-700">, </span>
-                      )}
-                      {d.warnings > 0 && (
-                        <span className="text-amber-400">{d.warnings} warn</span>
-                      )}
-                      {d.critical === 0 && d.warnings === 0 && (
-                        <span className="text-zinc-600">all checks passed</span>
-                      )}
-                    </span>
-                    <ArrowRight size={12} className="text-zinc-600" />
+                  <div className="flex items-center gap-3 min-w-0 max-w-[55%]">
+                    {d.top_finding ? (
+                      <span
+                        className={[
+                          "text-xs truncate",
+                          d.top_finding.level === "fail"
+                            ? "text-red-400"
+                            : "text-amber-400",
+                        ].join(" ")}
+                        title={`${d.top_finding.title}: ${d.top_finding.detail}`}
+                      >
+                        {d.top_finding.title}
+                        <span className="text-zinc-600"> · </span>
+                        <span className="text-zinc-400">
+                          {d.top_finding.detail}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-zinc-600">
+                        all checks passed
+                      </span>
+                    )}
+                    <ArrowRight size={12} className="text-zinc-600 shrink-0" />
                   </div>
                 </button>
               </li>
