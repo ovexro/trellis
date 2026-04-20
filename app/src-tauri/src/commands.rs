@@ -161,12 +161,12 @@ pub async fn start_ota(
     };
 
     let dest_str = dest_path.to_string_lossy().to_string();
-    db.store_firmware_record(&device_id, &version, &dest_str, file_size)?;
+    let history_row_id = db.store_firmware_record(&device_id, &version, &dest_str, file_size)?;
 
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         let (url, _stop_flag) =
-            ota::serve_firmware(&firmware_path, serve_handle, device_id.clone())?;
+            ota::serve_firmware(&firmware_path, serve_handle, device_id.clone(), Some(history_row_id))?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
@@ -208,8 +208,10 @@ pub async fn rollback_firmware(
     let ws_port = port + 1;
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
+        // Rollback reuses an existing firmware_history row's file — no new
+        // history row is inserted, so there's nothing to mark delivery on.
         let (url, _stop_flag) =
-            ota::serve_firmware(&firmware_record_path, serve_handle, device_id.clone())?;
+            ota::serve_firmware(&firmware_record_path, serve_handle, device_id.clone(), None)?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
@@ -416,13 +418,13 @@ pub async fn start_github_ota(
     .map_err(|e| format!("Task failed: {}", e))??;
 
     // Store firmware record for history/rollback
-    db.store_firmware_record(&device_id, &release_tag, &dest_str, file_size)?;
+    let history_row_id = db.store_firmware_record(&device_id, &release_tag, &dest_str, file_size)?;
 
     // Serve firmware to device via existing OTA flow
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         let (url, _stop_flag) =
-            ota::serve_firmware(&dest_str, serve_handle, device_id.clone())?;
+            ota::serve_firmware(&dest_str, serve_handle, device_id.clone(), Some(history_row_id))?;
         let ota_cmd = serde_json::json!({"command": "ota", "url": url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;

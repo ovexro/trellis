@@ -2302,9 +2302,10 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
     }
 
     let dest_str = dest_path.to_string_lossy().to_string();
-    if let Err(e) = ctx.db.store_firmware_record(device_id, release_tag, &dest_str, file_size) {
-        return json_error(500, &e);
-    }
+    let history_row_id = match ctx.db.store_firmware_record(device_id, release_tag, &dest_str, file_size) {
+        Ok(id) => id,
+        Err(e) => return json_error(500, &e),
+    };
 
     // Serve and trigger OTA
     let ws_port = device.port + 1;
@@ -2313,7 +2314,7 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
     let did = device_id.to_string();
     let ip = device.ip.clone();
 
-    match crate::ota::serve_firmware(&dest_str, app_handle, did.clone()) {
+    match crate::ota::serve_firmware(&dest_str, app_handle, did.clone(), Some(history_row_id)) {
         Ok((url, _stop_flag)) => {
             let ota_cmd = serde_json::json!({"command": "ota", "url": url});
             let msg = serde_json::to_string(&ota_cmd).unwrap_or_default();

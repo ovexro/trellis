@@ -1175,22 +1175,19 @@ impl Database {
     /// `error` carries the serve_firmware-side failure category (e.g.
     /// "body: Broken pipe") for "failed" rows; callers pass None for the
     /// "delivered" case so the column stays null on success.
-    /// Updates the most recent firmware_history row for the device that has
-    /// no delivery_status yet — matches the upload that just completed.
+    /// Updates the exact firmware_history row identified by `row_id` — the
+    /// caller captures this from `store_firmware_record` so concurrent OTAs
+    /// to the same device can't land each other's outcomes (v0.15.0).
     pub fn mark_firmware_delivery(
-        &self, device_id: &str, status: &str, error: Option<&str>,
+        &self, row_id: i64, status: &str, error: Option<&str>,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE firmware_history
              SET delivery_status = ?2, delivered_at = datetime('now'),
                  delivery_error = ?3
-             WHERE id = (
-                SELECT id FROM firmware_history
-                WHERE device_id = ?1 AND delivery_status IS NULL
-                ORDER BY uploaded_at DESC LIMIT 1
-             )",
-            rusqlite::params![device_id, status, error],
+             WHERE id = ?1",
+            rusqlite::params![row_id, status, error],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }

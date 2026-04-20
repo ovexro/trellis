@@ -10,21 +10,24 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::connection::DeviceEvent;
 use crate::db::Database;
 
-/// Best-effort persistence of an OTA outcome on the most recent
-/// `firmware_history` row for `device_id` that has no `delivery_status`
-/// yet. Logs a warning on DB error but never propagates — OTA delivery
-/// is the user-visible outcome and must not depend on this side write.
-/// `error` is persisted alongside "failed" outcomes so the diagnostics
-/// rule can surface the failure category (v0.15.0).
+/// Best-effort persistence of an OTA outcome on the exact
+/// `firmware_history` row identified by `history_row_id`. Logs a warning
+/// on DB error but never propagates — OTA delivery is the user-visible
+/// outcome and must not depend on this side write. `error` is persisted
+/// alongside "failed" outcomes so the diagnostics rule can surface the
+/// failure category (v0.15.0). Callers pass `None` for paths that reuse
+/// an existing firmware record (e.g. rollback) and therefore have no new
+/// history row to mark — in that case persistence is skipped entirely.
 fn record_delivery(
     app_handle: &AppHandle,
-    device_id: &str,
+    history_row_id: Option<i64>,
     status: &str,
     error: Option<&str>,
 ) {
+    let Some(row_id) = history_row_id else { return };
     if let Some(db) = app_handle.try_state::<Database>() {
-        if let Err(e) = db.mark_firmware_delivery(device_id, status, error) {
-            log::warn!("[OTA] mark_firmware_delivery({}, {}) failed: {}", device_id, status, e);
+        if let Err(e) = db.mark_firmware_delivery(row_id, status, error) {
+            log::warn!("[OTA] mark_firmware_delivery(row_id={}, {}) failed: {}", row_id, status, e);
         }
     }
 }
@@ -42,6 +45,7 @@ pub fn serve_firmware(
     firmware_path: &str,
     app_handle: AppHandle,
     device_id: String,
+    history_row_id: Option<i64>,
 ) -> Result<(String, Arc<Mutex<bool>>), String> {
     let path = PathBuf::from(firmware_path);
     if !path.exists() {
@@ -124,7 +128,7 @@ pub fn serve_firmware(
                         // the recorded status (v0.15.0).
                         record_delivery(
                             &app_handle,
-                            &device_id,
+                            history_row_id,
                             if delivered { "delivered" } else { "failed" },
                             if delivered { None } else { delivery_error.as_deref() },
                         );
@@ -158,7 +162,7 @@ pub fn serve_firmware(
                     Err(e) => {
                         let err_str = format!("accept: {}", e);
                         log::warn!("[OTA] Accept error: {}", e);
-                        record_delivery(&app_handle, &device_id, "failed", Some(&err_str));
+                        record_delivery(&app_handle, history_row_id, "failed", Some(&err_str));
                         let _ = app_handle.emit(
                             "device-event",
                             DeviceEvent {
