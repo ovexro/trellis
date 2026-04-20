@@ -2,6 +2,20 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [0.15.0] — 2026-04-20
+
+OTA reliability release. Every OTA upload's outcome now survives a restart, failure categories are captured alongside failed rows and surfaced in a new `ota_success_rate` diagnostics rule, and the delivery-mark path is concurrent-safe so two in-flight OTAs to the same device can never cross-attribute outcomes.
+
+### Added
+
+- **OTA delivery success rate rule.** New `ota_success_rate` rule reads the ratio of successful vs failed OTA uploads over the last 10 recorded outcomes and surfaces `fail` at <50% delivered, `warn` at <80%, else `ok`. Stays at INFO ("N outcomes recorded so far, need 3 for trend") until 3 attempts have been recorded, so a fresh device isn't fail-flagged on a single bad upload. Backed by two new nullable columns on `firmware_history` (`delivery_status`, `delivered_at`) — `ota::serve_firmware` calls `db.mark_firmware_delivery` right before emitting the `ota_delivered` / `ota_delivery_failed` Tauri event, so outcome survives restart. Pre-v0.15.0 rows have NULL `delivery_status` and the rule skips them, only earning trust as new uploads accumulate. Persistence is best-effort: a DB write failure logs warn but never propagates into the OTA flow. 7 new unit tests (36 → 43 diagnostics tests).
+- **OTA delivery error persistence.** Third nullable column `delivery_error` on `firmware_history` captures the failure-category string `serve_firmware` was already emitting on `ota_delivery_failed` events (e.g. `"accept: timed out"`, `"body: Broken pipe (os error 32)"`, `"flush: Connection reset by peer"`). `mark_firmware_delivery` signature becomes `(status, error: Option<&str>)`; `record_delivery` passes the error on failure branches and `None` on the delivered branch. The `ota_success_rate` rule appends `Last error: {reason}.` to its detail string when it tips WARN/FAIL (picks the newest `failed` row's error, skips rows with NULL errors to stay backward-compatible), so admins see the failure category inline instead of cross-referencing the firmware history. 2 new unit tests (43 → 45 diagnostics tests).
+- **Concurrent-OTA-safe outcome attribution.** `mark_firmware_delivery` previously targeted "most recent NULL `delivery_status` row for the device" via a subquery — safe under the single-in-flight-OTA-per-device UI contract but would cross-attribute outcomes if two OTAs to the same device ever ran concurrently. Signature is now `mark_firmware_delivery(row_id: i64, status, error)` with a direct `WHERE id = ?1`; the three insert-and-serve sites (desktop `upload_firmware`, desktop GitHub OTA, REST `POST /api/github/ota`) capture `store_firmware_record`'s returned rowid and thread it through. `ota::serve_firmware` gains `history_row_id: Option<i64>`; `record_delivery` accepts the option and skips the write entirely on `None`, which is what `rollback_firmware` now passes — rollback reuses an existing firmware_history row and inserts no new one, so under the old code it was quietly flipping a random stale NULL row; now it's correctly a no-op. 59 library tests pass.
+
+### Library
+
+- No library changes in this release (all features are desktop/web-only).
+
 ## [0.14.0] — 2026-04-19
 
 Diagnostics gets smarter. The firmware_age rule now offers a one-click upgrade when a newer GitHub release is available for a device's bound repo, and a new error_rate_trend rule distinguishes "errors are still firing right now" from the existing 24h totals rule. Both render identically in the desktop Diagnostics section and the `:9090` web dashboard.
