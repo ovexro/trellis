@@ -2,6 +2,12 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **OTA cancellation.** Every running OTA transfer can now be aborted from the Upload Firmware card on the desktop OTA page (new "Cancel transfer" button appears while a transfer is uploading) or from the web dashboard diagnostics `firmware_update` toast (inline Cancel button after the OTA is triggered). New `ota::OtaRegistry` (`HashMap<device_id, Arc<Mutex<bool>>>`, registered as Tauri-managed state) replaces the `_stop_flag` each `serve_firmware` callsite was discarding. `serve_firmware` rewritten into two cancel-responsive loops — a non-blocking `accept()` poll (~200 ms ticks) handles cancel-before-connect, and a 4 KB chunked write loop with a 500 ms `set_write_timeout` handles cancel-mid-transfer (the rtl8xxxu "Send-Q frozen" scenario from the 2026-04-20 v0.15.0 hardware-test session). On cancel the worker persists `delivery_status = "cancelled"` + `delivery_error = "Cancelled by user"` and emits the existing `ota_delivery_failed` event with `error: "cancelled"` — the desktop OTA page routes that into a new calm "cancelled" UI state instead of the alarming "OTA update failed" banner. New Tauri command `cancel_ota(device_id) -> bool` and admin-gated REST endpoint `POST /api/ota/cancel`. `check_ota_success_rate` filter updated to exclude `"cancelled"` rows from the ratio denominator — user aborts don't count as delivery failures. 5 new unit tests (59 → 64 library tests).
+
 ## [0.15.0] — 2026-04-20
 
 OTA reliability release. Every OTA upload's outcome now survives a restart, failure categories are captured alongside failed rows and surfaced in a new `ota_success_rate` diagnostics rule, and the delivery-mark path is concurrent-safe so two in-flight OTAs to the same device can never cross-attribute outcomes.

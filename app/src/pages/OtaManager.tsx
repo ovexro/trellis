@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload, Loader2, Github, RefreshCw, Download } from "lucide-react";
+import { Upload, CheckCircle, AlertCircle, FileUp, History, RotateCcw, Trash2, HardDriveDownload, Loader2, Github, RefreshCw, Download, XCircle } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface GithubAsset {
@@ -45,7 +45,7 @@ export default function OtaManager() {
   const [selectedDevice, setSelectedDevice] = useState("");
   const [firmwarePath, setFirmwarePath] = useState("");
   const [otaProgress, setOtaProgress] = useState(-1);
-  const [status, setStatus] = useState<"idle" | "uploading" | "delivered" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "uploading" | "delivered" | "success" | "error" | "cancelled">("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -144,8 +144,17 @@ export default function OtaManager() {
           setStatus("delivered");
           setOtaProgress(0);
         } else if (event_type === "ota_delivery_failed") {
-          setStatus("error");
-          setErrorMsg(payload.error ? `Delivery failed: ${payload.error}` : "Delivery failed.");
+          // User-initiated cancels surface as ota_delivery_failed with
+          // error="cancelled" — route those to a distinct "cancelled"
+          // state so the UI doesn't show an alarming "OTA update failed"
+          // banner for the user's own abort.
+          if (payload.error === "cancelled") {
+            setStatus("cancelled");
+            setErrorMsg("");
+          } else {
+            setStatus("error");
+            setErrorMsg(payload.error ? `Delivery failed: ${payload.error}` : "Delivery failed.");
+          }
           inFlightRef.current = null;
         }
       },
@@ -320,6 +329,22 @@ export default function OtaManager() {
       setStatus("error");
       setErrorMsg(String(err));
       inFlightRef.current = null;
+    }
+  };
+
+  // Aborts an in-flight OTA by flipping the stop_flag that serve_firmware
+  // registered on start. The desktop HTTP server breaks out of its chunked
+  // write loop within ~500ms, persists status="cancelled" on the matching
+  // firmware_history row, and emits ota_delivery_failed with error
+  // "cancelled" — the same event listener below flips the UI to its
+  // error state. No UI changes needed here beyond the button itself.
+  const handleCancel = async () => {
+    const inFlight = inFlightRef.current;
+    if (!inFlight) return;
+    try {
+      await invoke<boolean>("cancel_ota", { deviceId: inFlight.deviceId });
+    } catch (err) {
+      setErrorMsg(`Failed to send cancel: ${err}`);
     }
   };
 
@@ -527,6 +552,17 @@ export default function OtaManager() {
           </div>
         )}
 
+        {status === "uploading" && (
+          <button
+            onClick={handleCancel}
+            className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs transition-colors w-full justify-center"
+            title="Abort this OTA transfer"
+          >
+            <XCircle size={14} />
+            Cancel transfer
+          </button>
+        )}
+
         {status === "delivered" && (
           <div className="flex items-start gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">
             <Loader2 size={16} className="mt-0.5 flex-shrink-0 animate-spin" />
@@ -554,6 +590,19 @@ export default function OtaManager() {
             <div>
               <p>OTA update failed.</p>
               {errorMsg && <p className="text-xs mt-1 text-red-300">{errorMsg}</p>}
+            </div>
+          </div>
+        )}
+
+        {status === "cancelled" && (
+          <div className="flex items-start gap-2 text-sm text-zinc-400 bg-zinc-800/50 p-3 rounded-lg">
+            <XCircle size={16} className="mt-0.5 flex-shrink-0" />
+            <div>
+              <p>OTA transfer cancelled.</p>
+              <p className="text-xs mt-1 text-zinc-500">
+                The device did not receive a complete firmware image and
+                will continue running its current version.
+              </p>
             </div>
           </div>
         )}

@@ -5,7 +5,7 @@ use crate::device::Device;
 use crate::diagnostics::{self, DiagnosticReport, EligibleRelease, FleetReport};
 use crate::discovery::Discovery;
 use crate::mqtt::{MqttBridge, MqttConfig, MqttConfigPublic, MqttStatus};
-use crate::ota;
+use crate::ota::{self, OtaRegistry};
 use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
 use crate::sinric::{SinricBridge, SinricConfig, SinricConfigPublic, SinricStatus};
@@ -175,6 +175,14 @@ pub async fn start_ota(
     })
     .await
     .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
+pub fn cancel_ota(
+    registry: State<'_, Arc<OtaRegistry>>,
+    device_id: String,
+) -> Result<bool, String> {
+    Ok(registry.cancel(&device_id))
 }
 
 // ─── Firmware history ───────────────────────────────────────────────────────

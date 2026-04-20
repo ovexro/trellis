@@ -1626,6 +1626,11 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_github_ota(ctx, &req.body)
         }
 
+        ("POST", "/api/ota/cancel") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_cancel_ota(ctx, &req.body)
+        }
+
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
     }
@@ -2176,6 +2181,22 @@ fn fetch_github_releases(owner: &str, repo: &str) -> Result<serde_json::Value, S
         }
     }
     Ok(serde_json::json!(result))
+}
+
+fn handle_cancel_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
+    let parsed: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let device_id = match parsed["device_id"].as_str() {
+        Some(id) => id,
+        None => return json_error(400, "Missing device_id"),
+    };
+    let cancelled = match ctx.app_handle.try_state::<Arc<crate::ota::OtaRegistry>>() {
+        Some(reg) => reg.cancel(device_id),
+        None => false,
+    };
+    json_ok(&serde_json::json!({ "cancelled": cancelled }))
 }
 
 fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {

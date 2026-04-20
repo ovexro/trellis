@@ -34,6 +34,7 @@ pub fn run() {
     let sinric_bridge = Arc::new(SinricBridge::new(connection_manager.clone()));
     let discovery = Arc::new(Discovery::new(connection_manager.clone()));
     let serial_manager = Arc::new(SerialManager::new());
+    let ota_registry = Arc::new(ota::OtaRegistry::new());
 
     // Wire bridges into ConnectionManager so device-event updates are
     // mirrored to MQTT and Sinric in real time, and into Discovery so HA
@@ -63,6 +64,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(app_state)
+        .manage(ota_registry.clone())
         .invoke_handler(tauri::generate_handler![
             get_devices,
             add_device_by_ip,
@@ -76,6 +78,7 @@ pub fn run() {
             close_serial,
             send_serial,
             start_ota,
+            cancel_ota,
             store_metric,
             get_metrics,
             get_device_annotations,

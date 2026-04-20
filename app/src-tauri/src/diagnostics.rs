@@ -776,13 +776,18 @@ fn check_firmware_age(
 /// ignored — the rule only earns trust as new uploads accumulate. Stays
 /// silent (skipped) until at least `OTA_MIN_SAMPLES` attempts have been
 /// recorded so we don't fail-flag a single bad upload on a fresh device.
+/// User-initiated cancellations (`delivery_status = "cancelled"`, v0.16.0)
+/// are excluded from both the numerator and denominator — they represent
+/// a human abort, not a delivery failure.
 fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
     const OTA_WINDOW: usize = 10;
     const OTA_MIN_SAMPLES: usize = 3;
 
     let recent: Vec<&crate::db::FirmwareRecord> = history
         .iter()
-        .filter(|r| r.delivery_status.is_some())
+        .filter(|r| {
+            r.delivery_status.is_some() && r.delivery_status.as_deref() != Some("cancelled")
+        })
         .take(OTA_WINDOW)
         .collect();
     let total = recent.len();
@@ -1573,5 +1578,23 @@ mod tests {
         let f = check_ota_success_rate(&history);
         assert_eq!(f.level, LEVEL_WARN);
         assert!(f.detail.contains("2/3"));
+    }
+
+    #[test]
+    fn ota_success_rate_excludes_cancelled_from_ratio() {
+        // 3 delivered + 2 cancelled. The cancellations are user-initiated
+        // aborts (rtl8xxxu flake, mind-changed, etc.) and must NOT be
+        // counted against the delivery rate. The denominator should be 3,
+        // not 5 — all three delivered → OK.
+        let history = vec![
+            fw_rec_with_status("0.14.0", 5, Some("delivered")),
+            fw_rec_with_status("0.14.0", 100, Some("cancelled")),
+            fw_rec_with_status("0.13.0", 200, Some("delivered")),
+            fw_rec_with_status("0.13.0", 300, Some("cancelled")),
+            fw_rec_with_status("0.12.0", 400, Some("delivered")),
+        ];
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("3/3"), "detail: {}", f.detail);
     }
 }

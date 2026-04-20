@@ -3645,11 +3645,39 @@
           method: 'POST',
           body: { device_id: deviceId, download_url: downloadUrl, release_tag: releaseTag, asset_name: assetName },
         });
-        if (statusEl) statusEl.textContent = 'OTA triggered — device is downloading firmware and will reboot.';
+        if (statusEl) {
+          // Surface a Cancel affordance alongside the success text. The
+          // desktop OTA server has registered a stop_flag for this device;
+          // POSTing /api/ota/cancel flips it and the in-flight transfer
+          // aborts within ~500ms (rtl8xxxu-stuck scenario).
+          statusEl.innerHTML = 'OTA triggered — device is downloading firmware and will reboot. '
+            + '<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="cancelGhOta(\'' + deviceId.replace(/'/g, "\\'") + '\')">Cancel</button>';
+        }
         toast('OTA triggered for ' + releaseTag, 'success');
       } catch (e) {
         if (statusEl) statusEl.textContent = 'Flash failed: ' + (e.message || e);
         toast('OTA failed: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function cancelGhOta(deviceId) {
+      try {
+        var r = await api('/api/ota/cancel', {
+          method: 'POST',
+          body: { device_id: deviceId },
+        });
+        var statusEl = document.getElementById('ghOtaStatus');
+        if (r && r.cancelled) {
+          if (statusEl) statusEl.textContent = 'OTA transfer cancelled.';
+          toast('OTA cancelled', 'success');
+        } else {
+          // No registered in-flight OTA — the transfer already finished
+          // (delivered/failed) and the registry entry is gone. Tell the
+          // user rather than silently no-op.
+          if (statusEl) statusEl.textContent = 'No in-flight OTA to cancel (already finished).';
+        }
+      } catch (e) {
+        toast('Cancel failed: ' + (e.message || e), 'error');
       }
     }
 
