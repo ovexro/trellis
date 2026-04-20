@@ -159,6 +159,7 @@ pub fn diagnose(
 
     let history = db.get_firmware_history(device_id)?;
     findings.push(check_firmware_age(&history, live_device, eligible_update));
+    findings.push(check_ota_success_rate(&history));
 
     let overall = roll_up(&findings);
 
@@ -770,6 +771,76 @@ fn check_firmware_age(
     }
 }
 
+/// OTA delivery success rate over the last `OTA_WINDOW` attempts that have a
+/// recorded outcome. Pre-v0.15.0 rows have `delivery_status = NULL` and are
+/// ignored — the rule only earns trust as new uploads accumulate. Stays
+/// silent (skipped) until at least `OTA_MIN_SAMPLES` attempts have been
+/// recorded so we don't fail-flag a single bad upload on a fresh device.
+fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
+    const OTA_WINDOW: usize = 10;
+    const OTA_MIN_SAMPLES: usize = 3;
+
+    let recent: Vec<&crate::db::FirmwareRecord> = history
+        .iter()
+        .filter(|r| r.delivery_status.is_some())
+        .take(OTA_WINDOW)
+        .collect();
+    let total = recent.len();
+
+    if total < OTA_MIN_SAMPLES {
+        return Finding {
+            id: "ota_success_rate".to_string(),
+            level: LEVEL_INFO.to_string(),
+            title: "OTA delivery success rate".to_string(),
+            detail: format!(
+                "{} OTA outcome{} recorded so far (need {} for trend).",
+                total,
+                if total == 1 { "" } else { "s" },
+                OTA_MIN_SAMPLES
+            ),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    let delivered = recent
+        .iter()
+        .filter(|r| r.delivery_status.as_deref() == Some("delivered"))
+        .count();
+    let success_rate = (delivered as f64) / (total as f64);
+    let pct = success_rate * 100.0;
+
+    let level = if success_rate < 0.5 {
+        LEVEL_FAIL
+    } else if success_rate < 0.8 {
+        LEVEL_WARN
+    } else {
+        LEVEL_OK
+    };
+
+    let detail = format!(
+        "{}/{} of the last OTA uploads were delivered ({:.0}%).",
+        delivered, total, pct
+    );
+    let suggestion = if level != LEVEL_OK {
+        Some(
+            "OTA uploads are dropping mid-transfer more often than they should. Check WiFi signal strength on the device, or push the firmware while the device is on the same AP as Trellis."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+
+    Finding {
+        id: "ota_success_rate".to_string(),
+        level: level.to_string(),
+        title: "OTA delivery success rate".to_string(),
+        detail,
+        suggestion,
+        action: None,
+    }
+}
+
 fn roll_up(findings: &[Finding]) -> String {
     let has_fail = findings.iter().any(|f| f.level == LEVEL_FAIL);
     let has_warn = findings.iter().any(|f| f.level == LEVEL_WARN);
@@ -1269,6 +1340,8 @@ mod tests {
             file_path: "".into(),
             file_size: 0,
             uploaded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+            delivery_status: None,
+            delivered_at: None,
         }
     }
 
@@ -1318,5 +1391,122 @@ mod tests {
         let f = check_firmware_age(&[], None, Some(&elig));
         assert_eq!(f.level, LEVEL_INFO);
         assert!(f.action.is_none());
+    }
+
+    // ─── check_ota_success_rate ──────────────────────────────────────────
+
+    fn fw_rec_with_status(
+        version: &str, mins_ago: u64, status: Option<&str>,
+    ) -> crate::db::FirmwareRecord {
+        let ts = Utc::now() - Duration::minutes(mins_ago as i64);
+        crate::db::FirmwareRecord {
+            id: 1,
+            device_id: "test-dev".into(),
+            version: version.into(),
+            file_path: "".into(),
+            file_size: 0,
+            uploaded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+            delivery_status: status.map(|s| s.to_string()),
+            delivered_at: status.map(|_| ts.format("%Y-%m-%d %H:%M:%S").to_string()),
+        }
+    }
+
+    #[test]
+    fn ota_success_rate_info_when_no_recorded_outcomes() {
+        // History exists but all rows are pre-v0.15.0 (delivery_status NULL).
+        let history = vec![
+            fw_rec_with_status("0.13.0", 10, None),
+            fw_rec_with_status("0.12.0", 100, None),
+        ];
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("0 OTA outcomes recorded"));
+    }
+
+    #[test]
+    fn ota_success_rate_info_below_min_samples() {
+        let history = vec![
+            fw_rec_with_status("0.14.0", 5, Some("delivered")),
+            fw_rec_with_status("0.13.0", 100, Some("delivered")),
+        ];
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("2 OTA outcomes recorded"));
+    }
+
+    #[test]
+    fn ota_success_rate_ok_for_high_success() {
+        // 9/10 delivered = 90% → OK.
+        let mut history: Vec<_> = (0..9)
+            .map(|i| fw_rec_with_status("0.14.0", (i * 60) as u64, Some("delivered")))
+            .collect();
+        history.push(fw_rec_with_status("0.13.0", 600, Some("failed")));
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("9/10"));
+        assert!(f.detail.contains("90%"));
+    }
+
+    #[test]
+    fn ota_success_rate_warns_for_moderate_failure() {
+        // 7/10 delivered = 70% → WARN (below 80%).
+        let mut history: Vec<_> = (0..7)
+            .map(|i| fw_rec_with_status("0.14.0", (i * 60) as u64, Some("delivered")))
+            .collect();
+        for i in 0..3 {
+            history.push(fw_rec_with_status("0.13.0", 600 + (i * 60), Some("failed")));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_WARN);
+        assert!(f.suggestion.is_some());
+    }
+
+    #[test]
+    fn ota_success_rate_fails_for_majority_failure() {
+        // 4/10 delivered = 40% → FAIL.
+        let mut history: Vec<_> = (0..4)
+            .map(|i| fw_rec_with_status("0.14.0", (i * 60) as u64, Some("delivered")))
+            .collect();
+        for i in 0..6 {
+            history.push(fw_rec_with_status("0.13.0", 600 + (i * 60), Some("failed")));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_FAIL);
+        assert!(f.detail.contains("4/10"));
+    }
+
+    #[test]
+    fn ota_success_rate_window_caps_at_ten() {
+        // 12 delivered + 2 failed; only the most recent 10 should count.
+        // Order matches what get_firmware_history returns: newest first.
+        let mut history: Vec<_> = Vec::new();
+        // newest 10 are all delivered → expect OK
+        for i in 0..10 {
+            history.push(fw_rec_with_status("0.14.0", i, Some("delivered")));
+        }
+        // older failures should be ignored once window is full
+        for i in 0..2 {
+            history.push(fw_rec_with_status("0.13.0", 1000 + i, Some("failed")));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("10/10"));
+    }
+
+    #[test]
+    fn ota_success_rate_skips_null_rows_when_counting() {
+        // Mixed: 3 recorded outcomes (2 delivered + 1 failed) interleaved
+        // with NULL pre-v0.15.0 rows. Should compute on the 3 recorded ones,
+        // not be diluted by the NULLs (66% → WARN).
+        let history = vec![
+            fw_rec_with_status("0.14.0", 5, Some("delivered")),
+            fw_rec_with_status("0.13.0", 100, None),
+            fw_rec_with_status("0.13.0", 200, Some("failed")),
+            fw_rec_with_status("0.12.0", 300, None),
+            fw_rec_with_status("0.12.0", 400, Some("delivered")),
+        ];
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_WARN);
+        assert!(f.detail.contains("2/3"));
     }
 }

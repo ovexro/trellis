@@ -5,9 +5,22 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::connection::DeviceEvent;
+use crate::db::Database;
+
+/// Best-effort persistence of an OTA outcome on the most recent
+/// `firmware_history` row for `device_id` that has no `delivery_status`
+/// yet. Logs a warning on DB error but never propagates — OTA delivery
+/// is the user-visible outcome and must not depend on this side write.
+fn record_delivery(app_handle: &AppHandle, device_id: &str, status: &str) {
+    if let Some(db) = app_handle.try_state::<Database>() {
+        if let Err(e) = db.mark_firmware_delivery(device_id, status) {
+            log::warn!("[OTA] mark_firmware_delivery({}, {}) failed: {}", device_id, status, e);
+        }
+    }
+}
 
 /// Serves a firmware file via HTTP on a random port.
 /// Returns the URL that devices can use to download the firmware.
@@ -99,6 +112,15 @@ pub fn serve_firmware(
                             );
                         }
 
+                        // Persist outcome before emitting so a UI subscriber
+                        // that immediately re-queries firmware_history sees
+                        // the recorded status (v0.15.0).
+                        record_delivery(
+                            &app_handle,
+                            &device_id,
+                            if delivered { "delivered" } else { "failed" },
+                        );
+
                         // Emit event so the UI can leave the "stuck at 0%" state.
                         let event_type = if delivered {
                             "ota_delivered"
@@ -127,6 +149,7 @@ pub fn serve_firmware(
                     }
                     Err(e) => {
                         log::warn!("[OTA] Accept error: {}", e);
+                        record_delivery(&app_handle, &device_id, "failed");
                         let _ = app_handle.emit(
                             "device-event",
                             DeviceEvent {

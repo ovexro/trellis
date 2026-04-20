@@ -1155,16 +1155,39 @@ impl Database {
     pub fn get_firmware_history(&self, device_id: &str) -> Result<Vec<FirmwareRecord>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, device_id, version, file_path, file_size, uploaded_at
+            "SELECT id, device_id, version, file_path, file_size, uploaded_at,
+                    delivery_status, delivered_at
              FROM firmware_history WHERE device_id = ?1 ORDER BY uploaded_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(rusqlite::params![device_id], |row| {
             Ok(FirmwareRecord {
                 id: row.get(0)?, device_id: row.get(1)?, version: row.get(2)?,
                 file_path: row.get(3)?, file_size: row.get(4)?, uploaded_at: row.get(5)?,
+                delivery_status: row.get(6)?, delivered_at: row.get(7)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Record the outcome of an OTA upload after the device confirms (or
+    /// fails to confirm) the apply. `status` is "delivered" or "failed".
+    /// Updates the most recent firmware_history row for the device that has
+    /// no delivery_status yet — matches the upload that just completed.
+    pub fn mark_firmware_delivery(
+        &self, device_id: &str, status: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE firmware_history
+             SET delivery_status = ?2, delivered_at = datetime('now')
+             WHERE id = (
+                SELECT id FROM firmware_history
+                WHERE device_id = ?1 AND delivery_status IS NULL
+                ORDER BY uploaded_at DESC LIMIT 1
+             )",
+            rusqlite::params![device_id, status],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn delete_firmware_record(&self, id: i64) -> Result<String, String> {
@@ -1578,6 +1601,8 @@ pub struct FirmwareRecord {
     pub file_path: String,
     pub file_size: i64,
     pub uploaded_at: String,
+    pub delivery_status: Option<String>,
+    pub delivered_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1787,6 +1812,11 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // Per-device GitHub repo binding for Diagnostics v3 firmware auto-remediation (post-v0.13.0)
     let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_owner TEXT", []);
     let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_repo TEXT", []);
+
+    // OTA delivery outcome persistence (v0.15.0). Null on existing rows and on
+    // any new upload until the device confirms (or fails to confirm) the apply.
+    let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_status TEXT", []);
+    let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivered_at TEXT", []);
 
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("
