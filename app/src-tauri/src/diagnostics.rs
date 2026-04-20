@@ -818,10 +818,28 @@ fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
         LEVEL_OK
     };
 
-    let detail = format!(
-        "{}/{} of the last OTA uploads were delivered ({:.0}%).",
-        delivered, total, pct
-    );
+    // When the rule tips WARN/FAIL, surface the most recent failure reason
+    // (captured in firmware_history.delivery_error, v0.15.0) so admins see
+    // the failure category inline instead of having to cross-reference the
+    // firmware history tab.
+    let last_error = if level != LEVEL_OK {
+        recent.iter()
+            .find(|r| r.delivery_status.as_deref() == Some("failed"))
+            .and_then(|r| r.delivery_error.as_deref())
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+    let detail = match last_error {
+        Some(err) => format!(
+            "{}/{} of the last OTA uploads were delivered ({:.0}%). Last error: {}.",
+            delivered, total, pct, err
+        ),
+        None => format!(
+            "{}/{} of the last OTA uploads were delivered ({:.0}%).",
+            delivered, total, pct
+        ),
+    };
     let suggestion = if level != LEVEL_OK {
         Some(
             "OTA uploads are dropping mid-transfer more often than they should. Check WiFi signal strength on the device, or push the firmware while the device is on the same AP as Trellis."
@@ -1342,6 +1360,7 @@ mod tests {
             uploaded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
             delivery_status: None,
             delivered_at: None,
+            delivery_error: None,
         }
     }
 
@@ -1398,6 +1417,12 @@ mod tests {
     fn fw_rec_with_status(
         version: &str, mins_ago: u64, status: Option<&str>,
     ) -> crate::db::FirmwareRecord {
+        fw_rec_full(version, mins_ago, status, None)
+    }
+
+    fn fw_rec_full(
+        version: &str, mins_ago: u64, status: Option<&str>, error: Option<&str>,
+    ) -> crate::db::FirmwareRecord {
         let ts = Utc::now() - Duration::minutes(mins_ago as i64);
         crate::db::FirmwareRecord {
             id: 1,
@@ -1408,6 +1433,7 @@ mod tests {
             uploaded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
             delivery_status: status.map(|s| s.to_string()),
             delivered_at: status.map(|_| ts.format("%Y-%m-%d %H:%M:%S").to_string()),
+            delivery_error: error.map(|s| s.to_string()),
         }
     }
 
@@ -1491,6 +1517,45 @@ mod tests {
         let f = check_ota_success_rate(&history);
         assert_eq!(f.level, LEVEL_OK);
         assert!(f.detail.contains("10/10"));
+    }
+
+    #[test]
+    fn ota_success_rate_detail_includes_last_error_when_not_ok() {
+        // 4/10 delivered → FAIL. The newest failure carries an error string;
+        // detail should surface it so the admin sees the failure category.
+        let mut history: Vec<_> = Vec::new();
+        // newest failure is at mins_ago=0 with a specific error
+        history.push(fw_rec_full(
+            "0.14.0", 0, Some("failed"), Some("body: Broken pipe"),
+        ));
+        // older failures with different errors — the rule should pick the newest
+        for i in 1..6 {
+            history.push(fw_rec_full(
+                "0.14.0", i * 60, Some("failed"), Some("accept: timed out"),
+            ));
+        }
+        for i in 6..10 {
+            history.push(fw_rec_with_status("0.13.0", i * 60, Some("delivered")));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_FAIL);
+        assert!(f.detail.contains("body: Broken pipe"), "detail: {}", f.detail);
+        assert!(f.detail.contains("Last error:"), "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn ota_success_rate_detail_omits_error_when_ok() {
+        // 9/10 delivered → OK. Even though one row has an error string,
+        // OK findings stay silent on errors.
+        let mut history: Vec<_> = (0..9)
+            .map(|i| fw_rec_with_status("0.14.0", (i * 60) as u64, Some("delivered")))
+            .collect();
+        history.push(fw_rec_full(
+            "0.13.0", 600, Some("failed"), Some("body: Broken pipe"),
+        ));
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(!f.detail.contains("Last error"), "detail: {}", f.detail);
     }
 
     #[test]

@@ -1156,7 +1156,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, device_id, version, file_path, file_size, uploaded_at,
-                    delivery_status, delivered_at
+                    delivery_status, delivered_at, delivery_error
              FROM firmware_history WHERE device_id = ?1 ORDER BY uploaded_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(rusqlite::params![device_id], |row| {
@@ -1164,6 +1164,7 @@ impl Database {
                 id: row.get(0)?, device_id: row.get(1)?, version: row.get(2)?,
                 file_path: row.get(3)?, file_size: row.get(4)?, uploaded_at: row.get(5)?,
                 delivery_status: row.get(6)?, delivered_at: row.get(7)?,
+                delivery_error: row.get(8)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -1171,21 +1172,25 @@ impl Database {
 
     /// Record the outcome of an OTA upload after the device confirms (or
     /// fails to confirm) the apply. `status` is "delivered" or "failed".
+    /// `error` carries the serve_firmware-side failure category (e.g.
+    /// "body: Broken pipe") for "failed" rows; callers pass None for the
+    /// "delivered" case so the column stays null on success.
     /// Updates the most recent firmware_history row for the device that has
     /// no delivery_status yet — matches the upload that just completed.
     pub fn mark_firmware_delivery(
-        &self, device_id: &str, status: &str,
+        &self, device_id: &str, status: &str, error: Option<&str>,
     ) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE firmware_history
-             SET delivery_status = ?2, delivered_at = datetime('now')
+             SET delivery_status = ?2, delivered_at = datetime('now'),
+                 delivery_error = ?3
              WHERE id = (
                 SELECT id FROM firmware_history
                 WHERE device_id = ?1 AND delivery_status IS NULL
                 ORDER BY uploaded_at DESC LIMIT 1
              )",
-            rusqlite::params![device_id, status],
+            rusqlite::params![device_id, status, error],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -1603,6 +1608,7 @@ pub struct FirmwareRecord {
     pub uploaded_at: String,
     pub delivery_status: Option<String>,
     pub delivered_at: Option<String>,
+    pub delivery_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1817,6 +1823,11 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // any new upload until the device confirms (or fails to confirm) the apply.
     let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_status TEXT", []);
     let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivered_at TEXT", []);
+    // Captured error string for "failed" rows (v0.15.0). The payload that
+    // serve_firmware already emits on `ota_delivery_failed` — now durable so
+    // the diagnostics rule can show the category (e.g. "body: Connection
+    // reset by peer") instead of a bare "N/M delivered".
+    let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_error TEXT", []);
 
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("

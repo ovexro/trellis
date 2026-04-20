@@ -14,9 +14,16 @@ use crate::db::Database;
 /// `firmware_history` row for `device_id` that has no `delivery_status`
 /// yet. Logs a warning on DB error but never propagates — OTA delivery
 /// is the user-visible outcome and must not depend on this side write.
-fn record_delivery(app_handle: &AppHandle, device_id: &str, status: &str) {
+/// `error` is persisted alongside "failed" outcomes so the diagnostics
+/// rule can surface the failure category (v0.15.0).
+fn record_delivery(
+    app_handle: &AppHandle,
+    device_id: &str,
+    status: &str,
+    error: Option<&str>,
+) {
     if let Some(db) = app_handle.try_state::<Database>() {
-        if let Err(e) = db.mark_firmware_delivery(device_id, status) {
+        if let Err(e) = db.mark_firmware_delivery(device_id, status, error) {
             log::warn!("[OTA] mark_firmware_delivery({}, {}) failed: {}", device_id, status, e);
         }
     }
@@ -119,6 +126,7 @@ pub fn serve_firmware(
                             &app_handle,
                             &device_id,
                             if delivered { "delivered" } else { "failed" },
+                            if delivered { None } else { delivery_error.as_deref() },
                         );
 
                         // Emit event so the UI can leave the "stuck at 0%" state.
@@ -148,14 +156,15 @@ pub fn serve_firmware(
                         *stop_clone.lock().unwrap() = true;
                     }
                     Err(e) => {
+                        let err_str = format!("accept: {}", e);
                         log::warn!("[OTA] Accept error: {}", e);
-                        record_delivery(&app_handle, &device_id, "failed");
+                        record_delivery(&app_handle, &device_id, "failed", Some(&err_str));
                         let _ = app_handle.emit(
                             "device-event",
                             DeviceEvent {
                                 device_id: device_id.clone(),
                                 event_type: "ota_delivery_failed".to_string(),
-                                payload: serde_json::json!({ "error": format!("accept: {}", e) }),
+                                payload: serde_json::json!({ "error": err_str }),
                             },
                         );
                     }
