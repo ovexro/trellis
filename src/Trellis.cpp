@@ -11,7 +11,8 @@ Trellis::Trellis(const char* name, uint16_t port)
     _provisioning(nullptr),
     _webUIEnabled(true),
     _lastBroadcast(0),
-    _lastHeartbeat(0) {
+    _lastHeartbeat(0),
+    _lastIdleWarn(0) {
   memset(_capabilities, 0, sizeof(_capabilities));
 }
 
@@ -32,6 +33,12 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
   }
 
   Serial.printf("\n[Trellis] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+
+  // Close the two-phase OTA loop if the previous firmware wrote an ack
+  // URL to NVS before rebooting — single-shot, best-effort, silent if
+  // nothing is pending. Runs before the web server comes up so a
+  // transient POST stall (5s timeout) doesn't block command handling.
+  TrellisOTA::sendPendingAck(_firmwareVersion);
 
   // Start mDNS
   _discovery = new TrellisDiscovery();
@@ -61,6 +68,9 @@ bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
     Serial.println("[Trellis] Auto-connect failed");
     return false;
   }
+
+  // Two-phase OTA ack — see begin() for the rationale.
+  TrellisOTA::sendPendingAck(_firmwareVersion);
 
   // Start mDNS
   _discovery = new TrellisDiscovery();
@@ -92,8 +102,17 @@ void Trellis::loop() {
   // If begin() failed (WiFi timeout), _webServer was never instantiated.
   // Skip everything — there is nothing to service, no one to broadcast to,
   // and dereferencing the null _webServer in the broadcast block below would
-  // panic with LoadProhibited.
-  if (!_webServer) return;
+  // panic with LoadProhibited. Emit a periodic warning so a developer
+  // debugging a misconfigured sketch sees the library is alive and idle
+  // instead of silent forever.
+  if (!_webServer) {
+    unsigned long now = millis();
+    if (_lastIdleWarn == 0 || now - _lastIdleWarn >= IDLE_WARN_INTERVAL_MS) {
+      _lastIdleWarn = now;
+      Serial.println("[Trellis] begin() has not succeeded — idle (check WiFi credentials)");
+    }
+    return;
+  }
 
   _webServer->loop();
   _telemetry.update();
