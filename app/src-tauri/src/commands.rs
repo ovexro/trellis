@@ -161,16 +161,25 @@ pub async fn start_ota(
     };
 
     let dest_str = dest_path.to_string_lossy().to_string();
-    let history_row_id = db.store_firmware_record(&device_id, &version, &dest_str, file_size)?;
+    let nonce = ota::generate_ack_nonce();
+    let history_row_id = db.store_firmware_record(&device_id, &version, &dest_str, file_size, &nonce)?;
 
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let (url, _stop_flag) =
-            ota::serve_firmware(&firmware_path, serve_handle, device_id.clone(), Some(history_row_id))?;
-        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+        let handle = ota::serve_firmware(
+            &firmware_path,
+            serve_handle,
+            device_id.clone(),
+            Some(history_row_id),
+            Some(nonce),
+        )?;
+        let mut ota_cmd = serde_json::json!({"command": "ota", "url": handle.fw_url});
+        if let Some(ack) = &handle.ack_url {
+            ota_cmd["ack_url"] = serde_json::Value::String(ack.clone());
+        }
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
-        log::info!("[OTA] Triggered update for device {} from {}", device_id, url);
+        log::info!("[OTA] Triggered update for device {} from {}", device_id, handle.fw_url);
         Ok(())
     })
     .await
@@ -217,10 +226,16 @@ pub async fn rollback_firmware(
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
         // Rollback reuses an existing firmware_history row's file — no new
-        // history row is inserted, so there's nothing to mark delivery on.
-        let (url, _stop_flag) =
-            ota::serve_firmware(&firmware_record_path, serve_handle, device_id.clone(), None)?;
-        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+        // history row is inserted, so there's nothing to mark delivery on
+        // and no fresh nonce to embed in an ack URL.
+        let handle = ota::serve_firmware(
+            &firmware_record_path,
+            serve_handle,
+            device_id.clone(),
+            None,
+            None,
+        )?;
+        let ota_cmd = serde_json::json!({"command": "ota", "url": handle.fw_url});
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
         log::info!("[OTA] Rollback triggered for device {}", device_id);
@@ -426,14 +441,25 @@ pub async fn start_github_ota(
     .map_err(|e| format!("Task failed: {}", e))??;
 
     // Store firmware record for history/rollback
-    let history_row_id = db.store_firmware_record(&device_id, &release_tag, &dest_str, file_size)?;
+    let nonce = ota::generate_ack_nonce();
+    let history_row_id = db.store_firmware_record(
+        &device_id, &release_tag, &dest_str, file_size, &nonce,
+    )?;
 
     // Serve firmware to device via existing OTA flow
     let serve_handle = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let (url, _stop_flag) =
-            ota::serve_firmware(&dest_str, serve_handle, device_id.clone(), Some(history_row_id))?;
-        let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+        let handle = ota::serve_firmware(
+            &dest_str,
+            serve_handle,
+            device_id.clone(),
+            Some(history_row_id),
+            Some(nonce),
+        )?;
+        let mut ota_cmd = serde_json::json!({"command": "ota", "url": handle.fw_url});
+        if let Some(ack) = &handle.ack_url {
+            ota_cmd["ack_url"] = serde_json::Value::String(ack.clone());
+        }
         let msg = serde_json::to_string(&ota_cmd).map_err(|e| e.to_string())?;
         conn_mgr.send_to_device(&device_id, &ip, ws_port, &msg)?;
         log::info!("[OTA] GitHub OTA triggered for device {}", device_id);

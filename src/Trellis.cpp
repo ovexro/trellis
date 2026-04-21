@@ -33,6 +33,12 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
 
   Serial.printf("\n[Trellis] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
 
+  // Close the two-phase OTA loop if the previous firmware wrote an ack
+  // URL to NVS before rebooting — single-shot, best-effort, silent if
+  // nothing is pending. Runs before the web server comes up so a
+  // transient POST stall (5s timeout) doesn't block command handling.
+  TrellisOTA::sendPendingAck(_firmwareVersion);
+
   // Start mDNS
   _discovery = new TrellisDiscovery();
   _discovery->begin(_name, _port);
@@ -61,6 +67,9 @@ bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
     Serial.println("[Trellis] Auto-connect failed");
     return false;
   }
+
+  // Two-phase OTA ack — see begin() for the rationale.
+  TrellisOTA::sendPendingAck(_firmwareVersion);
 
   // Start mDNS
   _discovery = new TrellisDiscovery();

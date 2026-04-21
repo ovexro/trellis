@@ -5387,6 +5387,15 @@
             + '<div style="height:4px;background:var(--border);border-radius:2px;margin-top:4px;overflow:hidden;">'
             + '<div style="height:100%;background:var(--accent);border-radius:2px;width:' + dpPct + '%;transition:width 0.3s;"></div></div>';
         }
+      } else if (msg.event_type === 'ota_applied') {
+        // v0.16.0 two-phase: device confirmed the new firmware booted.
+        // Upgrade the GH-OTA status text if it's still in "OTA triggered"
+        // state for this device, and fire a toast.
+        var statusEl2 = document.getElementById('ghOtaStatus');
+        if (statusEl2 && msg.device_id === currentLogDeviceId) {
+          statusEl2.innerHTML = '<span style="color:var(--accent);">✓</span> Apply confirmed — the new firmware is running on the device.';
+        }
+        toast('Device confirmed OTA apply', 'success');
       }
     }
 

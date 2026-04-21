@@ -1140,14 +1140,21 @@ impl Database {
 
     // ─── Firmware history ────────────────────────────────────────────────
 
+    /// Inserts a firmware_history row. `ack_nonce` is a single-use token the
+    /// desktop embeds in the ack URL sent to the device; the two-phase OTA
+    /// handler validates it on `/api/ota/ack/<nonce>`. Callers that re-serve
+    /// an existing row (rollback) skip this method entirely — they already
+    /// have the row id and pass `history_row_id: None` to `serve_firmware`.
     pub fn store_firmware_record(
         &self, device_id: &str, version: &str, file_path: &str, file_size: i64,
+        ack_nonce: &str,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO firmware_history (device_id, version, file_path, file_size)
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![device_id, version, file_path, file_size],
+            "INSERT INTO firmware_history (device_id, version, file_path, file_size,
+                delivery_ack_nonce)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![device_id, version, file_path, file_size, ack_nonce],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -1156,7 +1163,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, device_id, version, file_path, file_size, uploaded_at,
-                    delivery_status, delivered_at, delivery_error
+                    delivery_status, delivered_at, delivery_error, delivery_applied_at
              FROM firmware_history WHERE device_id = ?1 ORDER BY uploaded_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(rusqlite::params![device_id], |row| {
@@ -1165,6 +1172,7 @@ impl Database {
                 file_path: row.get(3)?, file_size: row.get(4)?, uploaded_at: row.get(5)?,
                 delivery_status: row.get(6)?, delivered_at: row.get(7)?,
                 delivery_error: row.get(8)?,
+                delivery_applied_at: row.get(9)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -1190,6 +1198,73 @@ impl Database {
             rusqlite::params![row_id, status, error],
         ).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Two-phase OTA apply confirmation (v0.16.0). Looks up a firmware_history
+    /// row by its single-use `delivery_ack_nonce`, stamps `delivery_applied_at`,
+    /// and returns a classification the ack handler uses to pick an HTTP code.
+    ///
+    /// Outcomes:
+    /// - `Applied(row_id)` — nonce matched an unapplied `delivered` row; newly
+    ///   stamped.
+    /// - `AlreadyApplied(row_id)` — nonce matched an already-stamped row.
+    ///   Idempotent re-POSTs (e.g. device boot-loop) land here.
+    /// - `UnknownNonce` — nonce doesn't match any row. Device should drop its
+    ///   pending ack (the desktop has lost the row, or the nonce was spoofed).
+    /// - `DeliveryNotOk(status)` — nonce matched, but the row's delivery_status
+    ///   isn't "delivered" (it's "cancelled" or "failed"). A device POSTing
+    ///   here is impossible under normal flows, but we return the mismatched
+    ///   status so the handler can log it and the device can drop the ack.
+    pub fn mark_firmware_applied_by_nonce(
+        &self,
+        nonce: &str,
+    ) -> Result<AckLookupOutcome, String> {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(i64, Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT id, delivery_status, delivery_applied_at
+                 FROM firmware_history
+                 WHERE delivery_ack_nonce = ?1",
+                rusqlite::params![nonce],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok();
+        let Some((row_id, status_opt, applied_opt)) = row else {
+            return Ok(AckLookupOutcome::UnknownNonce);
+        };
+        if applied_opt.is_some() {
+            return Ok(AckLookupOutcome::AlreadyApplied(row_id));
+        }
+        match status_opt.as_deref() {
+            Some("delivered") => {
+                conn.execute(
+                    "UPDATE firmware_history
+                     SET delivery_applied_at = datetime('now')
+                     WHERE id = ?1",
+                    rusqlite::params![row_id],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(AckLookupOutcome::Applied(row_id))
+            }
+            other => Ok(AckLookupOutcome::DeliveryNotOk(
+                other.unwrap_or("pending").to_string(),
+            )),
+        }
+    }
+
+    /// Returns the device_id the given firmware_history row belongs to, if
+    /// the row exists. Used by the ack handler to address the downstream
+    /// `ota_applied` Tauri event + web-dashboard WS broadcast.
+    pub fn get_firmware_device_id(&self, row_id: i64) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT device_id FROM firmware_history WHERE id = ?1",
+                rusqlite::params![row_id],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(found)
     }
 
     pub fn delete_firmware_record(&self, id: i64) -> Result<String, String> {
@@ -1606,6 +1681,18 @@ pub struct FirmwareRecord {
     pub delivery_status: Option<String>,
     pub delivered_at: Option<String>,
     pub delivery_error: Option<String>,
+    /// Set by the device-initiated ack handler once the new firmware has
+    /// booted and POSTed to /api/ota/ack/<nonce> (v0.16.0).
+    pub delivery_applied_at: Option<String>,
+}
+
+/// Outcome of looking up an ack nonce. See `mark_firmware_applied_by_nonce`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AckLookupOutcome {
+    Applied(i64),
+    AlreadyApplied(i64),
+    UnknownNonce,
+    DeliveryNotOk(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1825,6 +1912,15 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // the diagnostics rule can show the category (e.g. "body: Connection
     // reset by peer") instead of a bare "N/M delivered".
     let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_error TEXT", []);
+
+    // Two-phase OTA tracking (v0.16.0). `delivery_ack_nonce` is a single-use
+    // capability token the desktop mints at upload and embeds in the ack URL
+    // sent to the device; the device POSTs to /api/ota/ack/<nonce> after it
+    // boots into the new firmware. `delivery_applied_at` records when that
+    // ack landed. Null until the device confirms apply; stays null for rows
+    // without a nonce (rollbacks) or for pre-v0.16.0 rows.
+    let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_ack_nonce TEXT", []);
+    let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_applied_at TEXT", []);
 
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("

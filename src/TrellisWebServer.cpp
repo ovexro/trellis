@@ -222,6 +222,10 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
 #if defined(ESP32)
   else if (strcmp(command, "ota") == 0) {
     const char* url = doc["url"];
+    // Optional — desktop sends this on normal OTA paths starting v0.16.0
+    // so the device can POST an apply confirmation after reboot; rollback
+    // and pre-v0.16.0 desktops omit it, in which case we skip persistence.
+    const char* ackUrl = doc["ack_url"] | (const char*)nullptr;
     if (url) {
       Serial.printf("[Trellis] OTA update from: %s\n", url);
 
@@ -235,7 +239,7 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
 
       // Perform OTA with real-time progress broadcasting.
       WebSocketsServer* ws = _ws;
-      bool ok = TrellisOTA::update(url, [ws](const String& json) {
+      bool ok = TrellisOTA::update(url, ackUrl, [ws](const String& json) {
         String copy = json;
         ws->broadcastTXT(copy);
       });

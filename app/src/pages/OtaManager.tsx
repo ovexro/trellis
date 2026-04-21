@@ -47,6 +47,11 @@ export default function OtaManager() {
   const [otaProgress, setOtaProgress] = useState(-1);
   const [status, setStatus] = useState<"idle" | "uploading" | "delivered" | "success" | "error" | "cancelled">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  // Set by the v0.16.0 `ota_applied` event — the device POSTed an apply
+  // confirmation to /api/ota/ack/<nonce>, proving the new firmware not
+  // only transferred but booted. Cleared when the user selects a
+  // different device or starts a new upload.
+  const [applyConfirmed, setApplyConfirmed] = useState(false);
   const [firmwareHistory, setFirmwareHistory] = useState<FirmwareRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -161,6 +166,36 @@ export default function OtaManager() {
     );
     return () => { unlisten.then((fn) => fn()); };
   }, []);
+
+  // `ota_applied` (v0.16.0) arrives AFTER the reboot watcher has cleared
+  // inFlightRef, so the in-flight-gated listener above would drop it. A
+  // dedicated listener keyed off selectedDevice handles it instead. Uses
+  // a ref for selectedDevice so the effect can stay mounted for the
+  // component's lifetime without re-subscribing on every selection change.
+  const selectedDeviceRef = useRef(selectedDevice);
+  useEffect(() => {
+    selectedDeviceRef.current = selectedDevice;
+  }, [selectedDevice]);
+  useEffect(() => {
+    const unlisten = listen<{ device_id: string; event_type: string }>(
+      "device-event",
+      (e) => {
+        if (
+          e.payload.event_type === "ota_applied" &&
+          e.payload.device_id === selectedDeviceRef.current
+        ) {
+          setApplyConfirmed(true);
+        }
+      },
+    );
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  // Clear the apply-confirmed chip when the user navigates to a different
+  // device (its own OTA status is unrelated) or kicks off a fresh upload.
+  useEffect(() => {
+    setApplyConfirmed(false);
+  }, [selectedDevice]);
 
   // Reboot watcher: once delivery completes, watch the in-flight device's
   // uptime in the store. The device's WebSocket reconnects within ~5s of
@@ -280,6 +315,7 @@ export default function OtaManager() {
     setGhDownloading(asset.download_url);
     setStatus("uploading");
     setErrorMsg("");
+    setApplyConfirmed(false);
     setOtaProgress(-1);
     setGhDownloadPct(0);
     setGhDownloadTotal(0);
@@ -313,6 +349,7 @@ export default function OtaManager() {
     if (!device) return;
     setStatus("uploading");
     setErrorMsg("");
+    setApplyConfirmed(false);
     setOtaProgress(0);
     inFlightRef.current = {
       deviceId: device.id,
@@ -366,6 +403,7 @@ export default function OtaManager() {
 
     setStatus("uploading");
     setErrorMsg("");
+    setApplyConfirmed(false);
     setOtaProgress(0);
     // Capture the uptime baseline NOW, while the device is still happily
     // running and heartbeats are landing. The reboot watcher uses this
@@ -578,9 +616,24 @@ export default function OtaManager() {
         )}
 
         {status === "success" && (
-          <div className="flex items-center gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">
-            <CheckCircle size={16} />
-            Firmware update complete. The device has rebooted.
+          <div className="flex items-start gap-2 text-sm text-trellis-400 bg-trellis-500/10 p-3 rounded-lg">
+            <CheckCircle size={16} className="mt-0.5 flex-shrink-0" />
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span>Firmware update complete. The device has rebooted.</span>
+                {applyConfirmed && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-trellis-500/20 text-trellis-300 border border-trellis-500/30">
+                    Apply confirmed
+                  </span>
+                )}
+              </div>
+              {applyConfirmed && (
+                <p className="text-xs mt-1 text-trellis-300/70">
+                  The device POSTed an apply confirmation — the new firmware
+                  is running, not just written.
+                </p>
+              )}
+            </div>
           </div>
         )}
 

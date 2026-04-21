@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
 use serde_json::Value;
 
-use tauri::Manager as _;
+use tauri::{Emitter, Manager as _};
 
 use crate::auth::{self, AuthResult, RateLimiter, Role, REQUIRE_AUTH_LOCALHOST_KEY};
 use crate::connection::ConnectionManager;
@@ -454,6 +454,26 @@ fn handle_connection(mut stream: TcpStream, ctx: &ApiContext) -> Result<(), Stri
             status
         );
         let body = serde_json::json!({"error": msg}).to_string();
+        send_json(&mut stream, status, &body);
+        return Ok(());
+    }
+
+    // Two-phase OTA apply confirmation — nonce-gated, pre-auth (v0.16.0).
+    // The device doesn't carry a bearer token, so routing this through
+    // `auth::check_auth` would always 401 from a LAN peer. The single-use
+    // nonce in the URL IS the capability token: server generated it at
+    // upload, embedded it in the `ack_url` sent over WS to one device,
+    // persisted it alongside the firmware_history row, and clears it on
+    // first successful ack. Sits after the rate limiter so repeated 404s
+    // from a probing attacker still cost them tokens. Malformed/unknown
+    // nonces get counted as rate-limiter failures to disincentivize
+    // blind-guessing.
+    if req.method == "POST" && req.path.starts_with("/api/ota/ack/") {
+        let nonce = &req.path["/api/ota/ack/".len()..];
+        let (status, body) = handle_ota_ack(ctx, nonce, &req.body);
+        if status == 400 || status == 404 {
+            ctx.rate_limiter.record_failure(&peer_addr);
+        }
         send_json(&mut stream, status, &body);
         return Ok(());
     }
@@ -1631,6 +1651,11 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_cancel_ota(ctx, &req.body)
         }
 
+        // Two-phase OTA apply confirmation (v0.16.0) is dispatched
+        // pre-auth in `handle_connection` — the device can't carry a
+        // bearer token, and the single-use nonce in the URL gates the
+        // handler. See the pre-auth block there for the full rationale.
+
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
     }
@@ -2183,6 +2208,83 @@ fn fetch_github_releases(owner: &str, repo: &str) -> Result<serde_json::Value, S
     Ok(serde_json::json!(result))
 }
 
+fn handle_ota_ack(ctx: &ApiContext, nonce: &str, body: &str) -> (u16, String) {
+    // Cheap input validation: nonces are 32 hex chars (see
+    // `ota::generate_ack_nonce`). Anything else can't exist in the DB so
+    // we reject before doing a SQL round-trip.
+    if nonce.len() != 32 || !nonce.chars().all(|c| c.is_ascii_hexdigit()) {
+        return json_error(400, "Invalid nonce format");
+    }
+    // Body is informational only — we accept anything, but log the
+    // declared version if the device sent one so diagnostics can tell
+    // which firmware responded.
+    let version = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("version").and_then(|s| s.as_str()).map(str::to_string));
+    match ctx.db.mark_firmware_applied_by_nonce(nonce) {
+        Ok(crate::db::AckLookupOutcome::Applied(row_id)) => {
+            log::info!(
+                "[OTA] ack: applied row {} (version={})",
+                row_id,
+                version.as_deref().unwrap_or("unknown")
+            );
+            // Fan out to both surfaces. The React OtaManager uses the Tauri
+            // event to flip the success banner to "confirmed by device"; the
+            // web dashboard listens on its ws feed to upgrade the GH-OTA
+            // toast text. Looking up device_id off the row is a cheap SQL
+            // round-trip (one indexed row read) and keeps the event
+            // addressable to a single device in both UIs.
+            if let Ok(Some(device_id)) = ctx.db.get_firmware_device_id(row_id) {
+                let payload = serde_json::json!({
+                    "row_id": row_id,
+                    "version": version,
+                });
+                let _ = ctx.app_handle.emit(
+                    "device-event",
+                    crate::connection::DeviceEvent {
+                        device_id: device_id.clone(),
+                        event_type: "ota_applied".to_string(),
+                        payload: payload.clone(),
+                    },
+                );
+                let ws_msg = serde_json::json!({
+                    "type": "device_event",
+                    "device_id": device_id,
+                    "event_type": "ota_applied",
+                    "payload": payload,
+                });
+                ctx.ws_broadcaster.broadcast(ws_msg.to_string());
+            }
+            json_ok(&serde_json::json!({ "status": "applied", "row_id": row_id }))
+        }
+        Ok(crate::db::AckLookupOutcome::AlreadyApplied(row_id)) => {
+            log::info!("[OTA] ack: row {} already applied (idempotent)", row_id);
+            json_ok(&serde_json::json!({
+                "status": "already_applied",
+                "row_id": row_id
+            }))
+        }
+        Ok(crate::db::AckLookupOutcome::UnknownNonce) => {
+            log::warn!("[OTA] ack: unknown nonce");
+            json_error(404, "Unknown nonce")
+        }
+        Ok(crate::db::AckLookupOutcome::DeliveryNotOk(status)) => {
+            log::warn!(
+                "[OTA] ack: nonce matched row with delivery_status = {}",
+                status
+            );
+            (
+                409,
+                serde_json::json!({
+                    "error": format!("Delivery not ok: {}", status),
+                })
+                .to_string(),
+            )
+        }
+        Err(e) => json_error(500, &e),
+    }
+}
+
 fn handle_cancel_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
     let parsed: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -2323,7 +2425,10 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
     }
 
     let dest_str = dest_path.to_string_lossy().to_string();
-    let history_row_id = match ctx.db.store_firmware_record(device_id, release_tag, &dest_str, file_size) {
+    let nonce = crate::ota::generate_ack_nonce();
+    let history_row_id = match ctx.db.store_firmware_record(
+        device_id, release_tag, &dest_str, file_size, &nonce,
+    ) {
         Ok(id) => id,
         Err(e) => return json_error(500, &e),
     };
@@ -2335,9 +2440,14 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
     let did = device_id.to_string();
     let ip = device.ip.clone();
 
-    match crate::ota::serve_firmware(&dest_str, app_handle, did.clone(), Some(history_row_id)) {
-        Ok((url, _stop_flag)) => {
-            let ota_cmd = serde_json::json!({"command": "ota", "url": url});
+    match crate::ota::serve_firmware(
+        &dest_str, app_handle, did.clone(), Some(history_row_id), Some(nonce),
+    ) {
+        Ok(handle) => {
+            let mut ota_cmd = serde_json::json!({"command": "ota", "url": handle.fw_url});
+            if let Some(ack) = &handle.ack_url {
+                ota_cmd["ack_url"] = serde_json::Value::String(ack.clone());
+            }
             let msg = serde_json::to_string(&ota_cmd).unwrap_or_default();
             if let Err(e) = conn_mgr.send_to_device(&did, &ip, ws_port, &msg) {
                 return json_error(500, &format!("Failed to send OTA command: {}", e));

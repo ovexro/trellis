@@ -7,10 +7,40 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use rand::RngCore;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::connection::DeviceEvent;
 use crate::db::Database;
+
+/// REST API port the ack URL points at. Matches the hardcoded bind in
+/// `api.rs` so the device and the server always agree on where acks land.
+const REST_API_PORT: u16 = 9090;
+
+/// Generates the single-use capability token the desktop embeds in each
+/// two-phase OTA ack URL (v0.16.0). 16 bytes from the OS RNG rendered as
+/// 32 lowercase hex characters — 128 bits of entropy, same order of
+/// magnitude as the REST API bearer tokens in `auth.rs`. The nonce is
+/// persisted next to the `firmware_history` row that created it and
+/// cleared (by stamping `delivery_applied_at`) the first time the device
+/// successfully POSTs to `/api/ota/ack/<nonce>`.
+pub fn generate_ack_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Result of `serve_firmware`. `fw_url` is the URL the device fetches the
+/// new firmware from; `ack_url` is the `/api/ota/ack/<nonce>` URL the
+/// device should POST to once it has booted into that firmware (None on
+/// paths that reuse an existing firmware_history row, e.g. rollback).
+/// Cancellation of the in-flight transfer goes through `OtaRegistry`, not
+/// this struct — every call site would have had to discard the stop_flag
+/// return anyway.
+pub struct OtaServeHandle {
+    pub fw_url: String,
+    pub ack_url: Option<String>,
+}
 
 /// Shared per-device cancellation flags so a running OTA can be aborted
 /// from a Tauri command or REST endpoint. The key is the `device_id`; the
@@ -99,7 +129,8 @@ pub fn serve_firmware(
     app_handle: AppHandle,
     device_id: String,
     history_row_id: Option<i64>,
-) -> Result<(String, Arc<Mutex<bool>>), String> {
+    ack_nonce: Option<String>,
+) -> Result<OtaServeHandle, String> {
     let path = PathBuf::from(firmware_path);
     if !path.exists() {
         return Err(format!("Firmware file not found: {}", firmware_path));
@@ -108,8 +139,9 @@ pub fn serve_firmware(
     let firmware_data = fs::read(&path).map_err(|e| format!("Failed to read firmware: {}", e))?;
     let firmware_size = firmware_data.len();
 
-    // Bind to random available port
-    // Bind to local IP only (not 0.0.0.0) to limit exposure
+    // Bind to local IP only (not 0.0.0.0) to limit exposure. Single-resolve
+    // so the URL and the binding agree on the address (the UDP trick can
+    // return different IPs between calls on multi-homed hosts).
     let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
     let listener = TcpListener::bind(format!("{}:0", local_ip))
         .or_else(|_| TcpListener::bind("0.0.0.0:0"))
@@ -119,9 +151,10 @@ pub fn serve_firmware(
         .map_err(|e| format!("Failed to get addr: {}", e))?
         .port();
 
-    // Get local IP
-    let local_ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
-    let url = format!("http://{}:{}/firmware.bin", local_ip, port);
+    let fw_url = format!("http://{}:{}/firmware.bin", local_ip, port);
+    let ack_url = ack_nonce.as_ref().map(|nonce| {
+        format!("http://{}:{}/api/ota/ack/{}", local_ip, REST_API_PORT, nonce)
+    });
 
     let stop_flag = Arc::new(Mutex::new(false));
     let stop_clone = stop_flag.clone();
@@ -134,7 +167,7 @@ pub fn serve_firmware(
         reg.insert(&device_id, stop_flag.clone());
     }
 
-    log::info!("[OTA] Serving firmware ({} bytes) at {}", firmware_size, url);
+    log::info!("[OTA] Serving firmware ({} bytes) at {}", firmware_size, fw_url);
 
     thread::spawn(move || {
         serve_worker(
@@ -148,7 +181,7 @@ pub fn serve_firmware(
         );
     });
 
-    Ok((url, stop_flag))
+    Ok(OtaServeHandle { fw_url, ack_url })
 }
 
 /// Worker body: one-shot HTTP server that serves the firmware to the

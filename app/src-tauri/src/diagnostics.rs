@@ -771,7 +771,7 @@ fn check_firmware_age(
     }
 }
 
-/// OTA delivery success rate over the last `OTA_WINDOW` attempts that have a
+/// OTA apply success rate over the last `OTA_WINDOW` attempts that have a
 /// recorded outcome. Pre-v0.15.0 rows have `delivery_status = NULL` and are
 /// ignored — the rule only earns trust as new uploads accumulate. Stays
 /// silent (skipped) until at least `OTA_MIN_SAMPLES` attempts have been
@@ -779,6 +779,22 @@ fn check_firmware_age(
 /// User-initiated cancellations (`delivery_status = "cancelled"`, v0.16.0)
 /// are excluded from both the numerator and denominator — they represent
 /// a human abort, not a delivery failure.
+///
+/// Two-phase semantics (v0.16.0):
+/// - Numerator counts rows the device has explicitly acknowledged applying
+///   (`delivery_applied_at IS NOT NULL`).
+/// - Rows delivered but not yet applied are ambiguous — the bytes left the
+///   desktop socket but the device hasn't booted + POSTed ack. Until
+///   `OTA_APPLY_GRACE_HOURS` has elapsed they don't count against the
+///   device (grace period for the reboot). After that they count as a
+///   miss and the detail line surfaces the "bytes sent but no apply
+///   confirmation" category so admins can distinguish the two failure
+///   modes: never-delivered vs delivered-but-not-applied.
+///
+/// Rollbacks (and any pre-v0.16.0 OTA) serve firmware with no nonce, so
+/// their rows have `delivery_ack_nonce = NULL` — those are treated as
+/// "always applied on delivery" to avoid false negatives from paths that
+/// predate two-phase tracking.
 fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
     const OTA_WINDOW: usize = 10;
     const OTA_MIN_SAMPLES: usize = 3;
@@ -808,11 +824,26 @@ fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
         };
     }
 
-    let delivered = recent
+    // Count applied (device-confirmed) rows. A row without an ack nonce
+    // is a rollback / pre-v0.16.0 row — treat "delivered" there as good
+    // since there was never an ack path to walk.
+    let applied = recent
         .iter()
-        .filter(|r| r.delivery_status.as_deref() == Some("delivered"))
+        .filter(|r| {
+            r.delivery_applied_at.is_some()
+                || (r.delivery_status.as_deref() == Some("delivered")
+                    && !has_ack_window(r))
+        })
         .count();
-    let success_rate = (delivered as f64) / (total as f64);
+    let delivered_not_applied = recent
+        .iter()
+        .filter(|r| {
+            r.delivery_status.as_deref() == Some("delivered")
+                && r.delivery_applied_at.is_none()
+                && has_ack_window(r)
+        })
+        .count();
+    let success_rate = (applied as f64) / (total as f64);
     let pct = success_rate * 100.0;
 
     let level = if success_rate < 0.5 {
@@ -826,7 +857,10 @@ fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
     // When the rule tips WARN/FAIL, surface the most recent failure reason
     // (captured in firmware_history.delivery_error, v0.15.0) so admins see
     // the failure category inline instead of having to cross-reference the
-    // firmware history tab.
+    // firmware history tab. Two-phase (v0.16.0) adds a second, distinct
+    // category — "delivered but the device never confirmed apply" — which
+    // points at reboot failures (bad firmware, power loss) rather than
+    // transport issues.
     let last_error = if level != LEVEL_OK {
         recent.iter()
             .find(|r| r.delivery_status.as_deref() == Some("failed"))
@@ -835,19 +869,23 @@ fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
     } else {
         None
     };
-    let detail = match last_error {
-        Some(err) => format!(
-            "{}/{} of the last OTA uploads were delivered ({:.0}%). Last error: {}.",
-            delivered, total, pct, err
+    let detail = match (last_error, delivered_not_applied, level) {
+        (Some(err), _, _) => format!(
+            "{}/{} of the last OTA uploads were confirmed applied ({:.0}%). Last error: {}.",
+            applied, total, pct, err
         ),
-        None => format!(
-            "{}/{} of the last OTA uploads were delivered ({:.0}%).",
-            delivered, total, pct
+        (None, n, lvl) if n > 0 && lvl != LEVEL_OK => format!(
+            "{}/{} of the last OTA uploads were confirmed applied ({:.0}%). {} delivered but the device never confirmed the new firmware booted.",
+            applied, total, pct, n
+        ),
+        _ => format!(
+            "{}/{} of the last OTA uploads were confirmed applied ({:.0}%).",
+            applied, total, pct
         ),
     };
     let suggestion = if level != LEVEL_OK {
         Some(
-            "OTA uploads are dropping mid-transfer more often than they should. Check WiFi signal strength on the device, or push the firmware while the device is on the same AP as Trellis."
+            "OTA uploads are dropping mid-transfer or failing to boot the new firmware. Check WiFi signal strength on the device, or push the firmware while the device is on the same AP as Trellis."
                 .to_string(),
         )
     } else {
@@ -862,6 +900,23 @@ fn check_ota_success_rate(history: &[crate::db::FirmwareRecord]) -> Finding {
         suggestion,
         action: None,
     }
+}
+
+/// True when enough time has passed since `delivered_at` for the device to
+/// have realistically booted and POSTed its ack. Delivered-but-not-applied
+/// rows inside this window are treated as pending, not miss.
+/// Matches the device's boot+WiFi reconnect budget with margin.
+fn has_ack_window(r: &crate::db::FirmwareRecord) -> bool {
+    const OTA_APPLY_GRACE_MINUTES: i64 = 5;
+    let Some(delivered_at) = r.delivered_at.as_deref() else {
+        return false;
+    };
+    let Ok(ts) = chrono::NaiveDateTime::parse_from_str(delivered_at, "%Y-%m-%d %H:%M:%S")
+    else {
+        return false;
+    };
+    let now = chrono::Utc::now().naive_utc();
+    (now - ts) >= chrono::Duration::minutes(OTA_APPLY_GRACE_MINUTES)
 }
 
 fn roll_up(findings: &[Finding]) -> String {
@@ -1366,6 +1421,7 @@ mod tests {
             delivery_status: None,
             delivered_at: None,
             delivery_error: None,
+            delivery_applied_at: None,
         }
     }
 
@@ -1419,14 +1475,20 @@ mod tests {
 
     // ─── check_ota_success_rate ──────────────────────────────────────────
 
+    /// Default helper: a "delivered" row auto-sets `delivery_applied_at` so
+    /// historical tests that read "delivered" as "successful OTA" still
+    /// pass under the new v0.16.0 semantics (numerator counts applied).
+    /// Tests that want to exercise the delivered-but-not-applied branch
+    /// call `fw_rec_pending` instead.
     fn fw_rec_with_status(
         version: &str, mins_ago: u64, status: Option<&str>,
     ) -> crate::db::FirmwareRecord {
-        fw_rec_full(version, mins_ago, status, None)
+        fw_rec_full(version, mins_ago, status, None, status == Some("delivered"))
     }
 
     fn fw_rec_full(
         version: &str, mins_ago: u64, status: Option<&str>, error: Option<&str>,
+        applied: bool,
     ) -> crate::db::FirmwareRecord {
         let ts = Utc::now() - Duration::minutes(mins_ago as i64);
         crate::db::FirmwareRecord {
@@ -1439,7 +1501,15 @@ mod tests {
             delivery_status: status.map(|s| s.to_string()),
             delivered_at: status.map(|_| ts.format("%Y-%m-%d %H:%M:%S").to_string()),
             delivery_error: error.map(|s| s.to_string()),
+            delivery_applied_at: if applied { Some(ts.format("%Y-%m-%d %H:%M:%S").to_string()) } else { None },
         }
+    }
+
+    /// Delivered, but the device hasn't POSTed the apply ack yet. Age set
+    /// to whatever the test wants so it can probe either side of the grace
+    /// window (see `has_ack_window` in the rule).
+    fn fw_rec_pending(version: &str, mins_ago: u64) -> crate::db::FirmwareRecord {
+        fw_rec_full(version, mins_ago, Some("delivered"), None, false)
     }
 
     #[test]
@@ -1531,12 +1601,12 @@ mod tests {
         let mut history: Vec<_> = Vec::new();
         // newest failure is at mins_ago=0 with a specific error
         history.push(fw_rec_full(
-            "0.14.0", 0, Some("failed"), Some("body: Broken pipe"),
+            "0.14.0", 0, Some("failed"), Some("body: Broken pipe"), false,
         ));
         // older failures with different errors — the rule should pick the newest
         for i in 1..6 {
             history.push(fw_rec_full(
-                "0.14.0", i * 60, Some("failed"), Some("accept: timed out"),
+                "0.14.0", i * 60, Some("failed"), Some("accept: timed out"), false,
             ));
         }
         for i in 6..10 {
@@ -1556,7 +1626,7 @@ mod tests {
             .map(|i| fw_rec_with_status("0.14.0", (i * 60) as u64, Some("delivered")))
             .collect();
         history.push(fw_rec_full(
-            "0.13.0", 600, Some("failed"), Some("body: Broken pipe"),
+            "0.13.0", 600, Some("failed"), Some("body: Broken pipe"), false,
         ));
         let f = check_ota_success_rate(&history);
         assert_eq!(f.level, LEVEL_OK);
@@ -1593,6 +1663,63 @@ mod tests {
             fw_rec_with_status("0.13.0", 300, Some("cancelled")),
             fw_rec_with_status("0.12.0", 400, Some("delivered")),
         ];
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("3/3"), "detail: {}", f.detail);
+    }
+
+    // ─── v0.16.0 two-phase tracking ──────────────────────────────────────
+
+    #[test]
+    fn ota_success_rate_counts_delivered_not_applied_as_miss_after_grace() {
+        // 2 applied + 5 delivered-but-not-applied-outside-grace = 2/7 applied
+        // (28%) → FAIL. The grace window is 5 minutes; these rows are well
+        // past that, so the device clearly never booted + acked.
+        let mut history: Vec<_> = Vec::new();
+        for i in 0..2 {
+            history.push(fw_rec_with_status("0.14.0", 60 + i * 10, Some("delivered")));
+        }
+        for i in 0..5 {
+            history.push(fw_rec_pending("0.14.0", 60 + i * 10));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_FAIL);
+        assert!(f.detail.contains("2/7"), "detail: {}", f.detail);
+        assert!(
+            f.detail.contains("never confirmed"),
+            "detail should mention the unconfirmed-apply category: {}",
+            f.detail
+        );
+    }
+
+    #[test]
+    fn ota_success_rate_grace_window_hides_recent_delivered_not_applied() {
+        // 7 applied + 3 delivered-but-not-applied-inside-grace. The three
+        // pending rows are very recent (0–3 mins ago), the device is still
+        // rebooting. Don't penalise yet — count as applied so the rule
+        // stays OK.
+        let mut history: Vec<_> = Vec::new();
+        for i in 0..7 {
+            history.push(fw_rec_with_status("0.14.0", 60 + i * 10, Some("delivered")));
+        }
+        for i in 0..3 {
+            history.push(fw_rec_pending("0.14.0", i));
+        }
+        let f = check_ota_success_rate(&history);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("10/10"), "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn ota_success_rate_rollback_rows_without_nonce_still_count_as_applied() {
+        // Rollback reuses an existing firmware_history row — no new row is
+        // inserted, so the re-applied rollback doesn't show up as a pending
+        // row. The original row (pre-rollback) stays "delivered" + applied
+        // from the prior apply. Simulated here with 3 plain "delivered"
+        // rows that got set applied by the helper default.
+        let history: Vec<_> = (0..3)
+            .map(|i| fw_rec_with_status("0.13.0", 60 + i * 10, Some("delivered")))
+            .collect();
         let f = check_ota_success_rate(&history);
         assert_eq!(f.level, LEVEL_OK);
         assert!(f.detail.contains("3/3"), "detail: {}", f.detail);
