@@ -40,6 +40,11 @@ pub struct SystemInfo {
     // supply rule downgrades to INFO instead of lying.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_reason: Option<String>,
+    // Populated by library v0.18.0+ on ESP32 only. Cumulative count of NVS
+    // persist operations since boot (RAM-only — resets on reboot). Feeds the
+    // flash_wear diagnostic rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nvs_writes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

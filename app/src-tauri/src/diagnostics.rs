@@ -167,6 +167,9 @@ pub fn diagnose(
     let mdns_samples = db.get_mdns_samples(device_id, WINDOW_HOURS)?;
     findings.push(check_mdns_latency(&mdns_samples));
 
+    let nvs_writes = db.get_metrics(device_id, "_nvs_writes", WINDOW_HOURS)?;
+    findings.push(check_flash_wear(&nvs_writes));
+
     let overall = roll_up(&findings);
 
     Ok(DiagnosticReport {
@@ -1191,6 +1194,118 @@ fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
     }
 }
 
+/// Rule: surface unhealthy NVS-write rates that would chew through the ESP32
+/// flash partition prematurely. The library samples a RAM-only monotonic
+/// counter of capability-persist operations (setSwitch / setSlider) and
+/// reports it via `system.nvs_writes` on each heartbeat. Because the counter
+/// resets to 0 on reboot, rate is computed as the sum of positive deltas
+/// between consecutive samples — negative deltas (counter going backward) are
+/// treated as reboot boundaries and skipped.
+///
+/// Threshold reasoning: a typical ESP32 NVS partition is ~20 KB / 5 sectors
+/// at ~100k erase cycles per sector, with ~2× write amplification from
+/// wear-leveling. That is on the order of 250k lifetime writes before the
+/// first sector starts to wear. Translating to sustained rates:
+///   - <500/24h  → decades of life → OK
+///   - 500–5000  → years → INFO (active automation, fine)
+///   - 5000–20k  → months → WARN (investigate automation loops)
+///   - >20k      → weeks → FAIL (pathological, will wear the partition)
+fn check_flash_wear(samples: &[MetricPoint]) -> Finding {
+    let id = "flash_wear".to_string();
+    let title = "Flash-wear rate".to_string();
+
+    if samples.len() < 2 {
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: format!(
+                "{} nvs_writes sample{} in last {}h. Need at least 2 samples over a non-trivial span for a rate reading.",
+                samples.len(),
+                if samples.len() == 1 { "" } else { "s" },
+                WINDOW_HOURS,
+            ),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    // MetricPoint::value is f64; the counter is a uint32 on the device side so
+    // fractional values never occur. Sum positive deltas only; a negative
+    // delta means the device rebooted between samples and the counter was
+    // reset to 0 — that transition carries no write-rate information.
+    let mut total: f64 = 0.0;
+    for pair in samples.windows(2) {
+        let delta = pair[1].value - pair[0].value;
+        if delta > 0.0 {
+            total += delta;
+        }
+    }
+
+    // Time span covered by the samples.
+    let first_ts = parse_ts(&samples.first().unwrap().timestamp);
+    let last_ts = parse_ts(&samples.last().unwrap().timestamp);
+    let span_hours = match (first_ts, last_ts) {
+        (Some(a), Some(b)) => (b - a).num_seconds() as f64 / 3600.0,
+        _ => 0.0,
+    };
+
+    if span_hours < 1.0 {
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: format!(
+                "{} NVS write{} recorded across {} sample{} in less than 1h — not enough span for a rate reading yet.",
+                total as u64,
+                if total as u64 == 1 { "" } else { "s" },
+                samples.len(),
+                if samples.len() == 1 { "" } else { "s" },
+            ),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    let rate_per_24h = total / span_hours * 24.0;
+
+    let (level, suggestion): (&str, Option<&str>) = if rate_per_24h >= 20_000.0 {
+        (
+            LEVEL_FAIL,
+            Some("NVS writes are happening at a rate that will wear the flash partition within weeks. This is almost always a tight automation loop (a rule or scene firing setSwitch/setSlider repeatedly) rather than real user intent. Inspect your scenes, schedules, and rules for anything that toggles a capability without a state check — the library persists every set call, not just changes."),
+        )
+    } else if rate_per_24h >= 5_000.0 {
+        (
+            LEVEL_WARN,
+            Some("NVS write rate is high enough to shorten flash lifetime to months. Check whether any rule or scene is re-setting the same capability at short intervals — the library persists every setSwitch/setSlider, whether the value changed or not."),
+        )
+    } else if rate_per_24h >= 500.0 {
+        (
+            LEVEL_INFO,
+            Some("NVS write rate is elevated but within a healthy range (years of flash life). Typical for devices driven by active automation; no action needed unless the rate keeps climbing."),
+        )
+    } else {
+        (LEVEL_OK, None)
+    };
+
+    Finding {
+        id,
+        level: level.to_string(),
+        title,
+        detail: format!(
+            "{:.0} NVS writes/24h projected ({} write{} across {} sample{} spanning {:.1}h).",
+            rate_per_24h,
+            total as u64,
+            if total as u64 == 1 { "" } else { "s" },
+            samples.len(),
+            if samples.len() == 1 { "" } else { "s" },
+            span_hours,
+        ),
+        suggestion: suggestion.map(|s| s.to_string()),
+        action: None,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
@@ -2080,5 +2195,86 @@ mod tests {
         samples.push(mdns_sample(3200, 10));
         let f = check_mdns_latency(&samples);
         assert_eq!(f.level, LEVEL_FAIL);
+    }
+
+    // ─── Flash-wear rate ─────────────────────────────────────────────────
+
+    #[test]
+    fn flash_wear_info_when_fewer_than_two_samples() {
+        let f = check_flash_wear(&[]);
+        assert_eq!(f.level, LEVEL_INFO);
+        let f = check_flash_wear(&[point(100.0, 30)]);
+        assert_eq!(f.level, LEVEL_INFO);
+    }
+
+    #[test]
+    fn flash_wear_info_when_span_under_one_hour() {
+        // Two samples 30 minutes apart — not enough span to project a rate.
+        let samples = vec![point(0.0, 50), point(10.0, 20)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("not enough span"), "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn flash_wear_ok_for_light_use() {
+        // 100 writes over 10h → 240/24h, well under 500.
+        let samples = vec![point(0.0, 600), point(100.0, 0)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_OK, "detail: {}", f.detail);
+        assert!(f.suggestion.is_none());
+    }
+
+    #[test]
+    fn flash_wear_info_for_active_automation() {
+        // 1000 writes over 10h → 2400/24h — elevated but years-of-life range.
+        let samples = vec![point(0.0, 600), point(1000.0, 0)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_INFO, "detail: {}", f.detail);
+        assert!(f.suggestion.is_some());
+    }
+
+    #[test]
+    fn flash_wear_warn_for_months_of_life_rate() {
+        // 3000 writes over 10h → 7200/24h (inside 5000–20000 band).
+        let samples = vec![point(0.0, 600), point(3000.0, 0)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_WARN, "detail: {}", f.detail);
+        assert!(f.suggestion.as_ref().unwrap().contains("short intervals"));
+    }
+
+    #[test]
+    fn flash_wear_fail_for_pathological_rate() {
+        // 10000 writes over 10h → 24000/24h (above 20k FAIL line).
+        let samples = vec![point(0.0, 600), point(10_000.0, 0)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_FAIL, "detail: {}", f.detail);
+        assert!(f.suggestion.as_ref().unwrap().contains("automation loop"));
+    }
+
+    #[test]
+    fn flash_wear_skips_negative_deltas_across_reboot() {
+        // Counter: 0 → 2000 (over 4h), reboot, 0 → 500 (over 4h).
+        // Total writes = 2000 + 500 = 2500 across 8h → 7500/24h (WARN band).
+        // If reboot wasn't handled, the naive (last - first) would be 500 over
+        // 8h → 1500/24h and land in INFO, so this test catches the regression.
+        let samples = vec![
+            point(0.0, 480),
+            point(2000.0, 240),
+            point(0.0, 239), // reboot — counter reset
+            point(500.0, 0),
+        ];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_WARN, "detail: {}", f.detail);
+        assert!(f.detail.contains("2500"), "detail should count both sides of the reboot: {}", f.detail);
+    }
+
+    #[test]
+    fn flash_wear_flat_counter_is_ok() {
+        // Counter stays at 1234 across 12h (device idle, no writes).
+        let samples = vec![point(1234.0, 720), point(1234.0, 0)];
+        let f = check_flash_wear(&samples);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("0 NVS writes/24h"));
     }
 }

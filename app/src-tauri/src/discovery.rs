@@ -103,6 +103,7 @@ impl Discovery {
                         uptime_s: 0,
                         chip: String::new(),
                         reset_reason: None,
+                        nvs_writes: None,
                     },
                     online: false,
                     last_seen: s.last_seen.clone(),

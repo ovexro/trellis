@@ -429,6 +429,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
               invoke("store_metric", { deviceId: device_id, metricId: "_rssi", value: sys.rssi }).catch((err: unknown) => console.error("Store _rssi failed:", err));
               invoke("store_metric", { deviceId: device_id, metricId: "_heap", value: sys.heap_free }).catch((err: unknown) => console.error("Store _heap failed:", err));
               invoke("store_metric", { deviceId: device_id, metricId: "_uptime", value: sys.uptime_s }).catch((err: unknown) => console.error("Store _uptime failed:", err));
+              if (typeof sys.nvs_writes === "number") {
+                invoke("store_metric", { deviceId: device_id, metricId: "_nvs_writes", value: sys.nvs_writes }).catch((err: unknown) => console.error("Store _nvs_writes failed:", err));
+              }
 
               return {
                 ...d,

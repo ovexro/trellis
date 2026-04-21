@@ -128,6 +128,9 @@ String TrellisWebServer::buildInfoJson() {
   sys["uptime_s"] = telemetry.uptimeSeconds;
   sys["chip"] = telemetry.chip;
   sys["reset_reason"] = telemetry.resetReason;
+#if defined(ESP32)
+  sys["nvs_writes"] = _trellis->getNvsWrites();
+#endif
 
   String output;
   serializeJson(doc, output);
@@ -179,6 +182,7 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
           prefs.begin("trellis_cap", false);
           prefs.putBool(id, val);
           prefs.end();
+          _trellis->incrementNvsWrites();
         }
 #endif
         broadcastUpdate(id, val);
@@ -194,6 +198,7 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
           prefs.begin("trellis_cap", false);
           prefs.putFloat(id, val);
           prefs.end();
+          _trellis->incrementNvsWrites();
         }
 #endif
         broadcastUpdate(id, val);
@@ -305,6 +310,9 @@ void TrellisWebServer::broadcastHeartbeat(const TelemetryData& telemetry) {
   sys["uptime_s"] = telemetry.uptimeSeconds;
   sys["chip"] = telemetry.chip;
   sys["reset_reason"] = telemetry.resetReason;
+#if defined(ESP32)
+  sys["nvs_writes"] = _trellis->getNvsWrites();
+#endif
   String json;
   serializeJson(doc, json);
   _ws->broadcastTXT(json);

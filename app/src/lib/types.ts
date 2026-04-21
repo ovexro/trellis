@@ -13,6 +13,8 @@ export interface SystemInfo {
   heap_free: number;
   uptime_s: number;
   chip: string;
+  reset_reason?: string;
+  nvs_writes?: number;
 }
 
 export interface Device {
