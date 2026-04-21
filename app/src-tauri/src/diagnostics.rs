@@ -1144,7 +1144,7 @@ fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
             level: LEVEL_INFO.to_string(),
             title,
             detail: format!(
-                "{} mDNS resolution{} in last {}h — need at least {} for a reading.",
+                "{} mDNS timing sample{} in last {}h. Samples are captured only at device (re-)announcement — rare in steady state. Need \u{2265}{} for a reading.",
                 samples.len(),
                 if samples.len() == 1 { "" } else { "s" },
                 WINDOW_HOURS,
