@@ -28,7 +28,7 @@
 
 #define TRELLIS_MAX_CAPABILITIES 16
 #define TRELLIS_DEFAULT_PORT 8080
-#define TRELLIS_VERSION "0.17.0"
+#define TRELLIS_VERSION "0.18.0"
 
 class Trellis {
 public:
@@ -86,6 +86,15 @@ public:
   CommandCallback getCommandCallback() const { return _commandCallback; }
   TrellisTelemetry& getTelemetry() { return _telemetry; }
 
+  // Cumulative count of NVS persist operations in this session. Incremented
+  // by TrellisWebServer after each putBool/putFloat in the capability-persist
+  // path. RAM-only by design — persisting the counter itself would double the
+  // flash wear we're trying to measure. Counter resets to 0 on reboot; the
+  // desktop's flash_wear diagnostic rule handles the reset by summing only
+  // positive deltas between samples.
+  void incrementNvsWrites() { _nvsWrites++; }
+  uint32_t getNvsWrites() const { return _nvsWrites; }
+
 private:
   const char* _name;
   const char* _firmwareVersion;
@@ -102,6 +111,8 @@ private:
   TrellisProvisioning* _provisioning;
 
   bool _webUIEnabled;
+
+  uint32_t _nvsWrites = 0;
 
   unsigned long _lastBroadcast;
   unsigned long _lastHeartbeat;
