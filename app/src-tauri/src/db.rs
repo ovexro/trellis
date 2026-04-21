@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
@@ -41,6 +41,28 @@ pub struct FloorPlanRoom {
 pub struct MetricPoint {
     pub value: f64,
     pub timestamp: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilityMeta {
+    pub capability_id: String,
+    pub nameplate_watts: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilityEnergy {
+    pub capability_id: String,
+    pub nameplate_watts: f64,
+    pub on_time_seconds: i64,
+    pub wh: f64,
+    pub tracked_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceEnergyReport {
+    pub window_hours: i64,
+    pub total_wh: f64,
+    pub capabilities: Vec<CapabilityEnergy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +146,206 @@ impl Database {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn set_capability_watts(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        nameplate_watts: Option<f64>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        match nameplate_watts {
+            Some(w) => conn.execute(
+                "INSERT INTO capability_meta (device_id, capability_id, nameplate_watts)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(device_id, capability_id)
+                 DO UPDATE SET nameplate_watts = excluded.nameplate_watts",
+                rusqlite::params![device_id, capability_id, w],
+            ),
+            None => conn.execute(
+                "INSERT INTO capability_meta (device_id, capability_id, nameplate_watts)
+                 VALUES (?1, ?2, NULL)
+                 ON CONFLICT(device_id, capability_id)
+                 DO UPDATE SET nameplate_watts = NULL",
+                rusqlite::params![device_id, capability_id],
+            ),
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn log_switch_state(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        on: bool,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let last: Option<i64> = conn
+            .query_row(
+                "SELECT state FROM capability_state_log
+                 WHERE device_id = ?1 AND capability_id = ?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![device_id, capability_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let new_state: i64 = if on { 1 } else { 0 };
+        if last == Some(new_state) {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO capability_state_log (device_id, capability_id, state)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![device_id, capability_id, new_state],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn get_device_energy(
+        &self,
+        device_id: &str,
+        hours: i64,
+    ) -> Result<DeviceEnergyReport, String> {
+        let conn = self.conn.lock().unwrap();
+        let hours_clamped = hours.clamp(1, 24 * 365);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT capability_id, nameplate_watts
+                 FROM capability_meta
+                 WHERE device_id = ?1 AND nameplate_watts IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let metered: Vec<(String, f64)> = stmt
+            .query_map(rusqlite::params![device_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        // Window bounds as unix epoch seconds, computed by SQLite for correctness.
+        let now_epoch: i64 = conn
+            .query_row("SELECT CAST(strftime('%s', 'now') AS INTEGER)", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        let window_start_epoch: i64 = now_epoch - hours_clamped * 3600;
+
+        let mut out: Vec<CapabilityEnergy> = Vec::new();
+        let mut total_wh: f64 = 0.0;
+
+        for (cap_id, watts) in metered {
+            // Bootstrap: latest state before window_start. If none, assume OFF
+            // (conservative — we can't prove what the state was before tracking
+            // began).
+            let bootstrap: Option<i64> = conn
+                .query_row(
+                    "SELECT state FROM capability_state_log
+                     WHERE device_id = ?1 AND capability_id = ?2
+                       AND CAST(strftime('%s', timestamp) AS INTEGER) < ?3
+                     ORDER BY id DESC LIMIT 1",
+                    rusqlite::params![device_id, cap_id, window_start_epoch],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            // Earliest sample for this capability overall — surfaces to the UI as
+            // "tracking since" so users can reason about the coverage window.
+            let tracked_since: Option<String> = conn
+                .query_row(
+                    "SELECT timestamp FROM capability_state_log
+                     WHERE device_id = ?1 AND capability_id = ?2
+                     ORDER BY id ASC LIMIT 1",
+                    rusqlite::params![device_id, cap_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| e.to_string())?;
+
+            // Rows inside the window, chronological.
+            let mut s = conn
+                .prepare(
+                    "SELECT state, CAST(strftime('%s', timestamp) AS INTEGER)
+                     FROM capability_state_log
+                     WHERE device_id = ?1 AND capability_id = ?2
+                       AND CAST(strftime('%s', timestamp) AS INTEGER) >= ?3
+                     ORDER BY id ASC",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<(i64, i64)> = s
+                .query_map(
+                    rusqlite::params![device_id, cap_id, window_start_epoch],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+
+            let mut current_state: i64 = bootstrap.unwrap_or(0);
+            let mut last_epoch: i64 = window_start_epoch;
+            let mut on_seconds: i64 = 0;
+            for (state, ts_epoch) in rows {
+                if current_state == 1 {
+                    let delta = (ts_epoch - last_epoch).max(0);
+                    on_seconds += delta;
+                }
+                current_state = state;
+                last_epoch = ts_epoch;
+            }
+            // Close the open interval at now.
+            if current_state == 1 {
+                on_seconds += (now_epoch - last_epoch).max(0);
+            }
+
+            let wh = (on_seconds as f64) * watts / 3600.0;
+            total_wh += wh;
+            out.push(CapabilityEnergy {
+                capability_id: cap_id,
+                nameplate_watts: watts,
+                on_time_seconds: on_seconds,
+                wh,
+                tracked_since,
+            });
+        }
+
+        Ok(DeviceEnergyReport {
+            window_hours: hours_clamped,
+            total_wh,
+            capabilities: out,
+        })
+    }
+
+    pub fn get_device_capability_meta(
+        &self,
+        device_id: &str,
+    ) -> Result<Vec<CapabilityMeta>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT capability_id, nameplate_watts
+                 FROM capability_meta
+                 WHERE device_id = ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id], |row| {
+                Ok(CapabilityMeta {
+                    capability_id: row.get(0)?,
+                    nameplate_watts: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
     }
 
     pub fn set_tags(&self, device_id: &str, tags: &str) -> Result<(), String> {
@@ -2271,6 +2493,25 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         );
         CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
             ON webhook_deliveries(webhook_id, id DESC);
+    ").map_err(|e| e.to_string())?;
+
+    // Per-capability metadata (energy tracking phase 1 — nameplate watts on switches)
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS capability_meta (
+            device_id TEXT NOT NULL,
+            capability_id TEXT NOT NULL,
+            nameplate_watts REAL,
+            PRIMARY KEY (device_id, capability_id)
+        );
+        CREATE TABLE IF NOT EXISTS capability_state_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            capability_id TEXT NOT NULL,
+            state INTEGER NOT NULL,
+            timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cap_state_device_cap
+            ON capability_state_log(device_id, capability_id, id DESC);
     ").map_err(|e| e.to_string())?;
 
     app.manage(Database {

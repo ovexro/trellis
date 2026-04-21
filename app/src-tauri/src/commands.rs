@@ -1,6 +1,6 @@
 use crate::auth;
 use crate::connection::ConnectionManager;
-use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, Database, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
+use crate::db::{ActivityEntry, Annotation, ApiToken, AlertRule, CapabilityMeta, Database, DeviceEnergyReport, DeviceGroup, DevicePosition, DeviceTemplate, FirmwareRecord, FloorPlan, FloorPlanRoom, LogEntry, MetricPoint, Rule, SavedDevice, Scene, SceneActionInput, Schedule, Webhook};
 use crate::device::Device;
 use crate::diagnostics::{self, DiagnosticReport, EligibleRelease, FleetReport};
 use crate::discovery::Discovery;
@@ -83,6 +83,33 @@ pub fn set_device_tags(
 #[tauri::command]
 pub fn get_saved_devices(db: State<'_, Database>) -> Result<Vec<SavedDevice>, String> {
     db.get_all_saved_devices()
+}
+
+#[tauri::command]
+pub fn set_capability_watts(
+    db: State<'_, Database>,
+    device_id: String,
+    capability_id: String,
+    nameplate_watts: Option<f64>,
+) -> Result<(), String> {
+    db.set_capability_watts(&device_id, &capability_id, nameplate_watts)
+}
+
+#[tauri::command]
+pub fn get_device_capability_meta(
+    db: State<'_, Database>,
+    device_id: String,
+) -> Result<Vec<CapabilityMeta>, String> {
+    db.get_device_capability_meta(&device_id)
+}
+
+#[tauri::command]
+pub fn get_device_energy(
+    db: State<'_, Database>,
+    device_id: String,
+    hours: i64,
+) -> Result<DeviceEnergyReport, String> {
+    db.get_device_energy(&device_id, hours)
 }
 
 #[tauri::command]

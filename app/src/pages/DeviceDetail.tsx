@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowLeft, Wifi, Trash2, ExternalLink } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -13,7 +13,14 @@ import DeviceNickname from "@/components/DeviceNickname";
 import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import DeviceDiagnostics from "@/components/DeviceDiagnostics";
+import CapabilityWatts from "@/components/CapabilityWatts";
+import DeviceEnergy from "@/components/DeviceEnergy";
 import type { Capability } from "@/lib/types";
+
+interface CapabilityMetaRow {
+  capability_id: string;
+  nameplate_watts: number | null;
+}
 
 function SectionHeader({ title }: { title: string }) {
   return (
@@ -32,6 +39,49 @@ export default function DeviceDetail() {
   const { devices, updateCapability } = useDeviceStore();
   const device = devices.find((d) => d.id === id);
   const logsRef = useRef<DeviceLogsHandle>(null);
+  const [capMeta, setCapMeta] = useState<Record<string, number | null>>({});
+  const [costPerKwh, setCostPerKwh] = useState<number | null>(null);
+  const [currency, setCurrency] = useState<string>("USD");
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    invoke<CapabilityMetaRow[]>("get_device_capability_meta", { deviceId: id })
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, number | null> = {};
+        for (const r of rows) map[r.capability_id] = r.nameplate_watts;
+        setCapMeta(map);
+      })
+      .catch((err) => console.error("Failed to load capability meta:", err));
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const raw = await invoke<string | null>("get_setting", {
+          key: "cost_per_kwh",
+        });
+        if (!cancelled && raw) {
+          const n = Number(raw);
+          if (Number.isFinite(n) && n > 0) setCostPerKwh(n);
+        }
+        const cur = await invoke<string | null>("get_setting", {
+          key: "currency",
+        });
+        if (!cancelled && cur && cur.trim()) setCurrency(cur.trim());
+      } catch (err) {
+        console.error("Failed to load tariff settings:", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleAnnotationClick = useCallback(
     (ann: { timestamp: string; kind: string; label: string }) => {
@@ -82,12 +132,23 @@ export default function DeviceDetail() {
     switch (cap.type) {
       case "switch":
         return (
-          <Switch
-            key={cap.id}
-            label={cap.label}
-            value={cap.value as boolean}
-            onChange={(v) => handleChange(cap.id, v)}
-          />
+          <div key={cap.id}>
+            <Switch
+              label={cap.label}
+              value={cap.value as boolean}
+              onChange={(v) => handleChange(cap.id, v)}
+            />
+            {device && (
+              <CapabilityWatts
+                deviceId={device.id}
+                capabilityId={cap.id}
+                watts={capMeta[cap.id] ?? null}
+                onChange={(w) =>
+                  setCapMeta((prev) => ({ ...prev, [cap.id]: w }))
+                }
+              />
+            )}
+          </div>
         );
       case "slider":
         return (
@@ -266,6 +327,23 @@ export default function DeviceDetail() {
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />
       <UptimeTimeline deviceId={device.id} onSegmentClick={handleSegmentClick} />
+
+      {/* Energy — renders only when at least one switch has nameplate_watts set */}
+      {device.capabilities.some(
+        (c) => c.type === "switch" && capMeta[c.id] != null
+      ) && (
+        <>
+          <SectionHeader title="Energy" />
+          <DeviceEnergy
+            deviceId={device.id}
+            capabilityLabels={device.capabilities
+              .filter((c) => c.type === "switch")
+              .map((c) => ({ id: c.id, label: c.label }))}
+            costPerKwh={costPerKwh}
+            currency={currency}
+          />
+        </>
+      )}
 
       {/* Charts */}
       {hasSensors && (

@@ -10,6 +10,8 @@ export default function ConfigSection() {
   const [importStatus, setImportStatus] = useState("");
   const [scanInterval, setScanInterval] = useState("30");
   const [dataRetention, setDataRetention] = useState("30");
+  const [costPerKwh, setCostPerKwh] = useState("");
+  const [currency, setCurrency] = useState("USD");
 
   useEffect(() => {
     invoke<string | null>("get_setting", { key: "scan_interval" }).then((val) => {
@@ -17,6 +19,12 @@ export default function ConfigSection() {
     }).catch(() => {});
     invoke<string | null>("get_setting", { key: "data_retention_days" }).then((val) => {
       if (val) setDataRetention(val);
+    }).catch(() => {});
+    invoke<string | null>("get_setting", { key: "cost_per_kwh" }).then((val) => {
+      if (val) setCostPerKwh(val);
+    }).catch(() => {});
+    invoke<string | null>("get_setting", { key: "currency" }).then((val) => {
+      if (val) setCurrency(val);
     }).catch(() => {});
   }, []);
 
@@ -389,6 +397,64 @@ export default function ConfigSection() {
         </div>
         <p className="text-xs text-zinc-600 mt-2">
           Metrics and device logs older than this are automatically deleted. Choosing &ldquo;Forever&rdquo; disables cleanup but the database will grow over time.
+        </p>
+      </div>
+
+      {/* Energy tariff (optional — only surfaces if a device has nameplate watts set) */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+          Energy Tariff
+        </h2>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="text-sm text-zinc-300">Cost per kWh</label>
+          <input
+            type="number"
+            min="0"
+            step="0.001"
+            value={costPerKwh}
+            onChange={(e) => setCostPerKwh(e.target.value)}
+            onBlur={async () => {
+              const trimmed = costPerKwh.trim();
+              try {
+                if (trimmed === "") {
+                  await invoke("delete_setting", { key: "cost_per_kwh" });
+                } else {
+                  await invoke("set_setting", {
+                    key: "cost_per_kwh",
+                    value: trimmed,
+                  });
+                }
+              } catch (err) {
+                console.error("Failed to save cost per kWh:", err);
+              }
+            }}
+            placeholder="0.00"
+            className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300 w-28 font-mono"
+          />
+          <select
+            value={currency}
+            onChange={async (e) => {
+              const val = e.target.value;
+              setCurrency(val);
+              try {
+                await invoke("set_setting", { key: "currency", value: val });
+              } catch (err) {
+                console.error("Failed to save currency:", err);
+              }
+            }}
+            className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300"
+          >
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+            <option value="CAD">CAD</option>
+            <option value="AUD">AUD</option>
+            <option value="JPY">JPY</option>
+            <option value="RON">RON</option>
+          </select>
+        </div>
+        <p className="text-xs text-zinc-600 mt-2">
+          Optional. When set, device Energy cards estimate a cost alongside the measured Wh. Leave blank to show energy only.
         </p>
       </div>
     </>

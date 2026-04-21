@@ -1062,6 +1062,37 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_device_favorite(ctx, id, &req.body)
         }
 
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/capability-meta") => {
+            let id = &p["/api/devices/".len()..p.len() - "/capability-meta".len()];
+            match ctx.db.get_device_capability_meta(id) {
+                Ok(meta) => json_ok(&meta),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/energy") => {
+            let id = &p["/api/devices/".len()..p.len() - "/energy".len()];
+            let hours: i64 = req.query.get("hours").and_then(|h| h.parse().ok()).unwrap_or(24);
+            match ctx.db.get_device_energy(id, hours) {
+                Ok(report) => json_ok(&report),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("PUT", p)
+            if p.starts_with("/api/devices/")
+                && p.ends_with("/meta")
+                && p["/api/devices/".len()..].contains("/capabilities/") =>
+        {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let rest = &p["/api/devices/".len()..p.len() - "/meta".len()];
+            if let Some((device_id, cap_id)) = rest.split_once("/capabilities/") {
+                handle_set_capability_meta(ctx, device_id, cap_id, &req.body)
+            } else {
+                json_error(400, "Invalid capability meta path")
+            }
+        }
+
         ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/github-repo") => {
             let id = &p["/api/devices/".len()..p.len() - "/github-repo".len()];
             match ctx.db.get_saved_device(id) {
@@ -1927,6 +1958,32 @@ fn handle_set_nickname(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, S
     let nickname = v["nickname"].as_str().unwrap_or("");
 
     match ctx.db.set_nickname(device_id, nickname) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_capability_meta(
+    ctx: &ApiContext,
+    device_id: &str,
+    capability_id: &str,
+    body: &str,
+) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let watts = match &v["nameplate_watts"] {
+        Value::Null => None,
+        Value::Number(n) => n.as_f64(),
+        _ => return json_error(400, "nameplate_watts must be a number or null"),
+    };
+    if let Some(w) = watts {
+        if !w.is_finite() || w < 0.0 {
+            return json_error(400, "nameplate_watts must be a non-negative finite number");
+        }
+    }
+    match ctx.db.set_capability_watts(device_id, capability_id, watts) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }

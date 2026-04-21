@@ -9,8 +9,10 @@ use tauri::{AppHandle, Emitter};
 use tungstenite::{connect, Message};
 
 use crate::api::WsBroadcaster;
+use crate::db::Database;
 use crate::mqtt::MqttBridge;
 use crate::sinric::SinricBridge;
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceEvent {
@@ -239,6 +241,22 @@ fn ws_reader_loop(
                                             sinric_bridge.lock().unwrap().as_ref()
                                         {
                                             bridge.on_state_change(device_id, cap_id, value);
+                                        }
+                                        // Persist switch on/off transitions so the
+                                        // energy rule can pair them into intervals.
+                                        // Bool-only for now; sliders are phase 2.
+                                        if let Some(on) = value.as_bool() {
+                                            if let Some(handle) =
+                                                app_handle.lock().unwrap().as_ref()
+                                            {
+                                                if let Some(db) =
+                                                    handle.try_state::<Database>()
+                                                {
+                                                    let _ = db.log_switch_state(
+                                                        device_id, cap_id, on,
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                 } else if event_type == "heartbeat" {
