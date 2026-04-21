@@ -1279,6 +1279,52 @@ impl Database {
         Ok(path)
     }
 
+    // ─── Reset history (power-supply stability signal) ──────────────────
+
+    /// Record a reboot. Called from `discovery` when a device's reported
+    /// `uptime_s` drops below the previously-seen value — that monotonic
+    /// break is how we attribute a reboot to the exact moment discovery
+    /// saw it. The `reset_reason` comes from the device's self-reported
+    /// esp_reset_reason() string ("brownout", "panic", "poweron", etc.).
+    pub fn record_reset(&self, device_id: &str, reset_reason: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_reset_history (device_id, reset_reason, recorded_at)
+             VALUES (?1, ?2, datetime('now'))",
+            rusqlite::params![device_id, reset_reason],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Return reset events for a device within the given rolling window,
+    /// newest-first. Caller decides how many to classify as brownout vs
+    /// clean-boot. Cap at 50 to bound memory on a fleet that's thrashing.
+    pub fn get_resets(&self, device_id: &str, hours: u32) -> Result<Vec<ResetEvent>, String> {
+        let conn = self.conn.lock().unwrap();
+        let window = format!("-{} hours", hours);
+        let mut stmt = conn
+            .prepare(
+                "SELECT reset_reason, recorded_at FROM device_reset_history
+                 WHERE device_id = ?1 AND recorded_at >= datetime('now', ?2)
+                 ORDER BY recorded_at DESC LIMIT 50",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id, window], |row| {
+                Ok(ResetEvent {
+                    reset_reason: row.get(0)?,
+                    recorded_at: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     // ─── Annotations (chart event markers) ───────────────────────────────
 
     /// Collect point-in-time events for a device within the given rolling
@@ -1723,6 +1769,17 @@ pub struct Annotation {
     pub severity: String,
 }
 
+/// One row of `device_reset_history`. Inserted each time discovery detects
+/// a reboot (observed uptime_s dropping below the previously-seen value),
+/// carrying the ESP32's self-reported reset reason captured at boot via
+/// `esp_reset_reason()`. The power-supply-stability diagnostics rule reads
+/// these to surface brownout clusters.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResetEvent {
+    pub reset_reason: String,
+    pub recorded_at: String,
+}
+
 /// Public-facing view of an API token row. The plaintext token is **never**
 /// stored or returned after creation — only its SHA-256 digest lives in
 /// SQLite. List/get endpoints return this struct so the UI can show name,
@@ -1869,6 +1926,19 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             last_used_at TEXT
         );
 
+        -- Reboot attribution (post-v0.16.0). One row per reboot observed by
+        -- the desktop via uptime decrease on /api/info, carrying the ESP32's
+        -- self-reported esp_reset_reason() string. The power-supply-stability
+        -- diagnostics rule reads the last N rows in its window and escalates
+        -- on repeated brownouts.
+        CREATE TABLE IF NOT EXISTS device_reset_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            reset_reason TEXT NOT NULL,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_metrics_device_time
             ON metrics(device_id, metric_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_device_time
@@ -1879,6 +1949,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ON api_tokens(token_hash);
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp
             ON device_logs(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_reset_device_time
+            ON device_reset_history(device_id, recorded_at);
         ",
     )?;
 

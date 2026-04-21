@@ -102,6 +102,7 @@ impl Discovery {
                         heap_free: 0,
                         uptime_s: 0,
                         chip: String::new(),
+                        reset_reason: None,
                     },
                     online: false,
                     last_seen: s.last_seen.clone(),
@@ -247,15 +248,23 @@ fn mdns_browse_loop(
                             last_seen: chrono::Utc::now().to_rfc3339(),
                         };
 
-                        let is_new = {
+                        let (is_new, old_uptime) = {
                             let mut devs = devices.lock().unwrap();
-                            let existed = devs.contains_key(&device_info.id);
+                            let prior = devs.get(&device_info.id).map(|d| d.system.uptime_s);
+                            let existed = prior.is_some();
                             devs.insert(device_info.id.clone(), device.clone());
-                            !existed
+                            (!existed, prior.unwrap_or(0))
                         };
 
                         // Persist to SQLite
                         persist_device(&app_handle, &device);
+
+                        // A strict uptime decrease means the device rebooted
+                        // since we last saw it; file a row with whatever reset
+                        // reason the firmware reported. `old_uptime == 0` is
+                        // either a fresh hydrate or truly new — no prior
+                        // baseline, skip.
+                        maybe_record_reset(&app_handle, &device.id, old_uptime, &device.system);
 
                         // Connect WebSocket for live updates
                         conn_mgr.connect_device(&device_info.id, &ip, port + 1);
@@ -352,6 +361,7 @@ fn health_check_loop(
                     let mut devs = devices.lock().unwrap();
                     if let Some(device) = devs.get_mut(&id) {
                         let was_offline = !device.online;
+                        let old_uptime = device.system.uptime_s;
                         device.online = true;
                         device.name = info.name;
                         device.firmware = info.firmware;
@@ -359,6 +369,12 @@ fn health_check_loop(
                         device.system = info.system;
                         device.capabilities = info.capabilities;
                         device.last_seen = chrono::Utc::now().to_rfc3339();
+
+                        // Attribute a reboot to the exact moment discovery
+                        // sees uptime go backwards. Must happen while we still
+                        // hold the read of `device.system` — relying on the
+                        // just-assigned reset_reason.
+                        maybe_record_reset(&app_handle, &id, old_uptime, &device.system);
 
                         // Persist updated info to SQLite
                         persist_device(&app_handle, device);
@@ -456,4 +472,29 @@ fn fetch_device_info(ip: &str, port: u16) -> Result<DeviceInfo, String> {
         .into_json()
         .map_err(|e| format!("JSON parse error: {}", e))?;
     Ok(info)
+}
+
+/// Append a `device_reset_history` row when the device's reported uptime
+/// has regressed since the last observation — a monotonic break we treat
+/// as "the device rebooted while we weren't watching its uptime crawl."
+/// `old == 0` is the hydrated-from-DB baseline (no prior live reading) and
+/// is deliberately excluded: otherwise every cold start of the desktop
+/// would mis-record a reboot against every device. Firmwares older than
+/// v0.17.0 omit `reset_reason`; we persist "unknown" so the rule can still
+/// count the reboot without needing to distinguish.
+fn maybe_record_reset(app_handle: &AppHandle, device_id: &str, old_uptime_s: u64, new_sys: &SystemInfo) {
+    if old_uptime_s == 0 || new_sys.uptime_s >= old_uptime_s {
+        return;
+    }
+    let reason = new_sys.reset_reason.as_deref().unwrap_or("unknown");
+    if let Some(db) = app_handle.try_state::<Database>() {
+        if let Err(e) = db.record_reset(device_id, reason) {
+            log::warn!("[Health] Failed to record reset for {}: {}", device_id, e);
+            return;
+        }
+        log::info!(
+            "[Health] Device {} rebooted (reset_reason={}, old_uptime={}s → new={}s)",
+            device_id, reason, old_uptime_s, new_sys.uptime_s
+        );
+    }
 }

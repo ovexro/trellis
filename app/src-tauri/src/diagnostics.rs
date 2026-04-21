@@ -1,4 +1,4 @@
-use crate::db::{Database, LogEntry, MetricPoint};
+use crate::db::{Database, LogEntry, MetricPoint, ResetEvent};
 use crate::device::Device;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -160,6 +160,9 @@ pub fn diagnose(
     let history = db.get_firmware_history(device_id)?;
     findings.push(check_firmware_age(&history, live_device, eligible_update));
     findings.push(check_ota_success_rate(&history));
+
+    let resets = db.get_resets(device_id, WINDOW_HOURS)?;
+    findings.push(check_power_supply_stability(&resets));
 
     let overall = roll_up(&findings);
 
@@ -1018,6 +1021,103 @@ fn severity_rank(overall: &str) -> u8 {
     }
 }
 
+// ─── Power-supply stability (post-v0.16.0) ───────────────────────────────────
+
+/// Reset reasons that should never happen on a healthy device. Brownouts are
+/// the direct power-supply signal; panics and watchdog timeouts are secondary
+/// — they frequently ride along during PSU sag (rail dips deep enough to
+/// corrupt a transaction but not deep enough to trip the brownout detector).
+///
+/// Reasons kept OFF this list are expected: `poweron` (cold boot), `software`
+/// (our own ESP.restart() from OTA), `external` (reset pin), `deepsleep`
+/// (normal wake), `unknown` (old firmware or new IDF enum we don't map yet —
+/// would false-positive otherwise).
+fn is_unexpected_reset(reason: &str) -> bool {
+    matches!(
+        reason,
+        "brownout" | "panic" | "interrupt_watchdog" | "task_watchdog" | "watchdog"
+    )
+}
+
+fn check_power_supply_stability(resets: &[ResetEvent]) -> Finding {
+    let id = "power_supply_stability".to_string();
+    let title = "Power-supply stability".to_string();
+
+    if resets.is_empty() {
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: format!("No reboots observed in the last {}h.", WINDOW_HOURS),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    let brownouts = resets.iter().filter(|r| r.reset_reason == "brownout").count();
+    let unexpected = resets.iter().filter(|r| is_unexpected_reset(&r.reset_reason)).count();
+    let total = resets.len();
+
+    let (level, suggestion_extra) = if brownouts >= 2 {
+        (
+            LEVEL_FAIL,
+            Some("Two or more brownouts in 24h strongly suggest the power supply can't hold the rail under load. Swap to a higher-current USB adapter (≥1 A for ESP32, ≥2 A for ESP32-S3/variants with large WiFi bursts), use shorter/thicker USB cables, or add a bulk decoupling cap near the ESP32 VCC pin."),
+        )
+    } else if brownouts >= 1 || unexpected >= 3 {
+        (
+            LEVEL_WARN,
+            Some("One brownout or a cluster of unexpected resets in the last 24h. Monitor — if the pattern continues, treat it as a power-supply issue first before chasing firmware bugs."),
+        )
+    } else {
+        (LEVEL_OK, None)
+    };
+
+    // Breakdown ordered by how diagnostic each reason is.
+    let mut breakdown: Vec<String> = Vec::new();
+    for (label, reason) in [
+        ("brownout", "brownout"),
+        ("panic", "panic"),
+        ("watchdog", "watchdog"),
+        ("task_watchdog", "task_watchdog"),
+        ("interrupt_watchdog", "interrupt_watchdog"),
+        ("poweron", "poweron"),
+        ("software", "software"),
+        ("external", "external"),
+        ("deepsleep", "deepsleep"),
+    ] {
+        let n = resets.iter().filter(|r| r.reset_reason == reason).count();
+        if n > 0 {
+            breakdown.push(format!("{} {}", n, label));
+        }
+    }
+    // Collect anything we don't explicitly name (e.g. "unknown" from pre-v0.17.0 firmwares).
+    let named: std::collections::HashSet<&str> = [
+        "brownout", "panic", "watchdog", "task_watchdog", "interrupt_watchdog",
+        "poweron", "software", "external", "deepsleep",
+    ].iter().copied().collect();
+    let other = resets.iter().filter(|r| !named.contains(r.reset_reason.as_str())).count();
+    if other > 0 {
+        breakdown.push(format!("{} other", other));
+    }
+
+    let detail = format!(
+        "{} reboot{} in last {}h ({}).",
+        total,
+        if total == 1 { "" } else { "s" },
+        WINDOW_HOURS,
+        breakdown.join(", "),
+    );
+
+    Finding {
+        id,
+        level: level.to_string(),
+        title,
+        detail,
+        suggestion: suggestion_extra.map(|s| s.to_string()),
+        action: None,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
@@ -1723,5 +1823,108 @@ mod tests {
         let f = check_ota_success_rate(&history);
         assert_eq!(f.level, LEVEL_OK);
         assert!(f.detail.contains("3/3"), "detail: {}", f.detail);
+    }
+
+    // ─── Power-supply stability ──────────────────────────────────────────
+
+    fn reset(reason: &str, mins_ago: i64) -> ResetEvent {
+        let ts = Utc::now() - Duration::minutes(mins_ago);
+        ResetEvent {
+            reset_reason: reason.to_string(),
+            recorded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    }
+
+    #[test]
+    fn power_supply_info_when_no_reboots_seen() {
+        let f = check_power_supply_stability(&[]);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("No reboots"));
+    }
+
+    #[test]
+    fn power_supply_ok_for_clean_reboots() {
+        // Normal reboots from OTA + cold boot should never escalate.
+        let resets = vec![
+            reset("software", 30),
+            reset("poweron", 120),
+            reset("external", 240),
+        ];
+        let f = check_power_supply_stability(&resets);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.suggestion.is_none());
+    }
+
+    #[test]
+    fn power_supply_warn_for_single_brownout() {
+        let resets = vec![
+            reset("brownout", 90),
+            reset("poweron", 200),
+        ];
+        let f = check_power_supply_stability(&resets);
+        assert_eq!(f.level, LEVEL_WARN);
+        assert!(f.detail.contains("1 brownout"));
+        assert!(f.suggestion.is_some());
+    }
+
+    #[test]
+    fn power_supply_fail_for_two_brownouts() {
+        let resets = vec![
+            reset("brownout", 30),
+            reset("brownout", 300),
+            reset("poweron", 1000),
+        ];
+        let f = check_power_supply_stability(&resets);
+        assert_eq!(f.level, LEVEL_FAIL);
+        assert!(f.detail.contains("2 brownout"));
+        assert!(
+            f.suggestion.as_ref().unwrap().contains("higher-current"),
+            "suggestion should point at the power supply, got: {:?}", f.suggestion
+        );
+    }
+
+    #[test]
+    fn power_supply_warn_for_three_panics_without_brownout() {
+        // No direct brownout signal but 3+ unexpected resets — still
+        // worth flagging as WARN since panic/watchdog clusters often
+        // correlate with PSU sag.
+        let resets = vec![
+            reset("panic", 30),
+            reset("task_watchdog", 300),
+            reset("panic", 800),
+        ];
+        let f = check_power_supply_stability(&resets);
+        assert_eq!(f.level, LEVEL_WARN);
+    }
+
+    #[test]
+    fn power_supply_ok_when_unknown_reasons_only() {
+        // Pre-v0.17.0 firmwares report "unknown" — not brownouts, not in
+        // the unexpected-reset set, so the rule should stay OK and just
+        // note the count. This keeps existing fleets from getting a sea
+        // of false warnings the moment they upgrade the desktop.
+        let resets = vec![
+            reset("unknown", 30),
+            reset("unknown", 300),
+            reset("unknown", 800),
+        ];
+        let f = check_power_supply_stability(&resets);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("3 other"));
+    }
+
+    #[test]
+    fn power_supply_is_unexpected_reset_covers_watchdog_family() {
+        assert!(is_unexpected_reset("brownout"));
+        assert!(is_unexpected_reset("panic"));
+        assert!(is_unexpected_reset("interrupt_watchdog"));
+        assert!(is_unexpected_reset("task_watchdog"));
+        assert!(is_unexpected_reset("watchdog"));
+
+        assert!(!is_unexpected_reset("poweron"));
+        assert!(!is_unexpected_reset("software"));
+        assert!(!is_unexpected_reset("external"));
+        assert!(!is_unexpected_reset("deepsleep"));
+        assert!(!is_unexpected_reset("unknown"));
     }
 }
