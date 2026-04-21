@@ -1327,37 +1327,42 @@ impl Database {
 
     // ─── mDNS latency samples (network health signal) ─────────────────────
 
-    /// Record a single mDNS resolution latency sample for a device. Called
-    /// from the discovery browse loop after a `ServiceFound → ServiceResolved`
-    /// pair completes for the device, using the elapsed time as the sample.
-    pub fn record_mdns_latency(&self, device_id: &str, latency_ms: u32) -> Result<(), String> {
+    /// Record a single mDNS cadence sample for a device — the interval in
+    /// ms between the previous and current `ServiceResolved` event for the
+    /// same service instance, already de-duped across listening interfaces
+    /// and the sub-debounce redundant re-fires. Called from the discovery
+    /// browse loop on every accepted Resolved after the first one.
+    pub fn record_mdns_cadence(&self, device_id: &str, interval_ms: u32) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO device_mdns_latency (device_id, latency_ms, recorded_at)
-             VALUES (?1, ?2, datetime('now'))",
-            rusqlite::params![device_id, latency_ms],
+            "INSERT INTO device_mdns_latency (device_id, latency_ms, sample_kind, recorded_at)
+             VALUES (?1, ?2, 'cadence', datetime('now'))",
+            rusqlite::params![device_id, interval_ms],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Return mDNS latency samples for a device within the given rolling
-    /// window, newest-first. Cap at 50 to bound memory on a chatty network —
-    /// the rule only needs enough points to compute a stable median.
-    pub fn get_mdns_samples(&self, device_id: &str, hours: u32) -> Result<Vec<MdnsLatencySample>, String> {
+    /// Return mDNS cadence samples for a device within the given rolling
+    /// window, newest-first. Filters out legacy `'resolution'` rows so the
+    /// rule's percentile math doesn't mix two incompatible units. Cap at
+    /// 500 to bound memory — a healthy ESP32 with 120s TTL emits ~720
+    /// intervals per 24h; the cap trims the oldest of those.
+    pub fn get_mdns_cadence_samples(&self, device_id: &str, hours: u32) -> Result<Vec<MdnsCadenceSample>, String> {
         let conn = self.conn.lock().unwrap();
         let window = format!("-{} hours", hours);
         let mut stmt = conn
             .prepare(
                 "SELECT latency_ms, recorded_at FROM device_mdns_latency
-                 WHERE device_id = ?1 AND recorded_at >= datetime('now', ?2)
-                 ORDER BY recorded_at DESC LIMIT 50",
+                 WHERE device_id = ?1 AND sample_kind = 'cadence'
+                   AND recorded_at >= datetime('now', ?2)
+                 ORDER BY recorded_at DESC LIMIT 500",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(rusqlite::params![device_id, window], |row| {
-                Ok(MdnsLatencySample {
-                    latency_ms: row.get::<_, i64>(0)? as u32,
+                Ok(MdnsCadenceSample {
+                    interval_ms: row.get::<_, i64>(0)? as u32,
                     recorded_at: row.get(1)?,
                 })
             })
@@ -1872,13 +1877,16 @@ pub struct ResetEvent {
     pub recorded_at: String,
 }
 
-/// One row of `device_mdns_latency`. Each sample is a single
-/// `ServiceFound → ServiceResolved` elapsed time captured in
-/// `mdns_browse_loop`. The mdns_latency diagnostics rule reads trailing
-/// samples to surface slow-network / mdns-sd-pressure situations.
+/// One row of `device_mdns_latency` with `sample_kind = 'cadence'`. Each
+/// sample is the interval in ms between two successive `ServiceResolved`
+/// events for the same service instance (deduped across interfaces),
+/// captured in `mdns_browse_loop`. The mdns_latency diagnostics rule reads
+/// trailing samples and compares p50/p95 against the expected TTL-driven
+/// refresh cadence — stretching cadence is a health proxy for a device or
+/// LAN path that's dropping announcements.
 #[derive(Debug, Clone, Serialize)]
-pub struct MdnsLatencySample {
-    pub latency_ms: u32,
+pub struct MdnsCadenceSample {
+    pub interval_ms: u32,
     pub recorded_at: String,
 }
 
@@ -2041,15 +2049,23 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             FOREIGN KEY (device_id) REFERENCES devices(id)
         );
 
-        -- Per-sample mDNS resolution latency (ServiceFound → ServiceResolved
-        -- elapsed, in ms) captured inside the discovery daemon. Feeds the
-        -- mdns_latency diagnostics rule; a slow median or a single large
-        -- spike is a usable signal for network path congestion or mdns-sd
-        -- CPU pressure on the desktop side.
+        -- Per-sample mDNS timing, in ms. `sample_kind` distinguishes the
+        -- two capture models the rule has used:
+        --   'resolution' — legacy v0.17.0: elapsed time between a
+        --   ServiceFound and its matching ServiceResolved. Captured once
+        --   per new announcement; rare in steady state (TTL refreshes
+        --   don't emit Found). No longer written; pre-existing rows age
+        --   out of the 24h window naturally.
+        --   'cadence' — v0.18.0+: interval between successive
+        --   ServiceResolved events for the same service instance,
+        --   de-duped across interfaces. Fires on every mDNS TTL refresh,
+        --   so there is a steady signal — stretching cadence is a health
+        --   proxy for a flaky device or LAN path.
         CREATE TABLE IF NOT EXISTS device_mdns_latency (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id TEXT NOT NULL,
             latency_ms INTEGER NOT NULL,
+            sample_kind TEXT NOT NULL DEFAULT 'resolution',
             recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (device_id) REFERENCES devices(id)
         );
@@ -2110,6 +2126,12 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // without a nonce (rollbacks) or for pre-v0.16.0 rows.
     let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_ack_nonce TEXT", []);
     let _ = conn.execute("ALTER TABLE firmware_history ADD COLUMN delivery_applied_at TEXT", []);
+
+    // mDNS capture-model switch (v0.18.0): legacy rows are Found→Resolved
+    // latency; new rows are inter-Resolved cadence. Default 'resolution'
+    // tags existing data correctly so the new rule's cadence-only read
+    // doesn't treat stale latency numbers as intervals.
+    let _ = conn.execute("ALTER TABLE device_mdns_latency ADD COLUMN sample_kind TEXT NOT NULL DEFAULT 'resolution'", []);
 
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("

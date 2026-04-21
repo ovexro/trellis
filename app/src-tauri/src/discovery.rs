@@ -220,15 +220,25 @@ fn mdns_browse_loop(
 
     log::info!("[Discovery] Continuous mDNS browsing started");
 
-    // Per-fullname timestamp of the most recent ServiceFound event. When the
-    // matching ServiceResolved arrives we compute elapsed and record it as
-    // a latency sample for the device — the gap is a usable signal for
-    // mDNS path health (network congestion or mdns-sd throughput pressure).
-    // Entries are removed on Resolved/Removed and periodically pruned on
-    // recv timeout so the map doesn't grow unbounded on lost-to-Resolve
-    // devices (e.g. if the daemon restarts mid-session).
-    let mut pending_found: HashMap<String, Instant> = HashMap::new();
-    const PENDING_FOUND_TTL: Duration = Duration::from_secs(10);
+    // Per-fullname timestamp of the most recent *accepted* ServiceResolved
+    // event. The interval between two accepted events for the same service
+    // instance is the cadence sample we record — TTL-driven refreshes emit
+    // Resolved continuously in steady state, so cadence stretching is a
+    // usable health proxy (device dropping off, LAN path flaking).
+    //
+    // Dedup: mdns-sd emits Resolved once per listening interface (8+ on a
+    // machine with docker / bridges). Resolved events that arrive within
+    // `RESOLVED_DEBOUNCE` of the last accepted one for the same fullname
+    // are treated as the same announcement seen on another interface and
+    // dropped without updating the baseline timestamp.
+    //
+    // Entries are cleared on ServiceRemoved so a device that disappears
+    // and comes back starts a fresh cadence measurement. Timeout branch
+    // also prunes stale entries (>30 min with no Resolved) to bound the
+    // map against churn.
+    let mut last_resolved_at: HashMap<String, Instant> = HashMap::new();
+    const RESOLVED_DEBOUNCE: Duration = Duration::from_secs(5);
+    const RESOLVED_ENTRY_TTL: Duration = Duration::from_secs(30 * 60);
 
     loop {
         if *stop_flag.lock().unwrap() {
@@ -237,14 +247,50 @@ fn mdns_browse_loop(
         }
 
         match receiver.recv_timeout(Duration::from_secs(2)) {
-            Ok(ServiceEvent::ServiceFound(_svc_type, fullname)) => {
-                pending_found.insert(fullname, Instant::now());
+            Ok(ServiceEvent::ServiceFound(_, _)) => {
+                // ServiceFound is informational — cadence capture needs only
+                // Resolved. (Pre-v0.18.0 used this to pair with Resolved for
+                // a one-shot resolution-latency sample; that model under-
+                // counted because TTL refreshes don't re-emit Found.)
             }
             Ok(ServiceEvent::ServiceResolved(info)) => {
                 let fullname = info.get_fullname().to_string();
-                let latency_ms = pending_found
-                    .remove(&fullname)
-                    .map(|t| t.elapsed().as_millis().min(u32::MAX as u128) as u32);
+                let now = Instant::now();
+                // Dedup across interfaces + classify event. DropDuplicate
+                // = redundant interface fire within the debounce window
+                // (skip all downstream work — already handled). FirstSeen
+                // = first Resolved for this instance (proceed, no sample
+                // yet — next one seeds the first interval). Cadence(ms) =
+                // genuine refresh, record the interval.
+                enum ResolvedOutcome {
+                    DropDuplicate,
+                    FirstSeen,
+                    Cadence(u32),
+                }
+                let outcome = match last_resolved_at.get(&fullname) {
+                    Some(&prior) => {
+                        let elapsed = now.duration_since(prior);
+                        if elapsed < RESOLVED_DEBOUNCE {
+                            ResolvedOutcome::DropDuplicate
+                        } else {
+                            last_resolved_at.insert(fullname.clone(), now);
+                            ResolvedOutcome::Cadence(
+                                elapsed.as_millis().min(u32::MAX as u128) as u32,
+                            )
+                        }
+                    }
+                    None => {
+                        last_resolved_at.insert(fullname.clone(), now);
+                        ResolvedOutcome::FirstSeen
+                    }
+                };
+                if matches!(outcome, ResolvedOutcome::DropDuplicate) {
+                    continue;
+                }
+                let cadence_ms = match outcome {
+                    ResolvedOutcome::Cadence(ms) => Some(ms),
+                    _ => None,
+                };
 
                 let ip = match info.get_addresses_v4().iter().next() {
                     Some(addr) => addr.to_string(),
@@ -285,13 +331,13 @@ fn mdns_browse_loop(
                         // baseline, skip.
                         maybe_record_reset(&app_handle, &device.id, old_uptime, &device.system);
 
-                        // Record the mDNS Found→Resolved latency. `None` means
-                        // we resolved from a cache refresh without a matching
-                        // Found (normal after TTL roll-over) — skip silently.
-                        if let Some(ms) = latency_ms {
+                        // Record inter-Resolved cadence for this device.
+                        // `None` on the first Resolved since (re-)announcement
+                        // — no prior timestamp to measure from, seed only.
+                        if let Some(ms) = cadence_ms {
                             if let Some(db) = app_handle.try_state::<Database>() {
-                                if let Err(e) = db.record_mdns_latency(&device.id, ms) {
-                                    log::warn!("[Discovery] Failed to record mDNS latency for {}: {}", device.id, e);
+                                if let Err(e) = db.record_mdns_cadence(&device.id, ms) {
+                                    log::warn!("[Discovery] Failed to record mDNS cadence for {}: {}", device.id, e);
                                 }
                             }
                         }
@@ -330,9 +376,10 @@ fn mdns_browse_loop(
                 }
             }
             Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {
-                // Drop any pending Found timestamp for this instance so a
-                // later re-announcement starts a fresh measurement.
-                pending_found.remove(&fullname);
+                // Drop the cadence baseline for this instance so a later
+                // re-announcement starts a fresh measurement instead of
+                // recording a huge "interval" spanning the outage.
+                last_resolved_at.remove(&fullname);
 
                 let mut devs = devices.lock().unwrap();
                 let lost: Vec<String> = devs
@@ -364,13 +411,12 @@ fn mdns_browse_loop(
                 }
             }
             Err(_) => {
-                // Timeout — prune pending_found entries older than TTL.
-                // These are Found events that never produced a Resolved
-                // (e.g., the device disappeared before we could fetch
-                // records, or mdns-sd dropped the follow-up). Dropping
-                // them keeps the map bounded without needing a device_id
-                // to attribute the sample to.
-                pending_found.retain(|_, t| t.elapsed() < PENDING_FOUND_TTL);
+                // Timeout — prune last_resolved_at entries for instances
+                // we haven't seen Resolved for in a long time. Without a
+                // ServiceRemoved (some LAN disappearances don't produce
+                // one), the entry would otherwise sit forever and then
+                // record a pathological "interval" on re-announcement.
+                last_resolved_at.retain(|_, t| t.elapsed() < RESOLVED_ENTRY_TTL);
             }
             _ => {}
         }

@@ -1,4 +1,4 @@
-use crate::db::{Database, LogEntry, MdnsLatencySample, MetricPoint, ResetEvent};
+use crate::db::{Database, LogEntry, MdnsCadenceSample, MetricPoint, ResetEvent};
 use crate::device::Device;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -164,7 +164,7 @@ pub fn diagnose(
     let resets = db.get_resets(device_id, WINDOW_HOURS)?;
     findings.push(check_power_supply_stability(&resets));
 
-    let mdns_samples = db.get_mdns_samples(device_id, WINDOW_HOURS)?;
+    let mdns_samples = db.get_mdns_cadence_samples(device_id, WINDOW_HOURS)?;
     findings.push(check_mdns_latency(&mdns_samples));
 
     let nvs_writes = db.get_metrics(device_id, "_nvs_writes", WINDOW_HOURS)?;
@@ -1124,22 +1124,50 @@ fn check_power_supply_stability(resets: &[ResetEvent]) -> Finding {
     }
 }
 
-/// Rule: surface slow or unstable mDNS resolution. Reads trailing
-/// `ServiceFound → ServiceResolved` latency samples from the discovery
-/// daemon; escalates on elevated median (network-wide slowness) or a
-/// single spike (transient congestion / mdns-sd pressure). Below the
-/// minimum sample floor the rule is INFO — most freshly-discovered
-/// devices won't have 3 samples yet and we don't want a noisy green
-/// claim against a single lucky resolve.
-fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
+/// Rule: surface mDNS announcement cadence stretching beyond the
+/// expected TTL-driven refresh rate. Reads trailing inter-Resolved
+/// intervals; escalates on elevated p95 (announcements arriving late or
+/// being dropped). Below the minimum sample floor the rule is INFO —
+/// freshly-discovered devices won't have accumulated intervals yet, and
+/// cross-subnet devices (reached via the health-check loop) never will.
+///
+/// Threshold reasoning: ESPmDNS on Arduino advertises with a default
+/// 120s TTL and clients (mdns-sd-rs) re-query at ~80% of TTL, so a
+/// healthy steady state lands intervals in the 60–120s band. Thresholds
+/// reference the TTL rather than a hardcoded latency window:
+///   - p95 < 2.5× TTL (≤ 300s) → OK
+///   - p95 in [2.5×, 5×] TTL (300–600s) → WARN (occasional drops)
+///   - p95 ≥ 5× TTL (≥ 600s) → FAIL (likely offline / flaking)
+/// Keeping the rule id as `mdns_latency` so dashboards, alerts, and
+/// stored configurations referencing it don't churn across versions,
+/// even though the underlying signal is now cadence rather than
+/// Found→Resolved elapsed time.
+fn check_mdns_latency(samples: &[MdnsCadenceSample]) -> Finding {
     let id = "mdns_latency".to_string();
-    let title = "mDNS resolution latency".to_string();
+    let title = "mDNS announcement cadence".to_string();
 
     const MIN_SAMPLES: usize = 3;
-    const MEDIAN_WARN_MS: u32 = 100;
-    const MEDIAN_FAIL_MS: u32 = 500;
-    const SPIKE_WARN_MS: u32 = 1000;
-    const SPIKE_FAIL_MS: u32 = 3000;
+    const EXPECTED_TTL_S: u32 = 120;
+    const P95_WARN_S: u32 = 300;
+    const P95_FAIL_S: u32 = 600;
+
+    if samples.is_empty() {
+        // Distinct text from the "1-2 samples" case: 0 is the common
+        // cross-subnet shape (no multicast traversal, discovery happens
+        // via HTTP health-check), so it's worth calling out explicitly
+        // rather than lumping with "still ramping up."
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: format!(
+                "No mDNS cadence samples in last {}h. Cross-subnet devices are discovered via HTTP health-check instead (mDNS doesn't traverse subnets), so an empty reading is expected on those. Need \u{2265}{} for a reading.",
+                WINDOW_HOURS, MIN_SAMPLES,
+            ),
+            suggestion: None,
+            action: None,
+        };
+    }
 
     if samples.len() < MIN_SAMPLES {
         return Finding {
@@ -1147,7 +1175,7 @@ fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
             level: LEVEL_INFO.to_string(),
             title,
             detail: format!(
-                "{} mDNS timing sample{} in last {}h. Samples are captured only at device (re-)announcement — rare in steady state. Need \u{2265}{} for a reading.",
+                "{} mDNS cadence sample{} in last {}h. Each sample is the interval between TTL-driven re-announcements — need \u{2265}{} for a stable reading.",
                 samples.len(),
                 if samples.len() == 1 { "" } else { "s" },
                 WINDOW_HOURS,
@@ -1158,20 +1186,26 @@ fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
         };
     }
 
-    let mut ms: Vec<u32> = samples.iter().map(|s| s.latency_ms).collect();
+    let mut ms: Vec<u32> = samples.iter().map(|s| s.interval_ms).collect();
     ms.sort_unstable();
-    let median = ms[ms.len() / 2];
-    let max = *ms.last().unwrap();
+    let p50_s = ms[ms.len() / 2] / 1000;
+    // p95 index: ceil(0.95 * n) - 1, clamped to last. For n=3 this is 2
+    // (the max); for n=20 it is 18. Small samples lean on the max which
+    // is the intent — single-spike sensitivity at low N.
+    let p95_idx = (((samples.len() as f64) * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(samples.len() - 1);
+    let p95_s = ms[p95_idx] / 1000;
 
-    let (level, suggestion) = if median >= MEDIAN_FAIL_MS || max >= SPIKE_FAIL_MS {
+    let (level, suggestion) = if p95_s >= P95_FAIL_S {
         (
             LEVEL_FAIL,
-            Some("mDNS resolutions are consistently slow or spiking above 3s. Network path to the device is congested or mdns-sd on this machine is under CPU pressure. Check for packet loss (try `ping -c 10` against the device), a flaky WiFi dongle, or noisy neighbours; if those look clean, restart the desktop app to reset the mdns-sd daemon state."),
+            Some("mDNS announcements from this device are arriving far slower than the expected TTL refresh cadence. The device is likely dropping off the network intermittently, or the LAN path to it is lossy. Check WiFi signal (RSSI rule), confirm the device's uptime isn't cycling, and rule out the access-point side before chasing firmware — a spectrum-analyser scan or moving the device closer to the AP usually isolates this within a few minutes."),
         )
-    } else if median >= MEDIAN_WARN_MS || max >= SPIKE_WARN_MS {
+    } else if p95_s >= P95_WARN_S {
         (
             LEVEL_WARN,
-            Some("mDNS resolution is slower than healthy baseline. Intermittent spikes or elevated median; monitor — if the pattern holds, check network path first before chasing firmware."),
+            Some("mDNS cadence is stretched past healthy baseline — occasional announcements are being missed. Common causes: flaky WiFi, a saturated AP, or an overloaded mdns-sd daemon on this machine. If it persists, restart the desktop app to reset mdns-sd state; if that doesn't clear it, treat the LAN path as suspect."),
         )
     } else {
         (LEVEL_OK, None)
@@ -1182,12 +1216,13 @@ fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
         level: level.to_string(),
         title,
         detail: format!(
-            "{} sample{} in last {}h — median {}ms, max {}ms.",
+            "{} sample{} in last {}h — p50 {}s, p95 {}s (expected cadence \u{2248} {}s).",
             samples.len(),
             if samples.len() == 1 { "" } else { "s" },
             WINDOW_HOURS,
-            median,
-            max,
+            p50_s,
+            p95_s,
+            EXPECTED_TTL_S,
         ),
         suggestion: suggestion.map(|s| s.to_string()),
         action: None,
@@ -2116,85 +2151,124 @@ mod tests {
         assert!(!is_unexpected_reset("unknown"));
     }
 
-    // ─── mDNS latency ────────────────────────────────────────────────────
+    // ─── mDNS cadence ────────────────────────────────────────────────────
 
-    fn mdns_sample(latency_ms: u32, mins_ago: i64) -> MdnsLatencySample {
+    fn mdns_sample(interval_ms: u32, mins_ago: i64) -> MdnsCadenceSample {
         let ts = Utc::now() - Duration::minutes(mins_ago);
-        MdnsLatencySample {
-            latency_ms,
+        MdnsCadenceSample {
+            interval_ms,
             recorded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
         }
     }
 
     #[test]
     fn mdns_latency_info_when_no_samples() {
+        // Distinct "zero samples" path with cross-subnet explanation.
         let f = check_mdns_latency(&[]);
         assert_eq!(f.level, LEVEL_INFO);
-        assert!(f.detail.contains("0 mDNS"));
+        assert!(f.detail.contains("No mDNS cadence samples"));
+        assert!(
+            f.detail.contains("Cross-subnet"),
+            "0-sample text should explain cross-subnet discovery path; got: {}",
+            f.detail
+        );
     }
 
     #[test]
     fn mdns_latency_info_below_sample_floor() {
         // Two samples — still below the 3-sample minimum, don't claim a
         // reading yet.
-        let samples = vec![mdns_sample(25, 5), mdns_sample(30, 40)];
+        let samples = vec![mdns_sample(90_000, 5), mdns_sample(110_000, 40)];
         let f = check_mdns_latency(&samples);
         assert_eq!(f.level, LEVEL_INFO);
-        assert!(f.detail.contains("2 mDNS"));
+        assert!(f.detail.contains("2 mDNS cadence"), "detail: {}", f.detail);
     }
 
     #[test]
-    fn mdns_latency_ok_for_clean_fast_samples() {
+    fn mdns_latency_ok_for_healthy_cadence() {
+        // 10 samples in the expected 80-130s band — steady TTL refresh.
         let samples: Vec<_> = (0..10)
-            .map(|i| mdns_sample(15 + i * 2, (i as i64) * 30))
+            .map(|i| mdns_sample(80_000 + (i as u32) * 5_000, (i as i64) * 5))
             .collect();
         let f = check_mdns_latency(&samples);
-        assert_eq!(f.level, LEVEL_OK);
+        assert_eq!(f.level, LEVEL_OK, "detail: {}", f.detail);
         assert!(f.suggestion.is_none());
-        assert!(f.detail.contains("median"), "detail: {}", f.detail);
+        assert!(f.detail.contains("p50"), "detail: {}", f.detail);
+        assert!(f.detail.contains("p95"), "detail: {}", f.detail);
     }
 
     #[test]
-    fn mdns_latency_warn_on_single_spike() {
-        // Median stays fast but one sample breaks the 1s spike line.
-        let mut samples: Vec<_> = (0..9).map(|i| mdns_sample(20, (i as i64) * 30)).collect();
-        samples.push(mdns_sample(1200, 15));
+    fn mdns_latency_warn_on_stretched_p95() {
+        // p50 healthy (120s) but p95 lands in the WARN band (400s).
+        // With 20 samples, the 95th-percentile index is 18 (last=19),
+        // so values at indices 18+ drive the p95 read.
+        let mut samples: Vec<_> = (0..18)
+            .map(|i| mdns_sample(100_000 + (i as u32) * 2_000, (i as i64) * 5))
+            .collect();
+        samples.push(mdns_sample(400_000, 3));
+        samples.push(mdns_sample(420_000, 2));
         let f = check_mdns_latency(&samples);
-        assert_eq!(f.level, LEVEL_WARN);
+        assert_eq!(f.level, LEVEL_WARN, "detail: {}", f.detail);
         assert!(f.suggestion.is_some());
-        assert!(f.detail.contains("max 1200ms"), "detail: {}", f.detail);
     }
 
     #[test]
-    fn mdns_latency_warn_on_elevated_median() {
-        // Median in the WARN band (100-500ms) but no big spike.
-        let samples: Vec<_> = (0..7)
-            .map(|i| mdns_sample(150 + i * 10, (i as i64) * 40))
+    fn mdns_latency_fail_when_p95_past_fail_line() {
+        // p95 stretches past 600s — device very likely offline-ish.
+        let mut samples: Vec<_> = (0..18)
+            .map(|i| mdns_sample(100_000 + (i as u32) * 2_000, (i as i64) * 5))
             .collect();
+        samples.push(mdns_sample(700_000, 3));
+        samples.push(mdns_sample(750_000, 2));
         let f = check_mdns_latency(&samples);
-        assert_eq!(f.level, LEVEL_WARN);
-    }
-
-    #[test]
-    fn mdns_latency_fail_on_slow_median() {
-        let samples: Vec<_> = (0..9)
-            .map(|i| mdns_sample(600 + i * 20, (i as i64) * 30))
-            .collect();
-        let f = check_mdns_latency(&samples);
-        assert_eq!(f.level, LEVEL_FAIL);
+        assert_eq!(f.level, LEVEL_FAIL, "detail: {}", f.detail);
         assert!(
-            f.suggestion.as_ref().unwrap().contains("congested"),
-            "suggestion should surface network-path advice, got: {:?}", f.suggestion
+            f.suggestion.as_ref().unwrap().contains("dropping off"),
+            "FAIL suggestion should name the failure mode; got: {:?}",
+            f.suggestion
         );
     }
 
     #[test]
-    fn mdns_latency_fail_on_3s_plus_spike() {
-        // Median fine but a single sample breaks the 3s FAIL line.
-        let mut samples: Vec<_> = (0..9).map(|i| mdns_sample(40, (i as i64) * 30)).collect();
-        samples.push(mdns_sample(3200, 10));
+    fn mdns_latency_small_sample_single_spike_trips_fail() {
+        // n=3: p95_idx = ceil(0.95*3)-1 = 2 = last. A single extreme
+        // spike on a 3-sample set trips FAIL, which is the intended
+        // sensitivity at low N — we'd rather over-escalate than sit on
+        // a visible disruption.
+        let samples = vec![
+            mdns_sample(100_000, 30),
+            mdns_sample(120_000, 20),
+            mdns_sample(800_000, 5),
+        ];
         let f = check_mdns_latency(&samples);
-        assert_eq!(f.level, LEVEL_FAIL);
+        assert_eq!(f.level, LEVEL_FAIL, "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn mdns_latency_detail_reports_p50_p95_in_seconds() {
+        // Unit-conversion regression: the rule stores ms but the detail
+        // text reports seconds (human-readable for 100s cadences). Make
+        // the conversion explicit in a test so a future change can't
+        // silently mix units.
+        let samples: Vec<_> = (0..5)
+            .map(|_| mdns_sample(120_000, 10))
+            .collect();
+        let f = check_mdns_latency(&samples);
+        assert!(f.detail.contains("p50 120s"), "detail: {}", f.detail);
+        assert!(f.detail.contains("p95 120s"), "detail: {}", f.detail);
+        assert!(
+            f.detail.contains("expected cadence"),
+            "detail should mention expected cadence baseline; got: {}",
+            f.detail
+        );
+    }
+
+    #[test]
+    fn mdns_latency_rule_id_is_stable() {
+        // Dashboards and alert configs reference this id — it must not
+        // churn even though the underlying signal is now cadence.
+        let f = check_mdns_latency(&[]);
+        assert_eq!(f.id, "mdns_latency");
     }
 
     // ─── Flash-wear rate ─────────────────────────────────────────────────
