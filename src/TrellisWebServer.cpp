@@ -127,6 +127,7 @@ String TrellisWebServer::buildInfoJson() {
   sys["heap_free"] = telemetry.heapFree;
   sys["uptime_s"] = telemetry.uptimeSeconds;
   sys["chip"] = telemetry.chip;
+  sys["reset_reason"] = telemetry.resetReason;
 
   String output;
   serializeJson(doc, output);
@@ -303,6 +304,7 @@ void TrellisWebServer::broadcastHeartbeat(const TelemetryData& telemetry) {
   sys["heap_free"] = telemetry.heapFree;
   sys["uptime_s"] = telemetry.uptimeSeconds;
   sys["chip"] = telemetry.chip;
+  sys["reset_reason"] = telemetry.resetReason;
   String json;
   serializeJson(doc, json);
   _ws->broadcastTXT(json);
