@@ -25,9 +25,80 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 
+/// Initialize `env_logger`. When `TRELLIS_LOG` is set, logs go to a file
+/// (append mode) instead of stderr — useful when Trellis is launched from
+/// the tray and stderr is not reachable.
+///
+/// - `TRELLIS_LOG` unset / empty → stderr (default `env_logger` behavior)
+/// - `TRELLIS_LOG=1`             → `$HOME/.config/trellis/trellis.log`
+/// - `TRELLIS_LOG=<path>`        → that literal path
+///
+/// If `RUST_LOG` is unset and `TRELLIS_LOG` is active, level defaults to
+/// `info` so the file is useful without extra configuration.
+fn init_logging() {
+    let mut builder = env_logger::Builder::from_default_env();
+
+    let trellis_log = std::env::var("TRELLIS_LOG").ok().filter(|v| !v.is_empty());
+    let Some(val) = trellis_log else {
+        builder.init();
+        return;
+    };
+
+    if std::env::var_os("RUST_LOG").is_none() {
+        builder.filter_level(log::LevelFilter::Info);
+    }
+
+    let path: std::path::PathBuf = if val == "1" {
+        match std::env::var("HOME") {
+            Ok(home) => std::path::PathBuf::from(home).join(".config/trellis/trellis.log"),
+            Err(_) => {
+                eprintln!("TRELLIS_LOG=1 requested but $HOME is unset; logging to stderr");
+                builder.init();
+                return;
+            }
+        }
+    } else {
+        std::path::PathBuf::from(val)
+    };
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "TRELLIS_LOG: failed to create {}: {}; logging to stderr",
+                    parent.display(),
+                    e
+                );
+                builder.init();
+                return;
+            }
+        }
+    }
+
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+            builder.init();
+            eprintln!("Trellis logging to {}", path.display());
+        }
+        Err(e) => {
+            eprintln!(
+                "TRELLIS_LOG: failed to open {}: {}; logging to stderr",
+                path.display(),
+                e
+            );
+            builder.init();
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    init_logging();
 
     let connection_manager = Arc::new(ConnectionManager::new());
     let mqtt_bridge = Arc::new(MqttBridge::new(connection_manager.clone()));
