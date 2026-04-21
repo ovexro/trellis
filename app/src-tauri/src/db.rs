@@ -1409,6 +1409,54 @@ impl Database {
             out.push(r.map_err(|e| e.to_string())?);
         }
 
+        // Reset events — one row per observed reboot, bucketed by
+        // reset_reason so the frontend can render the marker with a color
+        // that tracks the `power_supply_stability` rule's taxonomy:
+        //   brownout → reset_brownout (error, red)
+        //   panic / watchdog family → reset_fault (warn, purple)
+        //   poweron / software / external / deepsleep / unknown → reset (info, slate)
+        let mut stmt = conn
+            .prepare(
+                "SELECT reset_reason, recorded_at FROM device_reset_history
+                 WHERE device_id = ?1 AND recorded_at >= datetime('now', ?2)
+                 ORDER BY recorded_at ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id, window], |row| {
+                let reason: String = row.get(0)?;
+                let ts: String = row.get(1)?;
+                let (kind, severity) = match reason.as_str() {
+                    "brownout" => ("reset_brownout", "error"),
+                    "panic" | "watchdog" | "task_watchdog" | "interrupt_watchdog" => {
+                        ("reset_fault", "warn")
+                    }
+                    _ => ("reset", "info"),
+                };
+                let label = match reason.as_str() {
+                    "brownout" => "Brownout reset".to_string(),
+                    "panic" => "Panic reset".to_string(),
+                    "watchdog" => "Watchdog reset".to_string(),
+                    "task_watchdog" => "Task-watchdog reset".to_string(),
+                    "interrupt_watchdog" => "Interrupt-watchdog reset".to_string(),
+                    "poweron" => "Power-on reset".to_string(),
+                    "software" => "Software reset".to_string(),
+                    "external" => "External reset".to_string(),
+                    "deepsleep" => "Deep-sleep wake".to_string(),
+                    other => format!("Reset ({})", other),
+                };
+                Ok(Annotation {
+                    timestamp: ts,
+                    kind: kind.to_string(),
+                    label,
+                    severity: severity.to_string(),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+
         // State transitions + device-reported errors/warnings
         let mut stmt = conn
             .prepare(

@@ -2247,12 +2247,15 @@
     // identifier written by the backend (see db.rs get_annotations).
     function annColor(kind) {
       switch (kind) {
-        case 'ota': return '#3b82f6';      // blue — firmware upload
-        case 'online': return '#10b981';   // green — device came back
-        case 'offline': return '#ef4444';  // red — device dropped
-        case 'error': return '#f59e0b';    // amber — device-reported error
-        case 'warn': return '#f59e0b';     // amber — device-reported warning
-        default: return '#6b7280';         // gray fallback
+        case 'ota': return '#3b82f6';           // blue — firmware upload
+        case 'online': return '#10b981';        // green — device came back
+        case 'offline': return '#ef4444';       // red — device dropped
+        case 'error': return '#f59e0b';         // amber — device-reported error
+        case 'warn': return '#f59e0b';          // amber — device-reported warning
+        case 'reset_brownout': return '#dc2626'; // strong red — brownout reset
+        case 'reset_fault': return '#a855f7';    // purple — panic / watchdog
+        case 'reset': return '#64748b';          // slate — routine reset
+        default: return '#6b7280';               // gray fallback
       }
     }
     function annLabel(kind) {
@@ -2262,6 +2265,9 @@
         case 'offline': return 'Offline';
         case 'error': return 'Error';
         case 'warn': return 'Warning';
+        case 'reset_brownout': return 'Brownout';
+        case 'reset_fault': return 'Fault reset';
+        case 'reset': return 'Reset';
         default: return kind;
       }
     }
@@ -2379,7 +2385,7 @@
       // Legend row — only shown if any annotations landed on this chart.
       // Items appear in a stable order so charts across the page look
       // consistent regardless of which kinds were written first.
-      var legendOrder = ['ota', 'online', 'offline', 'warn', 'error'];
+      var legendOrder = ['ota', 'online', 'offline', 'warn', 'error', 'reset_brownout', 'reset_fault', 'reset'];
       var kinds = legendOrder.filter(function(k) { return annKindsPresent[k]; });
       // Append any unknown/future kinds not in the fixed order.
       Object.keys(annKindsPresent).forEach(function(k) {
@@ -3125,6 +3131,10 @@
         toast('Could not open device detail', 'error');
         return;
       }
+      // Reset markers don't have a corresponding device_logs row — they
+      // come from device_reset_history directly. The timeline position is
+      // the useful signal; no row to scroll to.
+      if (kind && kind.indexOf('reset') === 0) return;
       // Two render targets: 'fw' for OTA annotations, 'logs' for
       // everything else (state/error/warn — all live in device_logs).
       var section = kind === 'ota' ? 'fw' : 'logs';

@@ -60,6 +60,9 @@ const ANN_COLOR: Record<string, string> = {
   offline: "#ef4444",
   error: "#f59e0b",
   warn: "#f59e0b",
+  reset_brownout: "#dc2626",
+  reset_fault: "#a855f7",
+  reset: "#64748b",
 };
 const ANN_FALLBACK = "#6b7280";
 const ANN_LABEL: Record<string, string> = {
@@ -68,8 +71,20 @@ const ANN_LABEL: Record<string, string> = {
   offline: "Offline",
   error: "Error",
   warn: "Warning",
+  reset_brownout: "Brownout",
+  reset_fault: "Fault reset",
+  reset: "Reset",
 };
-const LEGEND_ORDER = ["ota", "online", "offline", "warn", "error"];
+const LEGEND_ORDER = [
+  "ota",
+  "online",
+  "offline",
+  "warn",
+  "error",
+  "reset_brownout",
+  "reset_fault",
+  "reset",
+];
 
 // Chart dimensions in viewBox units. CSS scales via width:100%.
 const W = 400;

@@ -36,6 +36,8 @@ export default function DeviceDetail() {
   const handleAnnotationClick = useCallback(
     (ann: { timestamp: string; kind: string; label: string }) => {
       if (ann.kind === "ota") return;
+      // Reset markers don't have a corresponding device_logs row.
+      if (ann.kind.startsWith("reset")) return;
       logsRef.current?.scrollToLog(ann.timestamp, "events");
     },
     []
