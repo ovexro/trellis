@@ -2,7 +2,7 @@ use mdns_sd::{ServiceDaemon, ServiceEvent};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -219,6 +219,16 @@ fn mdns_browse_loop(
 
     log::info!("[Discovery] Continuous mDNS browsing started");
 
+    // Per-fullname timestamp of the most recent ServiceFound event. When the
+    // matching ServiceResolved arrives we compute elapsed and record it as
+    // a latency sample for the device — the gap is a usable signal for
+    // mDNS path health (network congestion or mdns-sd throughput pressure).
+    // Entries are removed on Resolved/Removed and periodically pruned on
+    // recv timeout so the map doesn't grow unbounded on lost-to-Resolve
+    // devices (e.g. if the daemon restarts mid-session).
+    let mut pending_found: HashMap<String, Instant> = HashMap::new();
+    const PENDING_FOUND_TTL: Duration = Duration::from_secs(10);
+
     loop {
         if *stop_flag.lock().unwrap() {
             let _ = mdns.shutdown();
@@ -226,7 +236,15 @@ fn mdns_browse_loop(
         }
 
         match receiver.recv_timeout(Duration::from_secs(2)) {
+            Ok(ServiceEvent::ServiceFound(_svc_type, fullname)) => {
+                pending_found.insert(fullname, Instant::now());
+            }
             Ok(ServiceEvent::ServiceResolved(info)) => {
+                let fullname = info.get_fullname().to_string();
+                let latency_ms = pending_found
+                    .remove(&fullname)
+                    .map(|t| t.elapsed().as_millis().min(u32::MAX as u128) as u32);
+
                 let ip = match info.get_addresses_v4().iter().next() {
                     Some(addr) => addr.to_string(),
                     None => continue,
@@ -266,6 +284,17 @@ fn mdns_browse_loop(
                         // baseline, skip.
                         maybe_record_reset(&app_handle, &device.id, old_uptime, &device.system);
 
+                        // Record the mDNS Found→Resolved latency. `None` means
+                        // we resolved from a cache refresh without a matching
+                        // Found (normal after TTL roll-over) — skip silently.
+                        if let Some(ms) = latency_ms {
+                            if let Some(db) = app_handle.try_state::<Database>() {
+                                if let Err(e) = db.record_mdns_latency(&device.id, ms) {
+                                    log::warn!("[Discovery] Failed to record mDNS latency for {}: {}", device.id, e);
+                                }
+                            }
+                        }
+
                         // Connect WebSocket for live updates
                         conn_mgr.connect_device(&device_info.id, &ip, port + 1);
 
@@ -300,6 +329,10 @@ fn mdns_browse_loop(
                 }
             }
             Ok(ServiceEvent::ServiceRemoved(_, fullname)) => {
+                // Drop any pending Found timestamp for this instance so a
+                // later re-announcement starts a fresh measurement.
+                pending_found.remove(&fullname);
+
                 let mut devs = devices.lock().unwrap();
                 let lost: Vec<String> = devs
                     .iter()
@@ -329,7 +362,15 @@ fn mdns_browse_loop(
                     log::info!("[Discovery] Device lost: {}", id);
                 }
             }
-            Err(_) => continue, // Timeout — just loop
+            Err(_) => {
+                // Timeout — prune pending_found entries older than TTL.
+                // These are Found events that never produced a Resolved
+                // (e.g., the device disappeared before we could fetch
+                // records, or mdns-sd dropped the follow-up). Dropping
+                // them keeps the map bounded without needing a device_id
+                // to attribute the sample to.
+                pending_found.retain(|_, t| t.elapsed() < PENDING_FOUND_TTL);
+            }
             _ => {}
         }
     }

@@ -1,4 +1,4 @@
-use crate::db::{Database, LogEntry, MetricPoint, ResetEvent};
+use crate::db::{Database, LogEntry, MdnsLatencySample, MetricPoint, ResetEvent};
 use crate::device::Device;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -163,6 +163,9 @@ pub fn diagnose(
 
     let resets = db.get_resets(device_id, WINDOW_HOURS)?;
     findings.push(check_power_supply_stability(&resets));
+
+    let mdns_samples = db.get_mdns_samples(device_id, WINDOW_HOURS)?;
+    findings.push(check_mdns_latency(&mdns_samples));
 
     let overall = roll_up(&findings);
 
@@ -1118,6 +1121,76 @@ fn check_power_supply_stability(resets: &[ResetEvent]) -> Finding {
     }
 }
 
+/// Rule: surface slow or unstable mDNS resolution. Reads trailing
+/// `ServiceFound → ServiceResolved` latency samples from the discovery
+/// daemon; escalates on elevated median (network-wide slowness) or a
+/// single spike (transient congestion / mdns-sd pressure). Below the
+/// minimum sample floor the rule is INFO — most freshly-discovered
+/// devices won't have 3 samples yet and we don't want a noisy green
+/// claim against a single lucky resolve.
+fn check_mdns_latency(samples: &[MdnsLatencySample]) -> Finding {
+    let id = "mdns_latency".to_string();
+    let title = "mDNS resolution latency".to_string();
+
+    const MIN_SAMPLES: usize = 3;
+    const MEDIAN_WARN_MS: u32 = 100;
+    const MEDIAN_FAIL_MS: u32 = 500;
+    const SPIKE_WARN_MS: u32 = 1000;
+    const SPIKE_FAIL_MS: u32 = 3000;
+
+    if samples.len() < MIN_SAMPLES {
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: format!(
+                "{} mDNS resolution{} in last {}h — need at least {} for a reading.",
+                samples.len(),
+                if samples.len() == 1 { "" } else { "s" },
+                WINDOW_HOURS,
+                MIN_SAMPLES,
+            ),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    let mut ms: Vec<u32> = samples.iter().map(|s| s.latency_ms).collect();
+    ms.sort_unstable();
+    let median = ms[ms.len() / 2];
+    let max = *ms.last().unwrap();
+
+    let (level, suggestion) = if median >= MEDIAN_FAIL_MS || max >= SPIKE_FAIL_MS {
+        (
+            LEVEL_FAIL,
+            Some("mDNS resolutions are consistently slow or spiking above 3s. Network path to the device is congested or mdns-sd on this machine is under CPU pressure. Check for packet loss (try `ping -c 10` against the device), a flaky WiFi dongle, or noisy neighbours; if those look clean, restart the desktop app to reset the mdns-sd daemon state."),
+        )
+    } else if median >= MEDIAN_WARN_MS || max >= SPIKE_WARN_MS {
+        (
+            LEVEL_WARN,
+            Some("mDNS resolution is slower than healthy baseline. Intermittent spikes or elevated median; monitor — if the pattern holds, check network path first before chasing firmware."),
+        )
+    } else {
+        (LEVEL_OK, None)
+    };
+
+    Finding {
+        id,
+        level: level.to_string(),
+        title,
+        detail: format!(
+            "{} sample{} in last {}h — median {}ms, max {}ms.",
+            samples.len(),
+            if samples.len() == 1 { "" } else { "s" },
+            WINDOW_HOURS,
+            median,
+            max,
+        ),
+        suggestion: suggestion.map(|s| s.to_string()),
+        action: None,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
@@ -1926,5 +1999,86 @@ mod tests {
         assert!(!is_unexpected_reset("external"));
         assert!(!is_unexpected_reset("deepsleep"));
         assert!(!is_unexpected_reset("unknown"));
+    }
+
+    // ─── mDNS latency ────────────────────────────────────────────────────
+
+    fn mdns_sample(latency_ms: u32, mins_ago: i64) -> MdnsLatencySample {
+        let ts = Utc::now() - Duration::minutes(mins_ago);
+        MdnsLatencySample {
+            latency_ms,
+            recorded_at: ts.format("%Y-%m-%d %H:%M:%S").to_string(),
+        }
+    }
+
+    #[test]
+    fn mdns_latency_info_when_no_samples() {
+        let f = check_mdns_latency(&[]);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("0 mDNS"));
+    }
+
+    #[test]
+    fn mdns_latency_info_below_sample_floor() {
+        // Two samples — still below the 3-sample minimum, don't claim a
+        // reading yet.
+        let samples = vec![mdns_sample(25, 5), mdns_sample(30, 40)];
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("2 mDNS"));
+    }
+
+    #[test]
+    fn mdns_latency_ok_for_clean_fast_samples() {
+        let samples: Vec<_> = (0..10)
+            .map(|i| mdns_sample(15 + i * 2, (i as i64) * 30))
+            .collect();
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.suggestion.is_none());
+        assert!(f.detail.contains("median"), "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn mdns_latency_warn_on_single_spike() {
+        // Median stays fast but one sample breaks the 1s spike line.
+        let mut samples: Vec<_> = (0..9).map(|i| mdns_sample(20, (i as i64) * 30)).collect();
+        samples.push(mdns_sample(1200, 15));
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_WARN);
+        assert!(f.suggestion.is_some());
+        assert!(f.detail.contains("max 1200ms"), "detail: {}", f.detail);
+    }
+
+    #[test]
+    fn mdns_latency_warn_on_elevated_median() {
+        // Median in the WARN band (100-500ms) but no big spike.
+        let samples: Vec<_> = (0..7)
+            .map(|i| mdns_sample(150 + i * 10, (i as i64) * 40))
+            .collect();
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_WARN);
+    }
+
+    #[test]
+    fn mdns_latency_fail_on_slow_median() {
+        let samples: Vec<_> = (0..9)
+            .map(|i| mdns_sample(600 + i * 20, (i as i64) * 30))
+            .collect();
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_FAIL);
+        assert!(
+            f.suggestion.as_ref().unwrap().contains("congested"),
+            "suggestion should surface network-path advice, got: {:?}", f.suggestion
+        );
+    }
+
+    #[test]
+    fn mdns_latency_fail_on_3s_plus_spike() {
+        // Median fine but a single sample breaks the 3s FAIL line.
+        let mut samples: Vec<_> = (0..9).map(|i| mdns_sample(40, (i as i64) * 30)).collect();
+        samples.push(mdns_sample(3200, 10));
+        let f = check_mdns_latency(&samples);
+        assert_eq!(f.level, LEVEL_FAIL);
     }
 }

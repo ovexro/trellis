@@ -1325,6 +1325,50 @@ impl Database {
         Ok(out)
     }
 
+    // ─── mDNS latency samples (network health signal) ─────────────────────
+
+    /// Record a single mDNS resolution latency sample for a device. Called
+    /// from the discovery browse loop after a `ServiceFound → ServiceResolved`
+    /// pair completes for the device, using the elapsed time as the sample.
+    pub fn record_mdns_latency(&self, device_id: &str, latency_ms: u32) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO device_mdns_latency (device_id, latency_ms, recorded_at)
+             VALUES (?1, ?2, datetime('now'))",
+            rusqlite::params![device_id, latency_ms],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Return mDNS latency samples for a device within the given rolling
+    /// window, newest-first. Cap at 50 to bound memory on a chatty network —
+    /// the rule only needs enough points to compute a stable median.
+    pub fn get_mdns_samples(&self, device_id: &str, hours: u32) -> Result<Vec<MdnsLatencySample>, String> {
+        let conn = self.conn.lock().unwrap();
+        let window = format!("-{} hours", hours);
+        let mut stmt = conn
+            .prepare(
+                "SELECT latency_ms, recorded_at FROM device_mdns_latency
+                 WHERE device_id = ?1 AND recorded_at >= datetime('now', ?2)
+                 ORDER BY recorded_at DESC LIMIT 50",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params![device_id, window], |row| {
+                Ok(MdnsLatencySample {
+                    latency_ms: row.get::<_, i64>(0)? as u32,
+                    recorded_at: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     // ─── Annotations (chart event markers) ───────────────────────────────
 
     /// Collect point-in-time events for a device within the given rolling
@@ -1780,6 +1824,16 @@ pub struct ResetEvent {
     pub recorded_at: String,
 }
 
+/// One row of `device_mdns_latency`. Each sample is a single
+/// `ServiceFound → ServiceResolved` elapsed time captured in
+/// `mdns_browse_loop`. The mdns_latency diagnostics rule reads trailing
+/// samples to surface slow-network / mdns-sd-pressure situations.
+#[derive(Debug, Clone, Serialize)]
+pub struct MdnsLatencySample {
+    pub latency_ms: u32,
+    pub recorded_at: String,
+}
+
 /// Public-facing view of an API token row. The plaintext token is **never**
 /// stored or returned after creation — only its SHA-256 digest lives in
 /// SQLite. List/get endpoints return this struct so the UI can show name,
@@ -1939,6 +1993,19 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             FOREIGN KEY (device_id) REFERENCES devices(id)
         );
 
+        -- Per-sample mDNS resolution latency (ServiceFound → ServiceResolved
+        -- elapsed, in ms) captured inside the discovery daemon. Feeds the
+        -- mdns_latency diagnostics rule; a slow median or a single large
+        -- spike is a usable signal for network path congestion or mdns-sd
+        -- CPU pressure on the desktop side.
+        CREATE TABLE IF NOT EXISTS device_mdns_latency (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT NOT NULL,
+            latency_ms INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (device_id) REFERENCES devices(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_metrics_device_time
             ON metrics(device_id, metric_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_logs_device_time
@@ -1951,6 +2018,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ON device_logs(timestamp);
         CREATE INDEX IF NOT EXISTS idx_reset_device_time
             ON device_reset_history(device_id, recorded_at);
+        CREATE INDEX IF NOT EXISTS idx_mdns_device_time
+            ON device_mdns_latency(device_id, recorded_at);
         ",
     )?;
 
