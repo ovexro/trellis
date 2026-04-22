@@ -228,6 +228,67 @@
     .control-label { font-size: 0.85rem; color: var(--text-dim); flex-shrink: 0; }
     .control-value { display: flex; align-items: center; gap: 0.5rem; }
 
+    /* ── Inline nameplate-watts row under a switch (energy tracking) ── */
+    .cap-watts-row {
+      display: flex; align-items: center; gap: 0.35rem;
+      padding: 0 0 0.35rem 0.1rem;
+      font-size: 0.7rem; color: var(--text-faint);
+      min-height: 1rem;
+    }
+    .cap-watts-row .watts-bolt { opacity: 0.55; }
+    .cap-watts-row .watts-bolt.set { color: #fbbf24; opacity: 0.75; }
+    .cap-watts-btn {
+      background: none; border: none; padding: 0; cursor: pointer;
+      color: var(--text-faint); font-size: 0.7rem;
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-family: inherit;
+    }
+    .cap-watts-btn:hover { color: #fbbf24; }
+    .cap-watts-btn .watts-val { font-variant-numeric: tabular-nums; }
+    .cap-watts-input {
+      width: 3.5rem; padding: 0.1rem 0.3rem;
+      background: #18181b; border: 1px solid #3f3f46; border-radius: 3px;
+      color: var(--text); font-size: 0.7rem; font-family: inherit;
+      font-variant-numeric: tabular-nums;
+    }
+    .cap-watts-input:focus { outline: none; border-color: rgba(251,191,36,0.4); }
+    .cap-watts-row .watts-mini-btn {
+      background: none; border: none; padding: 0.1rem; cursor: pointer;
+      color: var(--text-faint); display: inline-flex; align-items: center;
+    }
+    .cap-watts-row .watts-mini-btn.ok:hover { color: var(--accent); }
+    .cap-watts-row .watts-mini-btn.cancel:hover { color: var(--text); }
+
+    /* ── Device Energy card ── */
+    .energy-total {
+      display: flex; align-items: baseline; gap: 0.5rem;
+    }
+    .energy-total-val {
+      font-size: 1.25rem; font-family: var(--font-mono);
+      color: var(--text); font-variant-numeric: tabular-nums;
+    }
+    .energy-cost {
+      font-size: 0.8rem; color: var(--text-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .energy-bolt { color: #fbbf24; opacity: 0.8; }
+    .energy-breakdown {
+      margin-top: 0.6rem; padding-top: 0.6rem;
+      border-top: 1px solid rgba(255,255,255,0.04);
+      display: flex; flex-direction: column; gap: 0.3rem;
+    }
+    .energy-row {
+      display: flex; justify-content: space-between;
+      font-size: 0.75rem; color: var(--text-dim);
+    }
+    .energy-row .energy-row-right {
+      display: flex; gap: 0.75rem; font-variant-numeric: tabular-nums;
+    }
+    .energy-row-right .ontime { color: var(--text-faint); }
+    .energy-tracked {
+      margin-top: 0.6rem; font-size: 0.7rem; color: var(--text-faint);
+    }
+
     /* ── Toggle Switch ── */
     .toggle {
       width: 44px; height: 24px; border-radius: 12px;
@@ -1121,6 +1182,13 @@
     let allPositions = [];
     let currentRoomFilter = null;
     var sceneFromRoom = null; // { roomId, name, templates: {switch, slider, color} }
+    // Energy tracking: per-capability nameplate watts (map capId→watts) for the
+    // currently-open detail panel, plus the active window + last-loaded report.
+    // Tariff is fetched lazily once per session.
+    var detailCapMeta = {};
+    var detailEnergyRange = 24;
+    var detailEnergyReport = null;
+    var energyTariff = null; // { costPerKwh: number|null, currency: string } once loaded
 
     /* ────────────────────────── API Helpers ────────────────────────── */
     /*
@@ -2102,6 +2170,8 @@
           // re-rendered after sendCommand (renderDevices only touches
           // the card list), so a hardcoded onclick would go stale and
           // repeat the previous value on every click.
+          // The capWatts placeholder below the toggle is populated by
+          // renderCapWatts() once openDeviceDetail has fetched capability-meta.
           return `<div class="control-row">
             <span class="control-label">${label}</span>
             <div class="control-value">
@@ -2110,7 +2180,8 @@
                 data-trellis-cap="${esc(cap.id)}"
                 ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onclick="sendToggle(event, '${esc(deviceId)}', '${esc(cap.id)}')"`}></button>
             </div>
-          </div>`;
+          </div>
+          <div class="cap-watts-row" id="capWatts-${esc(deviceId)}-${esc(cap.id)}"></div>`;
 
         case 'slider': {
           const min = cap.min != null ? cap.min : 0;
@@ -3299,6 +3370,20 @@
         </div>`;
       }
 
+      // Energy — populated by loadDeviceEnergy() once capability-meta loads.
+      // Stays hidden until at least one switch has nameplate_watts set.
+      html += `<div class="detail-section" id="detailEnergySection" style="display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;gap:0.5rem;flex-wrap:wrap;">
+          <div class="detail-section-title" style="margin-bottom:0;">Energy</div>
+          <div class="chart-range-btns" id="detailEnergyRangeBtns">
+            <button class="chart-range-btn active" data-hours="24" onclick="setEnergyRange(24)">24h</button>
+            <button class="chart-range-btn" data-hours="168" onclick="setEnergyRange(168)">7d</button>
+            <button class="chart-range-btn" data-hours="720" onclick="setEnergyRange(720)">30d</button>
+          </div>
+        </div>
+        <div id="detailEnergyContent" style="font-size:0.75rem;color:var(--text-faint);">Loading&hellip;</div>
+      </div>`;
+
       // Links
       if (online && dev.id) {
         html += `<div class="detail-section">
@@ -3380,15 +3465,24 @@
         if (closeBtn) closeBtn.focus();
       });
 
-      // Fetch logs, firmware history, and sparklines in parallel.
-      // Logs limit matches the annotation cap (200) so any clicked
-      // annotation is guaranteed to find its underlying row in view.
+      // Reset per-detail energy state on panel open so the previous device's
+      // watts map doesn't leak into renderCapWatts for this one.
+      detailCapMeta = {};
+      detailEnergyReport = null;
+      detailEnergyRange = 24;
+
+      // Fetch logs, firmware history, sparklines, and energy-tracking data
+      // in parallel. Logs limit matches the annotation cap (200) so any
+      // clicked annotation is guaranteed to find its underlying row in view.
       const logsP = api(`/api/devices/${id}/logs?limit=200`).catch(function() { return null; });
       const fwP = api(`/api/devices/${id}/firmware`).catch(function() { return null; });
       const rssiP = api(`/api/devices/${id}/metrics?metric=_rssi&hours=1`).catch(function() { return null; });
       const heapP = api(`/api/devices/${id}/metrics?metric=_heap&hours=1`).catch(function() { return null; });
+      const capMetaP = api(`/api/devices/${id}/capability-meta`).catch(function() { return null; });
+      const tariffP = loadEnergyTariff();
 
-      const [logs, fwHist, rssiPts, heapPts] = await Promise.all([logsP, fwP, rssiP, heapP]);
+      const [logs, fwHist, rssiPts, heapPts, capMeta] = await Promise.all([logsP, fwP, rssiP, heapP, capMetaP]);
+      await tariffP;
 
       // Stale-fetch guard: the user may have opened a different device
       // while we were fetching. If so, bail — the newer call will render.
@@ -3430,6 +3524,26 @@
       // Load metric charts
       loadDetailCharts(id, dev.capabilities);
 
+      // Hydrate nameplate-watts placeholders under each switch and load the
+      // energy report. The section hides itself when no switch has watts set.
+      if (Array.isArray(capMeta)) {
+        for (var ci = 0; ci < capMeta.length; ci++) {
+          var m = capMeta[ci];
+          if (m && m.nameplate_watts != null) {
+            detailCapMeta[m.capability_id] = m.nameplate_watts;
+          }
+        }
+      }
+      if (dev.capabilities) {
+        for (var sci = 0; sci < dev.capabilities.length; sci++) {
+          var sc = dev.capabilities[sci];
+          if (sc.type === 'switch') {
+            renderCapWatts(id, sc.id);
+          }
+        }
+      }
+      loadDeviceEnergy(id);
+
       // Restore saved GitHub OTA repo binding
       var ghInput = document.getElementById('ghOtaRepo');
       if (ghInput) {
@@ -3437,6 +3551,195 @@
           .then(function(r) { if (r && r.value) ghInput.value = r.value; })
           .catch(function() {});
       }
+    }
+
+    /* ─── Energy tracking (web parity with desktop) ───────────────────
+       Renders the per-switch ⚡ watts editor (admin) or readout (viewer) and
+       the aggregate Energy card. All state lives in detailCapMeta +
+       detailEnergyReport for the currently-open detail panel.              */
+    async function loadEnergyTariff() {
+      if (energyTariff) return energyTariff;
+      var cost = null;
+      var cur = 'USD';
+      try {
+        var r = await api('/api/settings/cost_per_kwh');
+        if (r && r.value) {
+          var n = Number(r.value);
+          if (Number.isFinite(n) && n > 0) cost = n;
+        }
+      } catch (e) { /* 404 = unset, fine */ }
+      try {
+        var r2 = await api('/api/settings/currency');
+        if (r2 && r2.value && typeof r2.value === 'string' && r2.value.trim()) cur = r2.value.trim();
+      } catch (e) {}
+      energyTariff = { costPerKwh: cost, currency: cur };
+      return energyTariff;
+    }
+
+    function fmtEnergyWh(wh) {
+      if (wh < 1) return wh.toFixed(2) + ' Wh';
+      if (wh < 1000) return wh.toFixed(1) + ' Wh';
+      return (wh / 1000).toFixed(2) + ' kWh';
+    }
+    function fmtOnTimeSec(s) {
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm';
+      var h = Math.floor(s / 3600);
+      var m = Math.floor((s % 3600) / 60);
+      return m > 0 ? (h + 'h ' + m + 'm') : (h + 'h');
+    }
+    function fmtTrackedSinceTs(ts) {
+      if (!ts) return null;
+      var d = new Date(ts.replace(' ', 'T') + 'Z');
+      if (isNaN(d.getTime())) return null;
+      return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+    function fmtEnergyCost(wh, costPerKwh, currency) {
+      var kwh = wh / 1000;
+      var cost = kwh * costPerKwh;
+      return '≈ ' + currency + ' ' + cost.toFixed(cost < 1 ? 3 : 2);
+    }
+
+    /* Render the ⚡ row under a single switch. Called once per switch when the
+       detail panel opens (after capability-meta has loaded) and re-called on
+       every save/cancel/edit transition so the row can swap between readout,
+       edit, and saving states without touching the rest of the panel.        */
+    function renderCapWatts(deviceId, capId, opts) {
+      var el = document.getElementById('capWatts-' + deviceId + '-' + capId);
+      if (!el) return;
+      var watts = detailCapMeta[capId];
+      var editing = !!(opts && opts.editing);
+      if (editing && !isViewer) {
+        var initial = watts != null ? String(watts) : '';
+        el.innerHTML = '<span class="watts-bolt' + (watts != null ? ' set' : '') + '">⚡</span>'
+          + '<input type="number" min="0" step="0.1" class="cap-watts-input" placeholder="watts"'
+          + ' value="' + esc(initial) + '"'
+          + ' onkeydown="if(event.key===\'Enter\')saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',this);'
+          + 'if(event.key===\'Escape\')renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">'
+          + '<span>W</span>'
+          + '<button class="watts-mini-btn ok" title="Save"'
+          + ' onclick="saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',this.parentElement.querySelector(\'.cap-watts-input\'))">✓</button>'
+          + '<button class="watts-mini-btn cancel" title="Cancel"'
+          + ' onclick="renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">×</button>';
+        var inp = el.querySelector('.cap-watts-input');
+        if (inp) inp.focus();
+        return;
+      }
+      var hasWatts = watts != null;
+      if (isViewer) {
+        el.innerHTML = hasWatts
+          ? '<span class="watts-bolt set">⚡</span>'
+            + '<span class="watts-val">' + esc(String(watts)) + ' W</span>'
+          : '';
+        return;
+      }
+      el.innerHTML = '<button class="cap-watts-btn" type="button"'
+        + ' title="' + (hasWatts ? 'Edit nameplate watts' : 'Set nameplate watts to track estimated energy') + '"'
+        + ' onclick="renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',{editing:true})">'
+        + '<span class="watts-bolt' + (hasWatts ? ' set' : '') + '">⚡</span>'
+        + (hasWatts ? '<span class="watts-val">' + esc(String(watts)) + ' W</span>' : '<span>set watts</span>')
+        + '</button>';
+    }
+
+    async function saveCapWatts(deviceId, capId, inputEl) {
+      if (!inputEl) return;
+      var raw = inputEl.value.trim();
+      var watts = null;
+      if (raw !== '') {
+        var n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) { toast('Watts must be a non-negative number', 'error'); return; }
+        watts = n;
+      }
+      inputEl.disabled = true;
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(capId) + '/meta',
+          { method: 'PUT', body: { nameplate_watts: watts } });
+        if (watts == null) delete detailCapMeta[capId]; else detailCapMeta[capId] = watts;
+        renderCapWatts(deviceId, capId);
+        // Re-fetch energy to reflect the new meter. Silent failure is OK —
+        // the stale previous report stays on screen if the endpoint hiccups.
+        loadDeviceEnergy(deviceId);
+      } catch (e) {
+        toast('Failed to save watts: ' + (e.message || e), 'error');
+        inputEl.disabled = false;
+      }
+    }
+
+    async function loadDeviceEnergy(deviceId) {
+      var section = document.getElementById('detailEnergySection');
+      var content = document.getElementById('detailEnergyContent');
+      if (!section || !content) return;
+      try {
+        var r = await api('/api/devices/' + encodeURIComponent(deviceId) + '/energy?hours=' + detailEnergyRange);
+        if (deviceId !== currentLogDeviceId) return; // stale
+        detailEnergyReport = r;
+        renderDeviceEnergy(deviceId);
+      } catch (e) {
+        section.style.display = 'none';
+      }
+    }
+
+    function renderDeviceEnergy(deviceId) {
+      var section = document.getElementById('detailEnergySection');
+      var content = document.getElementById('detailEnergyContent');
+      if (!section || !content) return;
+      var r = detailEnergyReport;
+      if (!r || !r.capabilities || r.capabilities.length === 0) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+
+      var dev = devices.find(function(d) { return d.id === deviceId; });
+      var labelFor = function(capId) {
+        if (dev && dev.capabilities) {
+          var c = dev.capabilities.find(function(x) { return x.id === capId; });
+          if (c) return c.label || capId;
+        }
+        return capId;
+      };
+
+      var tariff = energyTariff || { costPerKwh: null, currency: 'USD' };
+      var costLine = (tariff.costPerKwh != null && tariff.costPerKwh > 0 && r.total_wh > 0)
+        ? '<span class="energy-cost">' + esc(fmtEnergyCost(r.total_wh, tariff.costPerKwh, tariff.currency)) + '</span>'
+        : '';
+
+      var breakdown = '';
+      if (r.capabilities.length > 1) {
+        breakdown = '<div class="energy-breakdown">'
+          + r.capabilities.map(function(c) {
+              return '<div class="energy-row">'
+                + '<span>' + esc(labelFor(c.capability_id)) + '</span>'
+                + '<span class="energy-row-right">'
+                + '<span class="ontime">' + fmtOnTimeSec(c.on_time_seconds) + ' on</span>'
+                + '<span>' + fmtEnergyWh(c.wh) + '</span>'
+                + '</span></div>';
+            }).join('')
+          + '</div>';
+      }
+
+      var earliestTs = r.capabilities.map(function(c) { return c.tracked_since; })
+        .filter(function(t) { return !!t; }).sort()[0];
+      var trackedHint = fmtTrackedSinceTs(earliestTs);
+      var trackedLine = trackedHint ? '<div class="energy-tracked">Tracking since ' + esc(trackedHint) + '</div>' : '';
+
+      content.innerHTML =
+        '<div class="energy-total">'
+        + '<span class="energy-bolt">⚡</span>'
+        + '<span class="energy-total-val">' + fmtEnergyWh(r.total_wh) + '</span>'
+        + costLine
+        + '</div>'
+        + breakdown
+        + trackedLine;
+    }
+
+    function setEnergyRange(hours) {
+      detailEnergyRange = hours;
+      var btns = document.querySelectorAll('#detailEnergyRangeBtns .chart-range-btn');
+      btns.forEach(function(b) {
+        b.classList.toggle('active', Number(b.getAttribute('data-hours')) === hours);
+      });
+      if (currentLogDeviceId) loadDeviceEnergy(currentLogDeviceId);
     }
 
     function closeDeviceDetail() {
@@ -5063,6 +5366,35 @@
           </div>
         </div>`;
 
+        // Energy Tariff — optional cost_per_kwh + currency for the Energy card.
+        const costRes = await api('/api/settings/cost_per_kwh').catch(() => ({ value: '' }));
+        const curRes = await api('/api/settings/currency').catch(() => ({ value: 'USD' }));
+        const costVal = costRes && costRes.value ? costRes.value : '';
+        const curVal = curRes && curRes.value ? curRes.value : 'USD';
+        const currencies = ['USD','EUR','GBP','CAD','AUD','JPY','RON'];
+        html += `<div class="settings-section">
+          <div class="settings-title">Energy Tariff</div>
+          <div class="setting-row">
+            <div class="setting-label-block">
+              <div class="setting-label">Cost per kWh</div>
+              <div class="setting-desc">Optional. When set, device Energy cards estimate a cost alongside the measured Wh.</div>
+            </div>
+          </div>
+          <div class="input-row" style="gap:0.6rem;flex-wrap:wrap;">
+            <input type="number" min="0" step="0.001" class="input-text" id="tariffCost"
+              style="max-width:140px;${isViewer ? 'opacity:0.5;' : ''}"
+              value="${esc(costVal)}" placeholder="0.00" ${isViewer ? 'disabled' : ''}
+              onchange="saveTariffCost(this.value)">
+            <select id="tariffCurrency" class="input-text" style="max-width:100px;${isViewer ? 'opacity:0.5;' : ''}"
+              ${isViewer ? 'disabled' : ''} onchange="saveTariffCurrency(this.value)">
+              ${currencies.map(function(c) { return '<option value="' + c + '"' + (c === curVal ? ' selected' : '') + '>' + c + '</option>'; }).join('')}
+            </select>
+          </div>
+          <div class="setting-row" style="padding-top:0.25rem;">
+            <div class="setting-desc">Leave the cost blank to show energy only.</div>
+          </div>
+        </div>`;
+
         // Sinric Pro
         if (sinricStatusRes) {
           const ss = sinricStatusRes;
@@ -5182,6 +5514,30 @@
         toast('Data retention updated');
       } catch (e) {
         toast('Failed to save', 'error');
+      }
+    }
+
+    async function saveTariffCost(val) {
+      // PUT with empty string clears the tariff from the UI's perspective —
+      // loadEnergyTariff treats empty/non-positive as unset. Avoids needing
+      // a DELETE route since the generic settings API is PUT-only.
+      var trimmed = (val || '').trim();
+      try {
+        await api('/api/settings/cost_per_kwh', { method: 'PUT', body: { value: trimmed } });
+        energyTariff = null;
+        toast(trimmed === '' ? 'Tariff cleared' : 'Cost per kWh saved');
+      } catch (e) {
+        toast('Failed to save cost: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function saveTariffCurrency(val) {
+      try {
+        await api('/api/settings/currency', { method: 'PUT', body: { value: val } });
+        energyTariff = null;
+        toast('Currency saved');
+      } catch (e) {
+        toast('Failed to save currency: ' + (e.message || e), 'error');
       }
     }
 
