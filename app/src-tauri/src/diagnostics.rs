@@ -1,5 +1,5 @@
-use crate::db::{Database, LogEntry, MdnsCadenceSample, MetricPoint, ResetEvent};
-use crate::device::Device;
+use crate::db::{CapabilityMeta, Database, LogEntry, MdnsCadenceSample, MetricPoint, ResetEvent};
+use crate::device::{Capability, Device};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -169,6 +169,12 @@ pub fn diagnose(
 
     let nvs_writes = db.get_metrics(device_id, "_nvs_writes", WINDOW_HOURS)?;
     findings.push(check_flash_wear(&nvs_writes));
+
+    let cap_meta = db.get_device_capability_meta(device_id)?;
+    findings.push(check_energy_coverage(
+        &cap_meta,
+        live_device.map(|d| d.capabilities.as_slice()),
+    ));
 
     let overall = roll_up(&findings);
 
@@ -1341,6 +1347,81 @@ fn check_flash_wear(samples: &[MetricPoint]) -> Finding {
     }
 }
 
+/// Rule: surface that the energy-tracking feature exists and which switches on
+/// this device are wired into it. INFO until at least one switch has nameplate
+/// watts set; OK once configured. Pure visibility nudge — no failure mode,
+/// just a discoverability rail for users who haven't seen the ⚡ editor yet.
+///
+/// `capabilities` is the live device snapshot. When None (device offline) we
+/// fall back to a meta-only reading; we lose the "M of N switches" denominator
+/// but still know whether anything is configured.
+fn check_energy_coverage(
+    meta: &[CapabilityMeta],
+    capabilities: Option<&[Capability]>,
+) -> Finding {
+    let id = "energy_coverage".to_string();
+    let title = "Energy tracking coverage".to_string();
+
+    let metered: usize = meta.iter().filter(|m| m.nameplate_watts.is_some()).count();
+    let switch_total: Option<usize> = capabilities
+        .map(|caps| caps.iter().filter(|c| c.cap_type == "switch").count());
+
+    if let Some(0) = switch_total {
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail: "No switch capabilities on this device — energy tracking does not apply.".to_string(),
+            suggestion: None,
+            action: None,
+        };
+    }
+
+    if metered == 0 {
+        let detail = match switch_total {
+            Some(1) => "Energy tracking is not configured for the switch on this device.".to_string(),
+            Some(n) => format!(
+                "Energy tracking is not configured for any of the {} switches on this device.",
+                n,
+            ),
+            None => "Energy tracking is not configured for any switch on this device.".to_string(),
+        };
+        return Finding {
+            id,
+            level: LEVEL_INFO.to_string(),
+            title,
+            detail,
+            suggestion: Some(
+                "Open Device Detail \u{2192} Controls and click \u{26a1} next to a switch to enter its nameplate watts. This unlocks the Energy card (24h/7d/30d kWh + tariff cost estimate) and a per-switch power sensor in MQTT / Home Assistant."
+                    .to_string(),
+            ),
+            action: None,
+        };
+    }
+
+    let detail = match switch_total {
+        Some(n) => format!(
+            "Energy tracking configured for {} of {} switch{}.",
+            metered,
+            n,
+            if n == 1 { "" } else { "es" },
+        ),
+        None => format!(
+            "Energy tracking configured for {} switch{}.",
+            metered,
+            if metered == 1 { "" } else { "es" },
+        ),
+    };
+    Finding {
+        id,
+        level: LEVEL_OK.to_string(),
+        title,
+        detail,
+        suggestion: None,
+        action: None,
+    }
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn parse_ts(ts: &str) -> Option<DateTime<Utc>> {
@@ -2350,5 +2431,96 @@ mod tests {
         let f = check_flash_wear(&samples);
         assert_eq!(f.level, LEVEL_OK);
         assert!(f.detail.contains("0 NVS writes/24h"));
+    }
+
+    // ─── Energy coverage ─────────────────────────────────────────────────
+
+    fn switch_cap(id: &str) -> Capability {
+        Capability {
+            id: id.to_string(),
+            cap_type: "switch".to_string(),
+            label: id.to_string(),
+            unit: None,
+            min: None,
+            max: None,
+            value: serde_json::Value::Bool(false),
+        }
+    }
+
+    fn sensor_cap(id: &str) -> Capability {
+        Capability {
+            id: id.to_string(),
+            cap_type: "sensor".to_string(),
+            label: id.to_string(),
+            unit: Some("C".to_string()),
+            min: None,
+            max: None,
+            value: serde_json::json!(0.0),
+        }
+    }
+
+    #[test]
+    fn energy_coverage_info_when_no_meta_and_no_caps() {
+        // Device offline (caps unknown) + no meta rows → INFO with the
+        // fallback wording that doesn't claim a denominator we don't have.
+        let f = check_energy_coverage(&[], None);
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("not configured"), "detail: {}", f.detail);
+        assert!(f.suggestion.as_ref().unwrap().contains("Controls"));
+    }
+
+    #[test]
+    fn energy_coverage_info_when_caps_present_but_no_watts_set() {
+        // Two switches, no meta — INFO names the switch count so users see
+        // concretely what's unconfigured ("any of the 2 switches").
+        let caps = vec![switch_cap("led"), switch_cap("fan")];
+        let f = check_energy_coverage(&[], Some(&caps));
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("2 switches"), "detail: {}", f.detail);
+        assert!(f.suggestion.as_ref().unwrap().contains("\u{26a1}"));
+    }
+
+    #[test]
+    fn energy_coverage_info_when_meta_rows_are_all_null() {
+        // capability_meta has rows but every nameplate_watts is NULL
+        // (user cleared the value). Should still read INFO.
+        let caps = vec![switch_cap("led")];
+        let meta = vec![CapabilityMeta {
+            capability_id: "led".to_string(),
+            nameplate_watts: None,
+        }];
+        let f = check_energy_coverage(&meta, Some(&caps));
+        assert_eq!(f.level, LEVEL_INFO);
+    }
+
+    #[test]
+    fn energy_coverage_ok_when_at_least_one_switch_metered() {
+        let caps = vec![switch_cap("led"), switch_cap("fan")];
+        let meta = vec![CapabilityMeta {
+            capability_id: "led".to_string(),
+            nameplate_watts: Some(60.0),
+        }];
+        let f = check_energy_coverage(&meta, Some(&caps));
+        assert_eq!(f.level, LEVEL_OK);
+        assert!(f.detail.contains("1 of 2"), "detail: {}", f.detail);
+        assert!(f.suggestion.is_none());
+    }
+
+    #[test]
+    fn energy_coverage_info_when_device_has_no_switches() {
+        // Sensor-only device (e.g. temperature node). Rule must not nag —
+        // it returns INFO with explicit "does not apply" text so the
+        // diagnostics card explains the absence rather than going silent.
+        let caps = vec![sensor_cap("temp")];
+        let f = check_energy_coverage(&[], Some(&caps));
+        assert_eq!(f.level, LEVEL_INFO);
+        assert!(f.detail.contains("does not apply"), "detail: {}", f.detail);
+        assert!(f.suggestion.is_none(), "no nudge when there's nothing to meter");
+    }
+
+    #[test]
+    fn energy_coverage_rule_id_is_stable() {
+        let f = check_energy_coverage(&[], None);
+        assert_eq!(f.id, "energy_coverage");
     }
 }
