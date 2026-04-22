@@ -108,6 +108,81 @@ pub struct AlertRule {
     pub enabled: bool,
 }
 
+/// Build half-open [start, end) offline intervals clipped to the window from a
+/// chronological sequence of state transitions. Bootstrap of `None` (no state
+/// log ever seen for the device) is treated as online since a device must
+/// first be online to go offline — this means devices with no recorded
+/// transitions keep the pre-intersection behavior (no subtraction).
+fn compute_offline_intervals(
+    bootstrap_online: Option<bool>,
+    logs: &[(String, i64)],
+    window_start_epoch: i64,
+    now_epoch: i64,
+) -> Vec<(i64, i64)> {
+    let mut out: Vec<(i64, i64)> = Vec::new();
+    let mut online = bootstrap_online.unwrap_or(true);
+    let mut offline_start: Option<i64> = if !online {
+        Some(window_start_epoch)
+    } else {
+        None
+    };
+    for (msg, ts) in logs {
+        let new_online = msg == "online";
+        if online && !new_online {
+            offline_start = Some(*ts);
+        } else if !online && new_online {
+            if let Some(s) = offline_start.take() {
+                out.push((s, *ts));
+            }
+        }
+        online = new_online;
+    }
+    if !online {
+        if let Some(s) = offline_start.take() {
+            out.push((s, now_epoch));
+        }
+    }
+    out
+}
+
+/// Sum a capability's ON-time over the window, subtracting any overlap with
+/// offline intervals. Transitions beyond window bounds are expected to already
+/// be filtered by the caller.
+fn compute_on_seconds_online(
+    bootstrap: i64,
+    rows: &[(i64, i64)],
+    window_start_epoch: i64,
+    now_epoch: i64,
+    offline_intervals: &[(i64, i64)],
+) -> i64 {
+    let mut on_intervals: Vec<(i64, i64)> = Vec::new();
+    let mut current_state = bootstrap;
+    let mut last_epoch = window_start_epoch;
+    for (state, ts_epoch) in rows {
+        if current_state == 1 {
+            on_intervals.push((last_epoch, *ts_epoch));
+        }
+        current_state = *state;
+        last_epoch = *ts_epoch;
+    }
+    if current_state == 1 {
+        on_intervals.push((last_epoch, now_epoch));
+    }
+
+    let mut total: i64 = 0;
+    for (start, end) in on_intervals {
+        let dur = (end - start).max(0);
+        let mut overlap: i64 = 0;
+        for (os, oe) in offline_intervals {
+            let ov_start = (*os).max(start);
+            let ov_end = (*oe).min(end);
+            overlap += (ov_end - ov_start).max(0);
+        }
+        total += (dur - overlap).max(0);
+    }
+    total
+}
+
 impl Database {
     // ─── Device persistence ──────────────────────────────────────────────
 
@@ -236,6 +311,48 @@ impl Database {
             .map_err(|e| e.to_string())?;
         let window_start_epoch: i64 = now_epoch - hours_clamped * 3600;
 
+        // Online/offline intervals derived from device_logs severity='state'.
+        // Subtracting offline overlap keeps Wh from inflating when a device goes
+        // dark with a switch left ON — we can't prove it's still drawing power.
+        let bootstrap_state_msg: Option<String> = conn
+            .query_row(
+                "SELECT message FROM device_logs
+                 WHERE device_id = ?1 AND severity = 'state'
+                   AND CAST(strftime('%s', timestamp) AS INTEGER) < ?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![device_id, window_start_epoch],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let bootstrap_online: Option<bool> =
+            bootstrap_state_msg.map(|m| m == "online");
+
+        let mut sls = conn
+            .prepare(
+                "SELECT message, CAST(strftime('%s', timestamp) AS INTEGER)
+                 FROM device_logs
+                 WHERE device_id = ?1 AND severity = 'state'
+                   AND CAST(strftime('%s', timestamp) AS INTEGER) >= ?2
+                 ORDER BY id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let state_logs: Vec<(String, i64)> = sls
+            .query_map(
+                rusqlite::params![device_id, window_start_epoch],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        let offline_intervals = compute_offline_intervals(
+            bootstrap_online,
+            &state_logs,
+            window_start_epoch,
+            now_epoch,
+        );
+
         let mut out: Vec<CapabilityEnergy> = Vec::new();
         let mut total_wh: f64 = 0.0;
 
@@ -287,21 +404,13 @@ impl Database {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
 
-            let mut current_state: i64 = bootstrap.unwrap_or(0);
-            let mut last_epoch: i64 = window_start_epoch;
-            let mut on_seconds: i64 = 0;
-            for (state, ts_epoch) in rows {
-                if current_state == 1 {
-                    let delta = (ts_epoch - last_epoch).max(0);
-                    on_seconds += delta;
-                }
-                current_state = state;
-                last_epoch = ts_epoch;
-            }
-            // Close the open interval at now.
-            if current_state == 1 {
-                on_seconds += (now_epoch - last_epoch).max(0);
-            }
+            let on_seconds = compute_on_seconds_online(
+                bootstrap.unwrap_or(0),
+                &rows,
+                window_start_epoch,
+                now_epoch,
+                &offline_intervals,
+            );
 
             let wh = (on_seconds as f64) * watts / 3600.0;
             total_wh += wh;
@@ -2519,4 +2628,98 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn log(msg: &str, ts: i64) -> (String, i64) {
+        (msg.to_string(), ts)
+    }
+
+    #[test]
+    fn offline_intervals_empty_when_no_transitions_and_no_bootstrap() {
+        let intervals = compute_offline_intervals(None, &[], 0, 3600);
+        assert!(intervals.is_empty(), "no evidence → no subtraction");
+    }
+
+    #[test]
+    fn offline_intervals_empty_when_online_throughout() {
+        let logs = vec![log("online", 100), log("online", 200)];
+        let intervals = compute_offline_intervals(Some(true), &logs, 0, 3600);
+        assert!(intervals.is_empty());
+    }
+
+    #[test]
+    fn offline_intervals_from_bootstrap_offline() {
+        let logs = vec![log("online", 500)];
+        let intervals = compute_offline_intervals(Some(false), &logs, 0, 3600);
+        assert_eq!(intervals, vec![(0, 500)]);
+    }
+
+    #[test]
+    fn offline_intervals_stays_offline_until_now() {
+        let logs = vec![log("offline", 200)];
+        let intervals = compute_offline_intervals(Some(true), &logs, 0, 3600);
+        assert_eq!(intervals, vec![(200, 3600)]);
+    }
+
+    #[test]
+    fn offline_intervals_multiple_outages() {
+        let logs = vec![
+            log("offline", 100),
+            log("online", 200),
+            log("offline", 400),
+            log("online", 500),
+        ];
+        let intervals = compute_offline_intervals(Some(true), &logs, 0, 3600);
+        assert_eq!(intervals, vec![(100, 200), (400, 500)]);
+    }
+
+    #[test]
+    fn on_seconds_no_offline_matches_pre_fix_math() {
+        // 19s on, no offline intervals → 19s (v0.19.0 live-verified math).
+        let rows = vec![(1i64, 100i64), (0i64, 119i64)];
+        let s = compute_on_seconds_online(0, &rows, 0, 3600, &[]);
+        assert_eq!(s, 19);
+    }
+
+    #[test]
+    fn on_seconds_open_interval_closes_at_now() {
+        // Switch turned on at 100, still on at now (3600). No offline.
+        let rows = vec![(1i64, 100i64)];
+        let s = compute_on_seconds_online(0, &rows, 0, 3600, &[]);
+        assert_eq!(s, 3500);
+    }
+
+    #[test]
+    fn on_seconds_subtracts_offline_overlap_from_open_interval() {
+        // Switch ON at t=100, device goes offline at t=200 and stays offline
+        // until now. Pre-fix: accrues 3500 seconds. Post-fix: only 100 seconds
+        // (100 → 200 online).
+        let rows = vec![(1i64, 100i64)];
+        let offline = vec![(200i64, 3600i64)];
+        let s = compute_on_seconds_online(0, &rows, 0, 3600, &offline);
+        assert_eq!(s, 100);
+    }
+
+    #[test]
+    fn on_seconds_fully_offline_window_is_zero() {
+        // Bootstrap: switch ON before window. Device offline throughout.
+        let offline = vec![(0i64, 3600i64)];
+        let s = compute_on_seconds_online(1, &[], 0, 3600, &offline);
+        assert_eq!(s, 0);
+    }
+
+    #[test]
+    fn on_seconds_partial_overlap_with_multiple_offline_windows() {
+        // Switch ON from t=0 (bootstrap) through t=1000 (turned off).
+        // Device offline 200-300 and 700-900 within that interval.
+        let rows = vec![(0i64, 1000i64)];
+        let offline = vec![(200i64, 300i64), (700i64, 900i64)];
+        let s = compute_on_seconds_online(1, &rows, 0, 3600, &offline);
+        // 1000 total − 100 (200-300) − 200 (700-900) = 700.
+        assert_eq!(s, 700);
+    }
 }
