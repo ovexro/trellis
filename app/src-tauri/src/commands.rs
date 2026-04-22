@@ -88,11 +88,16 @@ pub fn get_saved_devices(db: State<'_, Database>) -> Result<Vec<SavedDevice>, St
 #[tauri::command]
 pub fn set_capability_watts(
     db: State<'_, Database>,
+    state: State<'_, AppState>,
     device_id: String,
     capability_id: String,
     nameplate_watts: Option<f64>,
 ) -> Result<(), String> {
-    db.set_capability_watts(&device_id, &capability_id, nameplate_watts)
+    db.set_capability_watts(&device_id, &capability_id, nameplate_watts)?;
+    state
+        .mqtt_bridge
+        .set_watts(&device_id, &capability_id, nameplate_watts);
+    Ok(())
 }
 
 #[tauri::command]

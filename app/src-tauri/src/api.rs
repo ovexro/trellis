@@ -1984,7 +1984,10 @@ fn handle_set_capability_meta(
         }
     }
     match ctx.db.set_capability_watts(device_id, capability_id, watts) {
-        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Ok(()) => {
+            ctx.mqtt_bridge.set_watts(device_id, capability_id, watts);
+            json_ok(&serde_json::json!({"updated": true}))
+        }
         Err(e) => json_error(500, &e),
     }
 }

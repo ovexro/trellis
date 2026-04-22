@@ -430,6 +430,37 @@ impl Database {
         })
     }
 
+    /// Every (device_id, capability_id, nameplate_watts) triple where
+    /// nameplate_watts is set. Used at startup to hydrate the MQTT bridge's
+    /// watts cache so `sensor.<cap>_power` HA entities appear on the first
+    /// discovery publish without a DB round-trip per device.
+    pub fn get_all_capability_watts(
+        &self,
+    ) -> Result<Vec<(String, String, f64)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, capability_id, nameplate_watts
+                 FROM capability_meta
+                 WHERE nameplate_watts IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     pub fn get_device_capability_meta(
         &self,
         device_id: &str,

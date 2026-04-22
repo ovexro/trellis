@@ -233,6 +233,14 @@ pub struct MqttBridge {
     /// (instant discovery on enable) and polish #2 (republish on broker
     /// reconnect) to look up the live device list.
     discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
+    /// Nameplate watts cache keyed by (device_id, capability_id). Hydrated
+    /// from the `capability_meta` table once at startup and kept in sync via
+    /// `set_watts` when the user edits watts through the Tauri command or
+    /// REST endpoint. Used on the hot path (`publish_state`) to emit a
+    /// per-switch HA `sensor.<...>_power` entity without touching the DB on
+    /// every state transition. Only switches with a set nameplate appear
+    /// here.
+    watts_map: Arc<Mutex<HashMap<(String, String), f64>>>,
 }
 
 impl MqttBridge {
@@ -246,11 +254,74 @@ impl MqttBridge {
             discovery_published: Arc::new(Mutex::new(HashMap::new())),
             connection_manager,
             discovery: Arc::new(Mutex::new(None)),
+            watts_map: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn set_discovery(&self, discovery: Arc<Discovery>) {
         *self.discovery.lock().unwrap() = Some(discovery);
+    }
+
+    /// Replace the in-memory watts cache from a freshly-loaded DB snapshot.
+    /// Called once at startup (before the first `apply_config` / discovery
+    /// publish) so HA sees `sensor.<cap>_power` entities for every
+    /// already-metered switch the moment the broker connects.
+    pub fn hydrate_watts(&self, entries: Vec<(String, String, f64)>) {
+        let mut map = self.watts_map.lock().unwrap();
+        map.clear();
+        for (device_id, cap_id, watts) in entries {
+            map.insert((device_id, cap_id), watts);
+        }
+    }
+
+    /// Update the watts cache for a single capability and re-emit HA
+    /// discovery for its device so the `sensor.<cap>_power` entity appears
+    /// (when Some) or is removed (when None) without a bridge restart.
+    ///
+    /// When watts are cleared we publish a zero-length retained payload to
+    /// the `sensor.<...>_power` discovery config topic, which is HA's
+    /// idiomatic way of asking it to remove the entity. The primary switch
+    /// entity and the three diagnostic system sensors are unaffected.
+    pub fn set_watts(&self, device_id: &str, capability_id: &str, watts: Option<f64>) {
+        let key = (device_id.to_string(), capability_id.to_string());
+        match watts {
+            Some(w) => {
+                self.watts_map.lock().unwrap().insert(key, w);
+            }
+            None => {
+                self.watts_map.lock().unwrap().remove(&key);
+                // Actively remove the stale HA entity (retain='' on the
+                // discovery config topic).
+                let cfg = self.config.lock().unwrap().clone();
+                if cfg.enabled && cfg.ha_discovery_enabled {
+                    let client = self.client.lock().unwrap().as_ref().cloned();
+                    if let Some(client) = client {
+                        let unique_id =
+                            format!("trellis_{}_{}_power", device_id, capability_id);
+                        let config_topic = format!(
+                            "{}/sensor/{}/config",
+                            cfg.ha_discovery_prefix, unique_id
+                        );
+                        let _ = client.publish(
+                            &config_topic,
+                            QoS::AtLeastOnce,
+                            true,
+                            Vec::<u8>::new(),
+                        );
+                    }
+                }
+            }
+        }
+        // The dedupe tracker keys off the cap list, which is unchanged — so
+        // force a re-publish by dropping this device from the tracker first.
+        self.forget_discovery(device_id);
+        let device = match self.discovery.lock().unwrap().as_ref() {
+            Some(d) => d.get_devices().into_iter().find(|d| d.id == device_id),
+            None => None,
+        };
+        if let Some(device) = device {
+            self.publish_discovery(&device);
+        }
     }
 
     /// Get the current configuration (clone — cheap).
@@ -434,6 +505,7 @@ impl MqttBridge {
         let discovery_for_worker = self.discovery.clone();
         let client_for_worker = self.client.clone();
         let tracker_for_worker = self.discovery_published.clone();
+        let watts_for_worker = self.watts_map.clone();
 
         {
             let mut s = status.lock().unwrap();
@@ -452,6 +524,7 @@ impl MqttBridge {
                 discovery_for_worker,
                 client_for_worker,
                 tracker_for_worker,
+                watts_for_worker,
             );
         });
 
@@ -506,6 +579,34 @@ impl MqttBridge {
         } else {
             self.status.lock().unwrap().messages_published += 1;
         }
+
+        // Companion power sensor: if this capability has a nameplate watts
+        // value and the update is a bool (only switches publish bools here,
+        // sliders publish numbers), mirror it to the `_power` state topic
+        // as W when ON, 0 when OFF. HA users see live wattage without the
+        // desktop app computing anything — the firmware-side nameplate is
+        // the sole source of truth, matching `get_device_energy`'s model.
+        let watts = self
+            .watts_map
+            .lock()
+            .unwrap()
+            .get(&(device_id.to_string(), capability_id.to_string()))
+            .copied();
+        if let Some(watts) = watts {
+            if let Some(power_payload) = compute_power_payload(value, watts) {
+                let power_topic = format!(
+                    "{}/{}/{}/_power/state",
+                    cfg.base_topic, device_id, capability_id
+                );
+                if let Err(e) =
+                    client.publish(&power_topic, QoS::AtLeastOnce, true, power_payload.into_bytes())
+                {
+                    log::warn!("[MQTT] power publish {} failed: {}", power_topic, e);
+                } else {
+                    self.status.lock().unwrap().messages_published += 1;
+                }
+            }
+        }
     }
 
     /// Publish HA discovery configs for every capability of a device, plus
@@ -527,6 +628,7 @@ impl MqttBridge {
             &client,
             &self.discovery_published,
             &self.status,
+            &self.watts_map,
         );
     }
 
@@ -558,6 +660,7 @@ impl MqttBridge {
                 &client,
                 &self.discovery_published,
                 &self.status,
+                &self.watts_map,
             );
         }
     }
@@ -758,6 +861,7 @@ fn publish_discovery_for_device(
     client: &Client,
     discovery_published: &Mutex<HashMap<String, Vec<String>>>,
     status: &Mutex<MqttStatus>,
+    watts_map: &Mutex<HashMap<(String, String), f64>>,
 ) {
     // De-dupe: only republish if the capability list changed. Callers that
     // want a forced republish (broker reconnect, bridge enable) clear the
@@ -906,6 +1010,71 @@ fn publish_discovery_for_device(
         }
     }
 
+    // Per-switch power sensor: one `sensor.<cap>_power` entity per switch
+    // that has a nameplate watts value set. The primary switch entity is
+    // still published above; this is an additive companion sensor so HA
+    // users get a live power readout (device_class=power, unit=W) and can
+    // graph/alert on it. State topic is published from `publish_state`
+    // whenever the switch toggles (W when ON, 0 when OFF).
+    let watts_for_device: Vec<(String, f64)> = {
+        let map = watts_map.lock().unwrap();
+        device
+            .capabilities
+            .iter()
+            .filter(|c| c.cap_type == "switch")
+            .filter_map(|c| {
+                map.get(&(device.id.clone(), c.id.clone()))
+                    .map(|w| (c.id.clone(), *w))
+            })
+            .collect()
+    };
+    for (cap_id, _watts) in &watts_for_device {
+        let cap_label = device
+            .capabilities
+            .iter()
+            .find(|c| c.id == *cap_id)
+            .map(|c| c.label.clone())
+            .unwrap_or_else(|| cap_id.clone());
+
+        let unique_id = format!("trellis_{}_{}_power", device.id, cap_id);
+        let config_topic =
+            format!("{}/sensor/{}/config", cfg.ha_discovery_prefix, unique_id);
+        let state_topic =
+            format!("{}/{}/{}/_power/state", cfg.base_topic, device.id, cap_id);
+
+        let config = serde_json::json!({
+            "name": format!("{} Power", cap_label),
+            "unique_id": unique_id,
+            "state_topic": state_topic,
+            "availability_topic": availability_topic,
+            "payload_available": PAYLOAD_ONLINE,
+            "payload_not_available": PAYLOAD_OFFLINE,
+            "device": device_block,
+            "device_class": "power",
+            "state_class": "measurement",
+            "unit_of_measurement": "W",
+        });
+
+        let payload = serde_json::to_string(&config).unwrap_or_default();
+        if let Err(e) =
+            client.publish(&config_topic, QoS::AtLeastOnce, true, payload.into_bytes())
+        {
+            log::warn!("[MQTT] power sensor config publish {} failed: {}", config_topic, e);
+        } else {
+            published_count += 1;
+        }
+
+        // Initial retained state so HA has a value before the first toggle.
+        // Conservative default is "0" (OFF) — matches `get_device_energy`'s
+        // bootstrap assumption and avoids a false "ON" spike if HA attaches
+        // before the first real transition.
+        if let Err(e) = client.publish(&state_topic, QoS::AtLeastOnce, true, "0".as_bytes()) {
+            log::warn!("[MQTT] power sensor state publish {} failed: {}", state_topic, e);
+        } else {
+            published_count += 1;
+        }
+    }
+
     if published_count > 0 {
         status.lock().unwrap().messages_published += published_count;
     }
@@ -922,6 +1091,7 @@ fn event_loop(
     discovery: Arc<Mutex<Option<Arc<Discovery>>>>,
     client: Arc<Mutex<Option<Client>>>,
     discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    watts_map: Arc<Mutex<HashMap<(String, String), f64>>>,
 ) {
     log::info!("[MQTT] Worker started");
     loop {
@@ -997,6 +1167,7 @@ fn event_loop(
                                     c,
                                     &discovery_published,
                                     &status,
+                                    &watts_map,
                                 );
                             }
                             log::info!(
@@ -1102,6 +1273,27 @@ fn dispatch_set(
     }
 }
 
+/// Format a watts value for the `_power/state` topic: integer-like when the
+/// value is a whole number (avoids HA parsing "60.0" into a float graph axis
+/// with a trailing ".0"), otherwise trimmed to 2 decimals.
+fn format_watts_payload(watts: f64) -> String {
+    if (watts - watts.round()).abs() < 1e-9 {
+        format!("{}", watts.round() as i64)
+    } else {
+        format!("{:.2}", watts)
+    }
+}
+
+/// Pure helper for the companion `_power/state` payload. Returns `None` if
+/// the capability's current value is not a boolean (non-switch updates —
+/// sliders and sensors — never drive a power sensor because we only
+/// nameplate switches). Returns `Some("<watts>")` when ON and `Some("0")`
+/// when OFF.
+fn compute_power_payload(value: &Value, watts: f64) -> Option<String> {
+    let on = value.as_bool()?;
+    Some(format_watts_payload(if on { watts } else { 0.0 }))
+}
+
 /// Convert a JSON value into the textual MQTT payload Trellis publishes.
 /// Booleans become `"true"`/`"false"`, numbers become their string form,
 /// strings are passed through, anything else is JSON-encoded.
@@ -1111,5 +1303,126 @@ fn value_to_mqtt_payload(value: &Value) -> Vec<u8> {
         Value::Number(n) => n.to_string().into_bytes(),
         Value::String(s) => s.clone().into_bytes(),
         other => serde_json::to_string(other).unwrap_or_default().into_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::ConnectionManager;
+
+    #[test]
+    fn format_watts_payload_whole_number() {
+        assert_eq!(format_watts_payload(60.0), "60");
+        assert_eq!(format_watts_payload(1500.0), "1500");
+        assert_eq!(format_watts_payload(0.0), "0");
+    }
+
+    #[test]
+    fn format_watts_payload_decimal() {
+        assert_eq!(format_watts_payload(12.5), "12.50");
+        assert_eq!(format_watts_payload(0.33), "0.33");
+        // Source is not a whole number so we stay on the 2-decimal branch
+        // even though the formatter rounds it to 100.00 — HA parses that
+        // the same as 100. Accepting it avoids flickering between "99" and
+        // "100" for near-whole inputs.
+        assert_eq!(format_watts_payload(99.999), "100.00");
+    }
+
+    #[test]
+    fn compute_power_on_off() {
+        assert_eq!(
+            compute_power_payload(&serde_json::Value::Bool(true), 60.0),
+            Some("60".to_string())
+        );
+        assert_eq!(
+            compute_power_payload(&serde_json::Value::Bool(false), 60.0),
+            Some("0".to_string())
+        );
+    }
+
+    #[test]
+    fn compute_power_skips_non_bool() {
+        // Sliders publish numeric updates; sensors publish numbers; neither
+        // should drive the switch power sensor.
+        assert_eq!(
+            compute_power_payload(&serde_json::json!(42), 60.0),
+            None
+        );
+        assert_eq!(
+            compute_power_payload(&serde_json::json!("on"), 60.0),
+            None
+        );
+        assert_eq!(
+            compute_power_payload(&serde_json::Value::Null, 60.0),
+            None
+        );
+    }
+
+    #[test]
+    fn hydrate_and_set_watts_update_map() {
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge.hydrate_watts(vec![
+            ("dev1".to_string(), "led".to_string(), 60.0),
+            ("dev1".to_string(), "heater".to_string(), 1500.0),
+        ]);
+        {
+            let map = bridge.watts_map.lock().unwrap();
+            assert_eq!(map.len(), 2);
+            assert_eq!(
+                map.get(&("dev1".to_string(), "led".to_string())).copied(),
+                Some(60.0)
+            );
+        }
+
+        // Setter updates an existing entry.
+        bridge.set_watts("dev1", "led", Some(75.0));
+        assert_eq!(
+            bridge
+                .watts_map
+                .lock()
+                .unwrap()
+                .get(&("dev1".to_string(), "led".to_string()))
+                .copied(),
+            Some(75.0)
+        );
+
+        // Clearing to None removes the entry entirely so the discovery
+        // loop stops emitting a power sensor for that cap.
+        bridge.set_watts("dev1", "led", None);
+        assert!(!bridge
+            .watts_map
+            .lock()
+            .unwrap()
+            .contains_key(&("dev1".to_string(), "led".to_string())));
+        // Other caps untouched.
+        assert_eq!(
+            bridge
+                .watts_map
+                .lock()
+                .unwrap()
+                .get(&("dev1".to_string(), "heater".to_string()))
+                .copied(),
+            Some(1500.0)
+        );
+    }
+
+    #[test]
+    fn hydrate_watts_replaces_existing() {
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge.hydrate_watts(vec![(
+            "old-device".to_string(),
+            "cap".to_string(),
+            10.0,
+        )]);
+        // Fresh hydrate (e.g. on re-init) wipes the old contents.
+        bridge.hydrate_watts(vec![(
+            "new-device".to_string(),
+            "cap".to_string(),
+            20.0,
+        )]);
+        let map = bridge.watts_map.lock().unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&("new-device".to_string(), "cap".to_string())));
     }
 }

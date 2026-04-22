@@ -418,6 +418,18 @@ pub fn run() {
             // Migration is lazy here: any plaintext password gets upgraded
             // to enc:v1: on the very first launch of this build, no user
             // action required.
+
+            // Hydrate the MQTT bridge's nameplate-watts cache from the
+            // `capability_meta` table BEFORE restoring the saved config —
+            // `apply_config` publishes HA discovery as soon as the bridge
+            // connects, and that publish needs the cache populated to emit
+            // the per-switch `sensor.<cap>_power` entities on first boot.
+            if let Some(db_state) = app.try_state::<db::Database>() {
+                if let Ok(entries) = db_state.get_all_capability_watts() {
+                    mqtt_bridge.hydrate_watts(entries);
+                }
+            }
+
             if let Some(db_state) = app.try_state::<db::Database>() {
                 if let Ok(Some(json)) = db_state.get_setting("mqtt_config") {
                     match serde_json::from_str::<mqtt::MqttConfig>(&json) {
