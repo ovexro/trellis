@@ -1091,6 +1091,14 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("GET", p) if p.starts_with("/api/devices/") && p.ends_with("/energy/lifetime") => {
+            let id = &p["/api/devices/".len()..p.len() - "/energy/lifetime".len()];
+            match ctx.db.get_device_lifetime_energy(id) {
+                Ok(report) => json_ok(&report),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("PUT", p)
             if p.starts_with("/api/devices/")
                 && p.ends_with("/meta")

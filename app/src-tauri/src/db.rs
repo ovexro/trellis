@@ -240,6 +240,159 @@ fn compute_numeric_wh_online(
     (on_time, wh)
 }
 
+/// Shared compute for lifetime energy on a single metered capability. Returns
+/// `None` when the capability has no `nameplate_watts` row or no logged
+/// transitions yet. Caller holds the connection lock; we take a `&Connection`
+/// reference so this can be invoked inside a method that already locked.
+///
+/// Window is `[MIN(capability_state_log.timestamp), now)` for this (device,
+/// capability). Offline-interval overlap is subtracted from ON-time using the
+/// same model as `get_device_energy` (device_logs severity='state' timeline).
+/// The severity='state' log IS under retention cleanup so offline fidelity
+/// for transitions older than the retention window is best-effort.
+fn compute_capability_lifetime(
+    conn: &Connection,
+    device_id: &str,
+    capability_id: &str,
+) -> Result<Option<CapabilityEnergy>, String> {
+    let meta: Option<(f64, bool, Option<f64>)> = conn
+        .query_row(
+            "SELECT nameplate_watts, linear_power, slider_max
+             FROM capability_meta
+             WHERE device_id = ?1 AND capability_id = ?2
+               AND nameplate_watts IS NOT NULL",
+            rusqlite::params![device_id, capability_id],
+            |row| {
+                Ok((
+                    row.get::<_, f64>(0)?,
+                    row.get::<_, i64>(1)? != 0,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let (watts, linear_power, slider_max) = match meta {
+        Some(t) => t,
+        None => return Ok(None),
+    };
+
+    let earliest: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT CAST(strftime('%s', MIN(timestamp)) AS INTEGER),
+                    MIN(timestamp)
+             FROM capability_state_log
+             WHERE device_id = ?1 AND capability_id = ?2",
+            rusqlite::params![device_id, capability_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                    row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let (window_start_epoch, tracked_since_ts) = match earliest {
+        Some((ts, _)) if ts == 0 => return Ok(None),
+        Some((ts, s)) => (ts, if s.is_empty() { None } else { Some(s) }),
+        None => return Ok(None),
+    };
+
+    let now_epoch: i64 = conn
+        .query_row("SELECT CAST(strftime('%s', 'now') AS INTEGER)", [], |r| {
+            r.get(0)
+        })
+        .map_err(|e| e.to_string())?;
+
+    let bootstrap_state_msg: Option<String> = conn
+        .query_row(
+            "SELECT message FROM device_logs
+             WHERE device_id = ?1 AND severity = 'state'
+               AND CAST(strftime('%s', timestamp) AS INTEGER) < ?2
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![device_id, window_start_epoch],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let bootstrap_online: Option<bool> =
+        bootstrap_state_msg.map(|m| m == "online");
+
+    let mut sls = conn
+        .prepare(
+            "SELECT message, CAST(strftime('%s', timestamp) AS INTEGER)
+             FROM device_logs
+             WHERE device_id = ?1 AND severity = 'state'
+               AND CAST(strftime('%s', timestamp) AS INTEGER) >= ?2
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let state_logs: Vec<(String, i64)> = sls
+        .query_map(
+            rusqlite::params![device_id, window_start_epoch],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let offline_intervals = compute_offline_intervals(
+        bootstrap_online,
+        &state_logs,
+        window_start_epoch,
+        now_epoch,
+    );
+
+    let mut s = conn
+        .prepare(
+            "SELECT state, CAST(strftime('%s', timestamp) AS INTEGER)
+             FROM capability_state_log
+             WHERE device_id = ?1 AND capability_id = ?2
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, i64)> = s
+        .query_map(rusqlite::params![device_id, capability_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    // bootstrap=0 (OFF) is correct by construction: window_start is the
+    // timestamp of the very first logged transition, and there is no row
+    // before it. The first segment [window_start, first_ts) thus has
+    // zero duration anyway.
+    let (on_seconds, wh) = if linear_power {
+        compute_numeric_wh_online(
+            0,
+            &rows,
+            window_start_epoch,
+            now_epoch,
+            &offline_intervals,
+            watts,
+            slider_max.unwrap_or(255.0),
+        )
+    } else {
+        let sec = compute_on_seconds_online(
+            0,
+            &rows,
+            window_start_epoch,
+            now_epoch,
+            &offline_intervals,
+        );
+        (sec, (sec as f64) * watts / 3600.0)
+    };
+
+    Ok(Some(CapabilityEnergy {
+        capability_id: capability_id.to_string(),
+        nameplate_watts: watts,
+        on_time_seconds: on_seconds,
+        wh,
+        tracked_since: tracked_since_ts,
+    }))
+}
+
 impl Database {
     // ─── Device persistence ──────────────────────────────────────────────
 
@@ -561,131 +714,53 @@ impl Database {
         capability_id: &str,
     ) -> Result<f64, String> {
         let conn = self.conn.lock().unwrap();
+        Ok(compute_capability_lifetime(&conn, device_id, capability_id)?
+            .map(|c| c.wh)
+            .unwrap_or(0.0))
+    }
 
-        let meta: Option<(f64, bool, Option<f64>)> = conn
-            .query_row(
-                "SELECT nameplate_watts, linear_power, slider_max
+    /// Lifetime energy report for every metered capability on a device. Window
+    /// is the whole recorded history (from `MIN(capability_state_log.timestamp)`
+    /// forward, per-capability). `window_hours` is reported as `0` to signal
+    /// lifetime mode to the UI; `capabilities[]` entries carry on_time_seconds,
+    /// Wh, and a `tracked_since` timestamp. Silent capability is any that has
+    /// no nameplate_watts set or has no logged transitions yet.
+    pub fn get_device_lifetime_energy(
+        &self,
+        device_id: &str,
+    ) -> Result<DeviceEnergyReport, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT capability_id
                  FROM capability_meta
-                 WHERE device_id = ?1 AND capability_id = ?2
-                   AND nameplate_watts IS NOT NULL",
-                rusqlite::params![device_id, capability_id],
-                |row| {
-                    Ok((
-                        row.get::<_, f64>(0)?,
-                        row.get::<_, i64>(1)? != 0,
-                        row.get::<_, Option<f64>>(2)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let (watts, linear_power, slider_max) = match meta {
-            Some(t) => t,
-            None => return Ok(0.0),
-        };
-
-        let window_start_epoch: Option<i64> = conn
-            .query_row(
-                "SELECT CAST(strftime('%s', MIN(timestamp)) AS INTEGER)
-                 FROM capability_state_log
-                 WHERE device_id = ?1 AND capability_id = ?2",
-                rusqlite::params![device_id, capability_id],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?
-            .flatten();
-        let window_start_epoch = match window_start_epoch {
-            Some(t) => t,
-            None => return Ok(0.0),
-        };
-
-        let now_epoch: i64 = conn
-            .query_row("SELECT CAST(strftime('%s', 'now') AS INTEGER)", [], |r| {
-                r.get(0)
-            })
-            .map_err(|e| e.to_string())?;
-
-        let bootstrap_state_msg: Option<String> = conn
-            .query_row(
-                "SELECT message FROM device_logs
-                 WHERE device_id = ?1 AND severity = 'state'
-                   AND CAST(strftime('%s', timestamp) AS INTEGER) < ?2
-                 ORDER BY id DESC LIMIT 1",
-                rusqlite::params![device_id, window_start_epoch],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        let bootstrap_online: Option<bool> =
-            bootstrap_state_msg.map(|m| m == "online");
-
-        let mut sls = conn
-            .prepare(
-                "SELECT message, CAST(strftime('%s', timestamp) AS INTEGER)
-                 FROM device_logs
-                 WHERE device_id = ?1 AND severity = 'state'
-                   AND CAST(strftime('%s', timestamp) AS INTEGER) >= ?2
-                 ORDER BY id ASC",
+                 WHERE device_id = ?1 AND nameplate_watts IS NOT NULL",
             )
             .map_err(|e| e.to_string())?;
-        let state_logs: Vec<(String, i64)> = sls
-            .query_map(
-                rusqlite::params![device_id, window_start_epoch],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        let offline_intervals = compute_offline_intervals(
-            bootstrap_online,
-            &state_logs,
-            window_start_epoch,
-            now_epoch,
-        );
-
-        let mut s = conn
-            .prepare(
-                "SELECT state, CAST(strftime('%s', timestamp) AS INTEGER)
-                 FROM capability_state_log
-                 WHERE device_id = ?1 AND capability_id = ?2
-                 ORDER BY id ASC",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows: Vec<(i64, i64)> = s
-            .query_map(rusqlite::params![device_id, capability_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        let metered_ids: Vec<String> = stmt
+            .query_map(rusqlite::params![device_id], |row| {
+                row.get::<_, String>(0)
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        drop(stmt);
 
-        // bootstrap=0 (OFF) is correct by construction: window_start is the
-        // timestamp of the very first logged transition, and there is no row
-        // before it. The first segment [window_start, first_ts) thus has
-        // zero duration anyway.
-        let wh = if linear_power {
-            let (_on, wh) = compute_numeric_wh_online(
-                0,
-                &rows,
-                window_start_epoch,
-                now_epoch,
-                &offline_intervals,
-                watts,
-                slider_max.unwrap_or(255.0),
-            );
-            wh
-        } else {
-            let sec = compute_on_seconds_online(
-                0,
-                &rows,
-                window_start_epoch,
-                now_epoch,
-                &offline_intervals,
-            );
-            (sec as f64) * watts / 3600.0
-        };
-        Ok(wh)
+        let mut out: Vec<CapabilityEnergy> = Vec::new();
+        let mut total_wh: f64 = 0.0;
+        for cap_id in metered_ids {
+            if let Some(ce) = compute_capability_lifetime(&conn, device_id, &cap_id)? {
+                total_wh += ce.wh;
+                out.push(ce);
+            }
+        }
+
+        Ok(DeviceEnergyReport {
+            window_hours: 0,
+            total_wh,
+            capabilities: out,
+        })
     }
 
     pub fn get_device_capability_meta(
@@ -3388,6 +3463,109 @@ mod tests {
             wh,
             expected
         );
+    }
+
+    #[test]
+    fn device_lifetime_energy_empty_when_no_metered_caps() {
+        // No capability_meta rows → report has 0 caps, 0 Wh, window_hours=0.
+        let db = new_test_db();
+        let r = db.get_device_lifetime_energy("devX").unwrap();
+        assert_eq!(r.window_hours, 0);
+        assert_eq!(r.capabilities.len(), 0);
+        assert_eq!(r.total_wh, 0.0);
+    }
+
+    #[test]
+    fn device_lifetime_energy_aggregates_per_metered_cap() {
+        // Switch "led" @ 60W: ON 1000s ago, OFF 400s ago → 600s on-time → 10 Wh.
+        // Linear slider "bright" @ 20W max=100: 100 @ 900s ago → 50 @ 600s →
+        // 0 @ 300s → ≈2.5 Wh. Total expected ≈ 12.5 Wh.
+        let db = new_test_db();
+        let ts_1000 = ts_ago(&db, 1000);
+        let ts_900 = ts_ago(&db, 900);
+        let ts_600a = ts_ago(&db, 600);
+        let ts_600b = ts_ago(&db, 600);
+        let ts_400 = ts_ago(&db, 400);
+        let ts_300 = ts_ago(&db, 300);
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power)
+                 VALUES ('dev1', 'led', 60.0, 0)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power, slider_max)
+                 VALUES ('dev1', 'bright', 20.0, 1, 100.0)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_state_log
+                 (device_id, capability_id, state, timestamp)
+                 VALUES ('dev1', 'led', 1, ?1), ('dev1', 'led', 0, ?2)",
+                rusqlite::params![ts_1000, ts_400],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_state_log
+                 (device_id, capability_id, state, timestamp)
+                 VALUES ('dev1', 'bright', 100, ?1),
+                        ('dev1', 'bright', 50, ?2),
+                        ('dev1', 'bright', 0, ?3)",
+                rusqlite::params![ts_900, ts_600a, ts_300],
+            )
+            .unwrap();
+            let _ = ts_600b;
+        }
+        let r = db.get_device_lifetime_energy("dev1").unwrap();
+        assert_eq!(r.window_hours, 0);
+        assert_eq!(r.capabilities.len(), 2);
+        // Per-cap sums the same as get_capability_lifetime_wh (tested above).
+        let led = r.capabilities.iter().find(|c| c.capability_id == "led").unwrap();
+        let br = r.capabilities.iter().find(|c| c.capability_id == "bright").unwrap();
+        assert!((led.wh - 10.0).abs() < 0.05, "led wh {} ≈ 10.0", led.wh);
+        let expected_br = (300.0 * 20.0 + 300.0 * 20.0 * 0.5) / 3600.0;
+        assert!(
+            (br.wh - expected_br).abs() < 0.05,
+            "bright wh {} ≈ {}", br.wh, expected_br
+        );
+        assert!(
+            (r.total_wh - (led.wh + br.wh)).abs() < 1e-9,
+            "total_wh should equal sum of per-cap wh"
+        );
+        assert!(led.tracked_since.is_some());
+        assert!(br.tracked_since.is_some());
+    }
+
+    #[test]
+    fn device_lifetime_energy_skips_unmetered_capability() {
+        // Capability with NULL nameplate_watts should be skipped entirely.
+        let db = new_test_db();
+        let ts_600 = ts_ago(&db, 600);
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power)
+                 VALUES ('dev1', 'no_watts', NULL, 0)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_state_log
+                 (device_id, capability_id, state, timestamp)
+                 VALUES ('dev1', 'no_watts', 1, ?1)",
+                rusqlite::params![ts_600],
+            )
+            .unwrap();
+        }
+        let r = db.get_device_lifetime_energy("dev1").unwrap();
+        assert_eq!(r.capabilities.len(), 0, "unmetered cap must be skipped");
+        assert_eq!(r.total_wh, 0.0);
     }
 
     fn new_rules_test_db() -> Database {

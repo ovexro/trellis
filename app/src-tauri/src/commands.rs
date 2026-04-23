@@ -157,6 +157,14 @@ pub fn get_device_energy(
 }
 
 #[tauri::command]
+pub fn get_device_lifetime_energy(
+    db: State<'_, Database>,
+    device_id: String,
+) -> Result<DeviceEnergyReport, String> {
+    db.get_device_lifetime_energy(&device_id)
+}
+
+#[tauri::command]
 pub fn get_saved_device(
     db: State<'_, Database>,
     device_id: String,

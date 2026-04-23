@@ -28,10 +28,13 @@ interface DeviceEnergyProps {
   currency: string;
 }
 
-const RANGES = [
-  { label: "24h", hours: 24 },
-  { label: "7d", hours: 24 * 7 },
-  { label: "30d", hours: 24 * 30 },
+type RangeKey = "24h" | "7d" | "30d" | "lifetime";
+
+const RANGES: { label: string; key: RangeKey; hours?: number }[] = [
+  { label: "24h", key: "24h", hours: 24 },
+  { label: "7d", key: "7d", hours: 24 * 7 },
+  { label: "30d", key: "30d", hours: 24 * 30 },
+  { label: "Lifetime", key: "lifetime" },
 ];
 
 function fmtEnergy(wh: number): string {
@@ -43,9 +46,14 @@ function fmtEnergy(wh: number): string {
 function fmtOnTime(s: number): string {
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  if (s < 86400) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  return h > 0 ? `${d}d ${h}h` : `${d}d`;
 }
 
 function fmtTrackedSince(ts: string | null): string | null {
@@ -72,13 +80,21 @@ export default function DeviceEnergy({
   currency,
 }: DeviceEnergyProps) {
   const [report, setReport] = useState<DeviceEnergyReport | null>(null);
-  const [hours, setHours] = useState(24);
+  const [range, setRange] = useState<RangeKey>("24h");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    invoke<DeviceEnergyReport>("get_device_energy", { deviceId, hours })
+    const picked = RANGES.find((r) => r.key === range);
+    const promise =
+      range === "lifetime"
+        ? invoke<DeviceEnergyReport>("get_device_lifetime_energy", { deviceId })
+        : invoke<DeviceEnergyReport>("get_device_energy", {
+            deviceId,
+            hours: picked?.hours ?? 24,
+          });
+    promise
       .then((r) => {
         if (!cancelled) setReport(r);
       })
@@ -89,7 +105,7 @@ export default function DeviceEnergy({
     return () => {
       cancelled = true;
     };
-  }, [deviceId, hours]);
+  }, [deviceId, range]);
 
   if (!report) {
     if (loading) {
@@ -131,17 +147,17 @@ export default function DeviceEnergy({
           )}
         </div>
         <div className="flex gap-1 shrink-0 ml-3">
-          {RANGES.map((range) => (
+          {RANGES.map((r) => (
             <button
-              key={range.hours}
-              onClick={() => setHours(range.hours)}
+              key={r.key}
+              onClick={() => setRange(r.key)}
               className={`px-2.5 py-1 rounded-md text-xs min-w-[32px] text-center transition-colors ${
-                hours === range.hours
+                range === r.key
                   ? "bg-trellis-500/20 text-trellis-400"
                   : "text-zinc-500 hover:text-zinc-300"
               }`}
             >
-              {range.label}
+              {r.label}
             </button>
           ))}
         </div>

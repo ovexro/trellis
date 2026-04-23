@@ -148,6 +148,7 @@ pub fn run() {
             set_capability_linear_power,
             get_device_capability_meta,
             get_device_energy,
+            get_device_lifetime_energy,
             get_saved_devices,
             get_saved_device,
             list_serial_ports,

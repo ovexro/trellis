@@ -3632,6 +3632,7 @@
             <button class="chart-range-btn active" data-hours="24" onclick="setEnergyRange(24)">24h</button>
             <button class="chart-range-btn" data-hours="168" onclick="setEnergyRange(168)">7d</button>
             <button class="chart-range-btn" data-hours="720" onclick="setEnergyRange(720)">30d</button>
+            <button class="chart-range-btn" data-hours="0" onclick="setEnergyRange(0)">Lifetime</button>
           </div>
         </div>
         <div id="detailEnergyContent" style="font-size:0.75rem;color:var(--text-faint);">Loading&hellip;</div>
@@ -3843,9 +3844,14 @@
     function fmtOnTimeSec(s) {
       if (s < 60) return s + 's';
       if (s < 3600) return Math.floor(s / 60) + 'm';
-      var h = Math.floor(s / 3600);
-      var m = Math.floor((s % 3600) / 60);
-      return m > 0 ? (h + 'h ' + m + 'm') : (h + 'h');
+      if (s < 86400) {
+        var h = Math.floor(s / 3600);
+        var m = Math.floor((s % 3600) / 60);
+        return m > 0 ? (h + 'h ' + m + 'm') : (h + 'h');
+      }
+      var d = Math.floor(s / 86400);
+      var hh = Math.floor((s % 86400) / 3600);
+      return hh > 0 ? (d + 'd ' + hh + 'h') : (d + 'd');
     }
     function fmtTrackedSinceTs(ts) {
       if (!ts) return null;
@@ -3968,7 +3974,10 @@
       var content = document.getElementById('detailEnergyContent');
       if (!section || !content) return;
       try {
-        var r = await api('/api/devices/' + encodeURIComponent(deviceId) + '/energy?hours=' + detailEnergyRange);
+        var url = detailEnergyRange === 0
+          ? '/api/devices/' + encodeURIComponent(deviceId) + '/energy/lifetime'
+          : '/api/devices/' + encodeURIComponent(deviceId) + '/energy?hours=' + detailEnergyRange;
+        var r = await api(url);
         if (deviceId !== currentLogDeviceId) return; // stale
         detailEnergyReport = r;
         renderDeviceEnergy(deviceId);
