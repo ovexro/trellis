@@ -129,7 +129,7 @@ export default function ConfigSection() {
           imported.push(`${config.groups.length} groups`);
         }
 
-        // Restore saved devices (nicknames, tags, group assignment)
+        // Restore saved devices (nicknames, tags, notes, group assignment)
         if (config.devices && Array.isArray(config.devices)) {
           for (const dev of config.devices) {
             if (dev.nickname) {
@@ -137,6 +137,9 @@ export default function ConfigSection() {
             }
             if (dev.tags) {
               await invoke("set_device_tags", { deviceId: dev.id, tags: dev.tags });
+            }
+            if (dev.notes) {
+              await invoke("set_device_notes", { deviceId: dev.id, notes: dev.notes });
             }
             if (dev.group_id != null && groupIdMap.has(dev.group_id)) {
               await invoke("set_device_group", { deviceId: dev.id, groupId: groupIdMap.get(dev.group_id) });
