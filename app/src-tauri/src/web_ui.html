@@ -4293,6 +4293,33 @@
     }
 
     /* ────────────────────────── Automation ────────────────────────── */
+    function formatNextRun(iso) {
+      if (!iso) return null;
+      var dt = new Date(iso);
+      if (isNaN(dt.getTime())) return null;
+      var now = new Date();
+      var midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      var tomorrow = new Date(midnight.getTime() + 24 * 3600 * 1000);
+      var dayAfter = new Date(midnight.getTime() + 48 * 3600 * 1000);
+      var time = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (dt >= midnight && dt < tomorrow) return 'Today at ' + time;
+      if (dt >= tomorrow && dt < dayAfter) return 'Tomorrow at ' + time;
+      var date = dt.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+      return date + ' at ' + time;
+    }
+
+    async function runSchedule(id, btn) {
+      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      try {
+        await api('/api/schedules/' + id + '/run', { method: 'POST' });
+        toast('Schedule fired', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Run failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
+      }
+    }
+
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
@@ -4317,13 +4344,26 @@
             const detail = isScene
               ? `&#9889; Scene: ${esc(sceneMap[s.scene_id] || '#' + s.scene_id)} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>`
               : `${esc(getDeviceNameById(s.device_id))} &middot; <code style="font-size:0.75rem;color:var(--accent);">${esc(s.cron || '')}</code>${s.capability_id ? ` &middot; ${esc(s.capability_id)} = ${esc(String(s.value != null ? s.value : ''))}` : ''}`;
+            const nextLabel = s.enabled !== false ? formatNextRun(s.next_run) : null;
+            const nextLine = s.enabled !== false
+              ? `<div class="auto-card-detail" style="font-size:0.75rem;color:var(--text-faint);margin-top:0.15rem;">Next: ${nextLabel ? esc(nextLabel) : '<span style="color:var(--text-faint);">&mdash;</span>'}</div>`
+              : '';
+            const lastLine = s.last_run
+              ? `<div class="auto-card-detail" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.1rem;">Last run: ${esc(s.last_run)}</div>`
+              : '';
+            const runBtn = (isViewer || s.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runSchedule(${s.id}, this)" title="Run now">Run now</button>`;
             return `<div class="auto-card">
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                <div style="min-width:0;flex:1;">
                   <div class="auto-card-title">${esc(s.label || getDeviceNameById(s.device_id))}</div>
                   <div class="auto-card-detail">${detail}</div>
+                  ${nextLine}
+                  ${lastLine}
                 </div>
-                <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
+                  <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                  ${runBtn}
+                </div>
               </div>
             </div>`;
           }).join('');

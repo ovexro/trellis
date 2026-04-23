@@ -864,6 +864,18 @@ pub fn toggle_schedule(db: State<'_, Database>, id: i64, enabled: bool) -> Resul
     db.toggle_schedule(id, enabled)
 }
 
+#[tauri::command]
+pub fn run_schedule(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<(), String> {
+    let schedule = db.get_schedule(id)?
+        .ok_or_else(|| format!("Schedule {} not found", id))?;
+    crate::scheduler::fire_schedule(&app_handle, state.connection_manager.as_ref(), &schedule)
+}
+
 // ─── Conditional rules ──────────────────────────────────────────────────────
 
 #[tauri::command]

@@ -1327,6 +1327,28 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("POST", p) if p.starts_with("/api/schedules/") && p.ends_with("/run") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/schedules/".len()..p.len() - "/run".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid schedule ID"),
+            };
+            let schedule = match ctx.db.get_schedule(id) {
+                Ok(Some(s)) => s,
+                Ok(None) => return json_error(404, "Schedule not found"),
+                Err(e) => return json_error(500, &e),
+            };
+            match crate::scheduler::fire_schedule(
+                &ctx.app_handle,
+                ctx.connection_manager.as_ref(),
+                &schedule,
+            ) {
+                Ok(()) => json_ok(&serde_json::json!({"fired": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         // ─── Rules ──────────────────────────────────────────────────
         ("GET", "/api/rules") => {
             match ctx.db.get_rules() {

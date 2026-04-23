@@ -1210,13 +1210,35 @@ impl Database {
             "SELECT id, device_id, capability_id, value, cron, label, enabled, last_run, scene_id FROM schedules"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
+            let cron: String = row.get(4)?;
+            let next_run = crate::scheduler::compute_next_run(&cron);
             Ok(Schedule {
                 id: row.get(0)?, device_id: row.get(1)?, capability_id: row.get(2)?,
-                value: row.get(3)?, cron: row.get(4)?, label: row.get(5)?,
+                value: row.get(3)?, cron, label: row.get(5)?,
                 enabled: row.get(6)?, last_run: row.get(7)?, scene_id: row.get(8)?,
+                next_run,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_schedule(&self, id: i64) -> Result<Option<Schedule>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, device_id, capability_id, value, cron, label, enabled, last_run, scene_id
+             FROM schedules WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                let cron: String = row.get(4)?;
+                let next_run = crate::scheduler::compute_next_run(&cron);
+                Ok(Schedule {
+                    id: row.get(0)?, device_id: row.get(1)?, capability_id: row.get(2)?,
+                    value: row.get(3)?, cron, label: row.get(5)?,
+                    enabled: row.get(6)?, last_run: row.get(7)?, scene_id: row.get(8)?,
+                    next_run,
+                })
+            },
+        ).optional().map_err(|e| e.to_string())
     }
 
     pub fn delete_schedule(&self, id: i64) -> Result<(), String> {
@@ -2451,6 +2473,8 @@ pub struct Schedule {
     pub enabled: bool,
     pub last_run: Option<String>,
     pub scene_id: Option<i64>,
+    #[serde(default)]
+    pub next_run: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

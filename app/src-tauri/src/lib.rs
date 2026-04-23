@@ -174,6 +174,7 @@ pub fn run() {
             get_schedules,
             delete_schedule,
             toggle_schedule,
+            run_schedule,
             create_rule,
             get_rules,
             delete_rule,

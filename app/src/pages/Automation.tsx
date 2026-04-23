@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap, Send, ChevronDown, ChevronRight, CheckCircle, XCircle } from "lucide-react";
+import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap, Send, Play, ChevronDown, ChevronRight, CheckCircle, XCircle } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface Schedule {
@@ -13,6 +13,7 @@ interface Schedule {
   enabled: boolean;
   last_run: string | null;
   scene_id: number | null;
+  next_run: string | null;
 }
 
 interface SceneRef {
@@ -311,6 +312,36 @@ export default function Automation() {
     }
   };
 
+  const runSchedule = async (id: number, label: string) => {
+    setActionLoading(`run-schedule-${id}`);
+    try {
+      await invoke("run_schedule", { id });
+      await loadAll();
+    } catch (err) {
+      console.error(`Failed to run schedule "${label}":`, err);
+      alert(`Run failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // "Tomorrow at 06:00" / "Today at 14:30" / "Mon Apr 28 at 09:00" — user's locale, minute precision.
+  // Invalid cron or no future occurrence → null (UI shows "—").
+  const formatNextRun = (iso: string | null): string | null => {
+    if (!iso) return null;
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return null;
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(midnight.getTime() + 24 * 3600 * 1000);
+    const dayAfter = new Date(midnight.getTime() + 48 * 3600 * 1000);
+    const time = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (dt >= midnight && dt < tomorrow) return `Today at ${time}`;
+    if (dt >= tomorrow && dt < dayAfter) return `Tomorrow at ${time}`;
+    const date = dt.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    return `${date} at ${time}`;
+  };
+
   const tabs: { id: Tab; icon: typeof Clock; label: string; count: number }[] = [
     { id: "schedules", icon: Clock, label: "Schedules", count: schedules.length },
     { id: "rules", icon: GitBranch, label: "Rules", count: rules.length },
@@ -438,7 +469,9 @@ export default function Automation() {
             </div>
           ) : (
             <div className="space-y-2">
-              {schedules.map((s) => (
+              {schedules.map((s) => {
+                const nextRunLabel = s.enabled ? formatNextRun(s.next_run) : null;
+                return (
                 <div key={s.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!s.enabled ? "opacity-50" : ""}`}>
                   <div>
                     <p className="text-sm font-medium text-zinc-200">
@@ -450,9 +483,22 @@ export default function Automation() {
                         ? `Scene: ${scenes.find((sc) => sc.id === s.scene_id)?.name ?? `#${s.scene_id}`}`
                         : `${selectedDevice(s.device_id)?.name || s.device_id}.${s.capability_id} = ${s.value}`}
                     </p>
+                    {s.enabled && (
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        Next: {nextRunLabel ?? <span className="text-zinc-600">—</span>}
+                      </p>
+                    )}
                     {s.last_run && <p className="text-[11px] text-zinc-600 mt-0.5">Last run: {s.last_run}</p>}
                   </div>
                   <div className="flex items-center gap-1.5">
+                    <button onClick={() => runSchedule(s.id, s.label)}
+                      disabled={actionLoading === `run-schedule-${s.id}` || !s.enabled}
+                      title={s.enabled ? "Run now" : "Enable schedule to run"}
+                      className="text-zinc-500 hover:text-trellis-400 disabled:opacity-40 disabled:cursor-not-allowed">
+                      {actionLoading === `run-schedule-${s.id}`
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Play size={14} />}
+                    </button>
                     <button onClick={() => handleToggle("schedule", s.id, s.enabled)}
                       disabled={actionLoading === `toggle-schedule-${s.id}`}
                       className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
@@ -463,7 +509,8 @@ export default function Automation() {
                       className="text-zinc-500 hover:text-red-400 disabled:opacity-50"><Trash2 size={14} /></button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
