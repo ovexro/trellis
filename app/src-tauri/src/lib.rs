@@ -179,6 +179,7 @@ pub fn run() {
             get_rules,
             delete_rule,
             toggle_rule,
+            run_rule,
             create_webhook,
             get_webhooks,
             delete_webhook,

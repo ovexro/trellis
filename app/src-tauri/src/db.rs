@@ -1288,7 +1288,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, source_device_id, source_metric_id, condition, threshold,
              target_device_id, target_capability_id, target_value, label, enabled,
-             logic, conditions FROM rules"
+             logic, conditions, last_triggered FROM rules"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(Rule {
@@ -1298,9 +1298,43 @@ impl Database {
                 label: row.get(8)?, enabled: row.get(9)?,
                 logic: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "and".to_string()),
                 conditions: row.get(11)?,
+                last_triggered: row.get(12)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn get_rule(&self, id: i64) -> Result<Option<Rule>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, source_device_id, source_metric_id, condition, threshold,
+             target_device_id, target_capability_id, target_value, label, enabled,
+             logic, conditions, last_triggered FROM rules WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query_map(rusqlite::params![id], |row| {
+            Ok(Rule {
+                id: row.get(0)?, source_device_id: row.get(1)?, source_metric_id: row.get(2)?,
+                condition: row.get(3)?, threshold: row.get(4)?, target_device_id: row.get(5)?,
+                target_capability_id: row.get(6)?, target_value: row.get(7)?,
+                label: row.get(8)?, enabled: row.get(9)?,
+                logic: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "and".to_string()),
+                conditions: row.get(11)?,
+                last_triggered: row.get(12)?,
+            })
+        }).map_err(|e| e.to_string())?;
+        match rows.next() {
+            Some(r) => r.map(Some).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    }
+
+    pub fn update_rule_last_triggered(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE rules SET last_triggered = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn delete_rule(&self, id: i64) -> Result<(), String> {
@@ -2493,6 +2527,8 @@ pub struct Rule {
     pub logic: String,
     #[serde(default)]
     pub conditions: Option<String>,
+    #[serde(default)]
+    pub last_triggered: Option<String>,
 }
 
 fn default_logic() -> String {
@@ -2986,6 +3022,7 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // Add compound conditions support to rules (post-v0.9.0 — AND/OR logic)
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN logic TEXT NOT NULL DEFAULT 'and'", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN conditions TEXT", []);
+    let _ = conn.execute("ALTER TABLE rules ADD COLUMN last_triggered TEXT", []);
 
     // Webhook delivery history (post-v0.9.0 — retry + delivery log)
     conn.execute_batch("
@@ -3351,5 +3388,58 @@ mod tests {
             wh,
             expected
         );
+    }
+
+    fn new_rules_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_device_id TEXT NOT NULL,
+                source_metric_id TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                target_device_id TEXT NOT NULL,
+                target_capability_id TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                logic TEXT NOT NULL DEFAULT 'and',
+                conditions TEXT,
+                last_triggered TEXT
+            );",
+        )
+        .unwrap();
+        Database { conn: Mutex::new(conn) }
+    }
+
+    #[test]
+    fn get_rule_returns_none_for_missing_id() {
+        let db = new_rules_test_db();
+        assert!(db.get_rule(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn new_rule_has_null_last_triggered() {
+        let db = new_rules_test_db();
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .unwrap();
+        let rule = db.get_rule(id).unwrap().unwrap();
+        assert_eq!(rule.last_triggered, None);
+    }
+
+    #[test]
+    fn update_rule_last_triggered_stamps_timestamp() {
+        let db = new_rules_test_db();
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .unwrap();
+        db.update_rule_last_triggered(id).unwrap();
+        let rule = db.get_rule(id).unwrap().unwrap();
+        let ts = rule.last_triggered.expect("last_triggered should be set");
+        // SQLite datetime('now') format: "YYYY-MM-DD HH:MM:SS", 19 chars
+        assert_eq!(ts.len(), 19, "unexpected timestamp shape: {}", ts);
+        assert!(ts.starts_with('2'), "expected century prefix, got {}", ts);
     }
 }

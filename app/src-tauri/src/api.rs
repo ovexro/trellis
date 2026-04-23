@@ -1362,6 +1362,28 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_create_rule(ctx, &req.body)
         }
 
+        ("POST", p) if p.starts_with("/api/rules/") && p.ends_with("/run") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/rules/".len()..p.len() - "/run".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid rule ID"),
+            };
+            let rule = match ctx.db.get_rule(id) {
+                Ok(Some(r)) => r,
+                Ok(None) => return json_error(404, "Rule not found"),
+                Err(e) => return json_error(500, &e),
+            };
+            match crate::scheduler::fire_rule(
+                &ctx.app_handle,
+                ctx.connection_manager.as_ref(),
+                &rule,
+            ) {
+                Ok(()) => json_ok(&serde_json::json!({"fired": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("DELETE", p) if p.starts_with("/api/rules/") => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id: i64 = match p["/api/rules/".len()..].parse() {

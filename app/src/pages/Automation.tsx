@@ -43,6 +43,7 @@ interface Rule {
   enabled: boolean;
   logic: string;
   conditions: string | null;
+  last_triggered: string | null;
 }
 
 interface WebhookDef {
@@ -319,6 +320,19 @@ export default function Automation() {
       await loadAll();
     } catch (err) {
       console.error(`Failed to run schedule "${label}":`, err);
+      alert(`Run failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const runRule = async (id: number, label: string) => {
+    setActionLoading(`run-rule-${id}`);
+    try {
+      await invoke("run_rule", { id });
+      await loadAll();
+    } catch (err) {
+      console.error(`Failed to run rule "${label}":`, err);
       alert(`Run failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setActionLoading(null);
@@ -652,8 +666,17 @@ export default function Automation() {
                       ))}
                       {" → "}{(selectedDevice(r.target_device_id)?.nickname || selectedDevice(r.target_device_id)?.name || r.target_device_id)}.{r.target_capability_id} = {r.target_value}
                     </p>
+                    {r.last_triggered && <p className="text-[11px] text-zinc-600 mt-0.5">Last triggered: {r.last_triggered}</p>}
                   </div>
                   <div className="flex items-center gap-1.5">
+                    <button onClick={() => runRule(r.id, r.label)}
+                      disabled={actionLoading === `run-rule-${r.id}` || !r.enabled}
+                      title={r.enabled ? "Run now (bypass conditions)" : "Enable rule to run"}
+                      className="text-zinc-500 hover:text-trellis-400 disabled:opacity-40 disabled:cursor-not-allowed">
+                      {actionLoading === `run-rule-${r.id}`
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Play size={14} />}
+                    </button>
                     <button onClick={() => handleToggle("rule", r.id, r.enabled)}
                       disabled={actionLoading === `toggle-rule-${r.id}`}
                       className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">

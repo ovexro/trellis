@@ -905,6 +905,18 @@ pub fn toggle_rule(db: State<'_, Database>, id: i64, enabled: bool) -> Result<()
     db.toggle_rule(id, enabled)
 }
 
+#[tauri::command]
+pub fn run_rule(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<(), String> {
+    let rule = db.get_rule(id)?
+        .ok_or_else(|| format!("Rule {} not found", id))?;
+    crate::scheduler::fire_rule(&app_handle, state.connection_manager.as_ref(), &rule)
+}
+
 // ─── Webhooks ───────────────────────────────────────────────────────────────
 
 #[tauri::command]

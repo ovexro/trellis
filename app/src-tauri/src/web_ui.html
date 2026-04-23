@@ -4320,6 +4320,18 @@
       }
     }
 
+    async function runRule(id, btn) {
+      if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+      try {
+        await api('/api/rules/' + id + '/run', { method: 'POST' });
+        toast('Rule fired', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Run failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Run now'; }
+      }
+    }
+
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
@@ -4377,13 +4389,21 @@
           <div class="section-title">Rules</div>`;
         if (rules && rules.length) {
           html += rules.map(r => {
+            const lastLine = r.last_triggered
+              ? `<div class="auto-card-detail" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.1rem;">Last triggered: ${esc(r.last_triggered)}</div>`
+              : '';
+            const runBtn = (isViewer || r.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runRule(${r.id}, this)" title="Run now (bypass conditions)">Run now</button>`;
             return `<div class="auto-card">
-              <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
+                <div style="min-width:0;flex:1;">
                   <div class="auto-card-title">${esc(r.label || 'Rule')}</div>
                   <div class="auto-card-detail">${formatRuleCondition(r)}</div>
+                  ${lastLine}
                 </div>
-                <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
+                  <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                  ${runBtn}
+                </div>
               </div>
             </div>`;
           }).join('');

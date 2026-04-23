@@ -154,21 +154,10 @@ async function checkRules(deviceId: string, metricId: string, _value: number, de
       if (Date.now() - lastFired < 30000) continue;
       firedRules.set(key, Date.now());
 
-      // Execute action
-      const target = devices.find((d) => d.id === rule.target_device_id);
-      if (!target || !target.online) continue;
-
-      const val = rule.target_value === "true" ? true
-        : rule.target_value === "false" ? false
-        : isNaN(Number(rule.target_value)) ? rule.target_value
-        : Number(rule.target_value);
-
-      invoke("send_command", {
-        deviceId: target.id,
-        ip: target.ip,
-        port: target.port,
-        command: { command: "set", id: rule.target_capability_id, value: val },
-      }).catch((err) => console.error("Rule action failed:", err));
+      // Delegate to the shared Rust fire path so last_triggered is stamped
+      // and the same code runs for manual Run now + condition-matched fires.
+      invoke("run_rule", { id: rule.id })
+        .catch((err) => console.error("Rule action failed:", err));
     }
   } catch (err) {
     console.error("Failed to check rules:", err);

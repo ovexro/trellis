@@ -174,6 +174,36 @@ pub fn fire_schedule(
     }
 }
 
+/// Execute a rule's action once and stamp last_triggered on success.
+/// Shared by the frontend evaluator (after conditions match) and the
+/// manual "Run now" path (which deliberately bypasses the conditions).
+/// Returns Err on: target device offline / action send failure / DB error.
+pub fn fire_rule(
+    app_handle: &AppHandle,
+    conn_mgr: &ConnectionManager,
+    rule: &crate::db::Rule,
+) -> Result<(), String> {
+    let db = app_handle
+        .try_state::<Database>()
+        .ok_or_else(|| "Database state unavailable".to_string())?;
+
+    log::info!(
+        "[Scheduler] Firing rule '{}': {}.{} = {}",
+        rule.label, rule.target_device_id, rule.target_capability_id, rule.target_value
+    );
+
+    send_action(
+        app_handle, conn_mgr,
+        &rule.target_device_id, &rule.target_capability_id, &rule.target_value,
+    )?;
+
+    db.update_rule_last_triggered(rule.id)
+        .map_err(|e| format!("Failed to stamp last_triggered: {}", e))?;
+
+    log::info!("[Scheduler] Rule action sent successfully");
+    Ok(())
+}
+
 fn send_action(
     app_handle: &AppHandle, conn_mgr: &ConnectionManager,
     device_id: &str, capability_id: &str, value_str: &str,
