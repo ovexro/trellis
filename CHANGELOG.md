@@ -4,6 +4,10 @@ All notable changes to Trellis will be documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-04-23
+
+Device identity cluster. Three sibling features that round out per-device metadata and make it findable: free-form **notes**, set-once **install date**, and **device search** extended to both across desktop Dashboard and the embedded `:9090` web UI. Plus a one-line fix for config-import replay that the notes work surfaced. No library or firmware change — every commit lands desktop-side.
+
 ### Added
 
 - **Device search expanded to notes + install_date, with full parity on the embedded web UI.** Desktop Dashboard search already matched name / nickname / id / ip / platform / chip / tags; the identity cluster (notes, install_date) is now included too so `garage breaker 14` in a note makes the device findable by typing `breaker`. Same search shipped to the embedded `:9090` web UI (previously it had none): new `<input type="search">` above the device grid with the placeholder `Search name, nickname, tags, notes…`, filtering across the same 9 fields plus falling back to the cached `savedDevices` list for nickname / tags / notes / install_date that don't live on the live device payload. Empty-match state shows `No devices match "…"` instead of blanking the grid. The search row auto-hides when there are zero devices entirely (matches the existing empty-state shell).
