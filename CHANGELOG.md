@@ -2,6 +2,24 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [Unreleased]
+
+## [0.21.0] — 2026-04-23
+
+Device identity cluster. Three sibling features that round out per-device metadata and make it findable: free-form **notes**, set-once **install date**, and **device search** extended to both across desktop Dashboard and the embedded `:9090` web UI. Plus a one-line fix for config-import replay that the notes work surfaced. No library or firmware change — every commit lands desktop-side.
+
+### Added
+
+- **Device search expanded to notes + install_date, with full parity on the embedded web UI.** Desktop Dashboard search already matched name / nickname / id / ip / platform / chip / tags; the identity cluster (notes, install_date) is now included too so `garage breaker 14` in a note makes the device findable by typing `breaker`. Same search shipped to the embedded `:9090` web UI (previously it had none): new `<input type="search">` above the device grid with the placeholder `Search name, nickname, tags, notes…`, filtering across the same 9 fields plus falling back to the cached `savedDevices` list for nickname / tags / notes / install_date that don't live on the live device payload. Empty-match state shows `No devices match "…"` instead of blanking the grid. The search row auto-hides when there are zero devices entirely (matches the existing empty-state shell).
+
+- **Per-device install date.** Optional yyyy-mm-dd metadata per device recording when the unit was put into service — complements nickname / tags / notes in the per-device identity cluster. New `install_date TEXT NOT NULL DEFAULT ''` column on `devices` with matching ALTER-TABLE migration. Rust CRUD via `Database::set_device_install_date`, exposed as `set_device_install_date` Tauri command + admin-gated `PUT /api/devices/:id/install-date` REST endpoint (body `{"install_date": "2026-04-23"}` or `""` to clear). REST layer validates ISO format to protect the `<input type="date">` from bogus direct-curl writes. Desktop: new `DeviceInstallDate` React component renders as its own "Install Date" section under Notes on the Device Detail page — empty state offers a dashed "+ Set install date" affordance, populated state reads "Installed Apr 23, 2026" with a pencil edit button; edit mode shows a native date picker with Save / Cancel / Clear. Embedded `:9090` web UI has full parity via `renderDeviceInstallDate` / `saveDeviceInstallDate` in `web_ui.html` following the existing notes pattern. Viewer role read-only on both surfaces. Install date is included in `get_saved_device` / `get_all_saved_devices` and in config export/import (replayed at import alongside notes).
+
+- **Per-device notes.** Free-form text field per device for wiring, install date, calibration, breaker number — anything worth remembering that doesn't fit nickname or tags. New `notes TEXT NOT NULL DEFAULT ''` column on `devices` table with matching ALTER-TABLE migration. Rust CRUD via `Database::set_device_notes`, exposed as `set_device_notes` Tauri command + admin-gated `PUT /api/devices/:id/notes` REST endpoint (body `{"notes": "…"}`). Desktop: new `DeviceNotes` React component renders as its own "Notes" section on the Device Detail page between Diagnostics and Uptime History — empty state is a dashed-border "+ Add notes" affordance, populated state shows the text pre-wrapped with a pencil edit button, edit mode uses a resizable textarea with Save / Cancel. Embedded `:9090` web UI has full parity via `renderDeviceNotes` / `saveDeviceNotes` in `web_ui.html` following the existing `renderGithubRepoBinding` pattern. Viewer role is read-only on both surfaces (affordance suppressed, Edit button hidden, REST endpoint enforces via existing `require_admin`). Notes are included in `get_saved_device` / `get_all_saved_devices` so the web UI's cached `savedDevices` list picks them up at page load.
+
+### Fixed
+
+- **Config import now restores per-device notes.** Export already carried `notes` for free (via `get_saved_devices`), but the import path in Settings → Data → Import Config only replayed `nickname`, `tags`, and `group_id` — users exporting after setting notes would silently lose them on re-import. One extra `set_device_notes` call in `ConfigSection.tsx` closes the gap; end-to-end round-trip verified via REST against the live ESP32 (PUT → GET /api/saved-devices carries notes → clear → PUT-back restores).
+
 ## [0.20.0] — 2026-04-22
 
 Energy tracking, fully wired. The v0.19.0 desktop MVP grows three sibling features and one diagnostics rail: device-online correctness in the on-time math, complete parity in the embedded `:9090` web dashboard, a per-switch power sensor that auto-discovers in Home Assistant, and an `energy_coverage` diagnostics rule that names whether the feature is wired up on each device. No library or firmware change in this release — every commit lands desktop-side.
