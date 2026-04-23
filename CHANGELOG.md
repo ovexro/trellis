@@ -2,7 +2,9 @@
 
 All notable changes to Trellis will be documented in this file.
 
-## [Unreleased]
+## [0.22.0] — 2026-04-23
+
+Energy-cluster closure and automation UX polish. Two energy features complete the Home Assistant Energy-dashboard loop kicked off in v0.19.0 — a per-capability `total_increasing` Wh counter alongside v0.20.0's instantaneous `_power` sensor, plus phase 2 for sliders that opts dimmers and PWM heaters into linear-power accounting so they actually contribute to the Wh integration. Third feature lands the two most-requested Automation-page ergonomics in one pass: every schedule card now shows when it will next fire (human-friendly `Next: Today at 14:30` line derived from the cron string), and a Run now button lets admins verify a schedule works without waiting for the clock. Desktop + `:9090` web UI parity throughout. No library or firmware change in this release.
 
 ### Added
 
