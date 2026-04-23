@@ -129,6 +129,7 @@ pub fn get_device_capability_meta(
 #[tauri::command]
 pub fn set_capability_linear_power(
     db: State<'_, Database>,
+    state: State<'_, AppState>,
     device_id: String,
     capability_id: String,
     linear_power: bool,
@@ -139,7 +140,11 @@ pub fn set_capability_linear_power(
         &capability_id,
         linear_power,
         slider_max,
-    )
+    )?;
+    state
+        .mqtt_bridge
+        .set_linear_power(&device_id, &capability_id, linear_power, slider_max);
+    Ok(())
 }
 
 #[tauri::command]

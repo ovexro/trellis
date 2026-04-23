@@ -2071,6 +2071,8 @@ fn handle_set_capability_meta(
         ) {
             return json_error(500, &e);
         }
+        ctx.mqtt_bridge
+            .set_linear_power(device_id, capability_id, lp, slider_max);
     }
     json_ok(&serde_json::json!({"updated": true}))
 }

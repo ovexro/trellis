@@ -503,17 +503,18 @@ impl Database {
         })
     }
 
-    /// Every (device_id, capability_id, nameplate_watts) triple where
-    /// nameplate_watts is set. Used at startup to hydrate the MQTT bridge's
-    /// watts cache so `sensor.<cap>_power` HA entities appear on the first
-    /// discovery publish without a DB round-trip per device.
-    pub fn get_all_capability_watts(
+    /// Every (device_id, capability_id, nameplate_watts, linear_power,
+    /// slider_max) tuple where `nameplate_watts` is set. Used at startup to
+    /// hydrate the MQTT bridge's meta cache so HA discovery emits the
+    /// per-capability `_power` + `_energy` entities on first publish without
+    /// a DB round-trip per device.
+    pub fn get_all_capability_meters(
         &self,
-    ) -> Result<Vec<(String, String, f64)>, String> {
+    ) -> Result<Vec<(String, String, f64, bool, Option<f64>)>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT device_id, capability_id, nameplate_watts
+                "SELECT device_id, capability_id, nameplate_watts, linear_power, slider_max
                  FROM capability_meta
                  WHERE nameplate_watts IS NOT NULL",
             )
@@ -524,6 +525,8 @@ impl Database {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, f64>(2)?,
+                    row.get::<_, i64>(3)? != 0,
+                    row.get::<_, Option<f64>>(4)?,
                 ))
             })
             .map_err(|e| e.to_string())?;
@@ -532,6 +535,157 @@ impl Database {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// Lifetime cumulative Wh for one metered capability, suitable for an HA
+    /// `total_increasing` energy sensor. Bounds the integration at
+    /// `MIN(timestamp)` of this capability's own `capability_state_log` rows —
+    /// `capability_state_log` is NOT subject to data-retention cleanup, so
+    /// that minimum is stable across the device's lifetime and the cumulative
+    /// stays monotonic (modulo user edits to `nameplate_watts`/`slider_max`,
+    /// which HA treats as counter resets per the `total_increasing` spec).
+    ///
+    /// Returns `0.0` (not an error) when the capability has no meta row, no
+    /// `nameplate_watts`, or no logged transitions yet — lets callers publish
+    /// unconditionally without branching.
+    ///
+    /// Offline-interval overlap is subtracted from ON-time (same model as
+    /// `get_device_energy`). The severity='state' boundary log IS under
+    /// retention cleanup, so for timestamps older than the retention window
+    /// we lose offline-overlap fidelity and may over-count slightly. This is
+    /// BACKLOG-acknowledged and acceptable at the HA Energy-dashboard
+    /// granularity.
+    pub fn get_capability_lifetime_wh(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+    ) -> Result<f64, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let meta: Option<(f64, bool, Option<f64>)> = conn
+            .query_row(
+                "SELECT nameplate_watts, linear_power, slider_max
+                 FROM capability_meta
+                 WHERE device_id = ?1 AND capability_id = ?2
+                   AND nameplate_watts IS NOT NULL",
+                rusqlite::params![device_id, capability_id],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, i64>(1)? != 0,
+                        row.get::<_, Option<f64>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let (watts, linear_power, slider_max) = match meta {
+            Some(t) => t,
+            None => return Ok(0.0),
+        };
+
+        let window_start_epoch: Option<i64> = conn
+            .query_row(
+                "SELECT CAST(strftime('%s', MIN(timestamp)) AS INTEGER)
+                 FROM capability_state_log
+                 WHERE device_id = ?1 AND capability_id = ?2",
+                rusqlite::params![device_id, capability_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .flatten();
+        let window_start_epoch = match window_start_epoch {
+            Some(t) => t,
+            None => return Ok(0.0),
+        };
+
+        let now_epoch: i64 = conn
+            .query_row("SELECT CAST(strftime('%s', 'now') AS INTEGER)", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+
+        let bootstrap_state_msg: Option<String> = conn
+            .query_row(
+                "SELECT message FROM device_logs
+                 WHERE device_id = ?1 AND severity = 'state'
+                   AND CAST(strftime('%s', timestamp) AS INTEGER) < ?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![device_id, window_start_epoch],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        let bootstrap_online: Option<bool> =
+            bootstrap_state_msg.map(|m| m == "online");
+
+        let mut sls = conn
+            .prepare(
+                "SELECT message, CAST(strftime('%s', timestamp) AS INTEGER)
+                 FROM device_logs
+                 WHERE device_id = ?1 AND severity = 'state'
+                   AND CAST(strftime('%s', timestamp) AS INTEGER) >= ?2
+                 ORDER BY id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let state_logs: Vec<(String, i64)> = sls
+            .query_map(
+                rusqlite::params![device_id, window_start_epoch],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let offline_intervals = compute_offline_intervals(
+            bootstrap_online,
+            &state_logs,
+            window_start_epoch,
+            now_epoch,
+        );
+
+        let mut s = conn
+            .prepare(
+                "SELECT state, CAST(strftime('%s', timestamp) AS INTEGER)
+                 FROM capability_state_log
+                 WHERE device_id = ?1 AND capability_id = ?2
+                 ORDER BY id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(i64, i64)> = s
+            .query_map(rusqlite::params![device_id, capability_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+
+        // bootstrap=0 (OFF) is correct by construction: window_start is the
+        // timestamp of the very first logged transition, and there is no row
+        // before it. The first segment [window_start, first_ts) thus has
+        // zero duration anyway.
+        let wh = if linear_power {
+            let (_on, wh) = compute_numeric_wh_online(
+                0,
+                &rows,
+                window_start_epoch,
+                now_epoch,
+                &offline_intervals,
+                watts,
+                slider_max.unwrap_or(255.0),
+            );
+            wh
+        } else {
+            let sec = compute_on_seconds_online(
+                0,
+                &rows,
+                window_start_epoch,
+                now_epoch,
+                &offline_intervals,
+            );
+            (sec as f64) * watts / 3600.0
+        };
+        Ok(wh)
     }
 
     pub fn get_device_capability_meta(
@@ -3005,5 +3159,173 @@ mod tests {
         let (_, wh_explicit) =
             compute_numeric_wh_online(128, &[], 0, 3600, &[], 100.0, 255.0);
         assert!((wh_default - wh_explicit).abs() < 1e-12);
+    }
+
+    fn new_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE capability_meta (
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                nameplate_watts REAL,
+                linear_power INTEGER NOT NULL DEFAULT 0,
+                slider_max REAL,
+                PRIMARY KEY (device_id, capability_id)
+             );
+             CREATE TABLE capability_state_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                state INTEGER NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE device_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                message TEXT NOT NULL,
+                timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        Database {
+            conn: Mutex::new(conn),
+        }
+    }
+
+    /// ISO-8601 UTC timestamp at (now - seconds_ago). Matches what SQLite
+    /// returns from `datetime('now')` so the stored row compares correctly
+    /// against strftime('%s', timestamp).
+    fn ts_ago(db: &Database, seconds_ago: i64) -> String {
+        let c = db.conn.lock().unwrap();
+        c.query_row(
+            "SELECT datetime('now', ?1)",
+            rusqlite::params![format!("-{} seconds", seconds_ago)],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn lifetime_wh_returns_zero_without_meta() {
+        let db = new_test_db();
+        // No capability_meta row at all.
+        let wh = db.get_capability_lifetime_wh("devX", "capX").unwrap();
+        assert_eq!(wh, 0.0);
+    }
+
+    #[test]
+    fn lifetime_wh_returns_zero_when_no_nameplate_watts() {
+        let db = new_test_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO capability_meta (device_id, capability_id, nameplate_watts)
+                 VALUES (?1, ?2, NULL)",
+                rusqlite::params!["dev1", "led"],
+            )
+            .unwrap();
+        let wh = db.get_capability_lifetime_wh("dev1", "led").unwrap();
+        assert_eq!(wh, 0.0);
+    }
+
+    #[test]
+    fn lifetime_wh_returns_zero_when_no_state_log_rows() {
+        let db = new_test_db();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power)
+                 VALUES ('dev1', 'led', 60.0, 0)",
+                [],
+            )
+            .unwrap();
+        let wh = db.get_capability_lifetime_wh("dev1", "led").unwrap();
+        assert_eq!(wh, 0.0, "no logged transitions → 0 Wh");
+    }
+
+    #[test]
+    fn lifetime_wh_switch_path_integrates_on_intervals() {
+        // Switch flipped ON 1000s ago (state=1), OFF 400s ago (state=0),
+        // watts=60 → 600s of ON-time → 600 * 60 / 3600 = 10.0 Wh.
+        let db = new_test_db();
+        let ts_1000 = ts_ago(&db, 1000);
+        let ts_400 = ts_ago(&db, 400);
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power)
+                 VALUES ('dev1', 'led', 60.0, 0)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_state_log
+                 (device_id, capability_id, state, timestamp)
+                 VALUES ('dev1', 'led', 1, ?1), ('dev1', 'led', 0, ?2)",
+                rusqlite::params![ts_1000, ts_400],
+            )
+            .unwrap();
+        }
+        let wh = db.get_capability_lifetime_wh("dev1", "led").unwrap();
+        // Expected = 600 * 60 / 3600 = 10.0. Allow small jitter from the
+        // difference between the INSERT time and the strftime('%s', 'now')
+        // inside the method (we sample ts_ago first, then the method samples
+        // later).
+        assert!(
+            (wh - 10.0).abs() < 0.05,
+            "switch path wh {} ≈ 10.0 Wh",
+            wh
+        );
+    }
+
+    #[test]
+    fn lifetime_wh_slider_linear_path_integrates_value_fraction() {
+        // Slider opted into linear_power with slider_max=100, watts=20.
+        // Transitions: 100 (full) at 900s ago → 50 (half) at 600s ago →
+        // 0 at 300s ago.
+        // Segment 1: [window_start=900, 600) value=0 (bootstrap) → 0 Wh.
+        //   Wait: bootstrap=0 by construction inside get_capability_lifetime_wh,
+        //   so the first segment from window_start..first_ts is zero-duration
+        //   (window_start IS the first row's ts). So actual segments:
+        // Segment 1: [900, 600) value=100 → 300 * 20 * (100/100) / 3600 = 1.667 Wh
+        // Segment 2: [600, 300) value=50  → 300 * 20 * (50/100)  / 3600 = 0.833 Wh
+        // Segment 3: [300, now) value=0   → 0 Wh
+        // Total ≈ 2.5 Wh.
+        let db = new_test_db();
+        let ts_900 = ts_ago(&db, 900);
+        let ts_600 = ts_ago(&db, 600);
+        let ts_300 = ts_ago(&db, 300);
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO capability_meta
+                 (device_id, capability_id, nameplate_watts, linear_power, slider_max)
+                 VALUES ('dev1', 'bright', 20.0, 1, 100.0)",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO capability_state_log
+                 (device_id, capability_id, state, timestamp)
+                 VALUES ('dev1', 'bright', 100, ?1),
+                        ('dev1', 'bright', 50, ?2),
+                        ('dev1', 'bright', 0, ?3)",
+                rusqlite::params![ts_900, ts_600, ts_300],
+            )
+            .unwrap();
+        }
+        let wh = db.get_capability_lifetime_wh("dev1", "bright").unwrap();
+        let expected = (300.0 * 20.0 * 1.0 + 300.0 * 20.0 * 0.5) / 3600.0;
+        assert!(
+            (wh - expected).abs() < 0.05,
+            "slider path wh {} ≈ {} Wh",
+            wh,
+            expected
+        );
     }
 }

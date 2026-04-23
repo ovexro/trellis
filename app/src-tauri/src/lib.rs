@@ -302,6 +302,30 @@ pub fn run() {
                 }
             });
 
+            // Periodic `_energy/state` refresh for every metered capability.
+            // On every transition, `connection.rs` publishes fresh Wh. But
+            // long steady-state intervals (e.g. a lamp left ON for hours)
+            // produce no transitions, so HA's Energy dashboard would see a
+            // flat counter across hourly buckets. Re-publishing every 60s
+            // keeps `total_increasing` integrating correctly between
+            // transitions. The tick is a no-op when the bridge is disabled
+            // (publish_energy early-returns on cfg.enabled=false).
+            let energy_handle = app.handle().clone();
+            let energy_bridge = mqtt_bridge.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let Some(db) = energy_handle.try_state::<db::Database>() else {
+                    continue;
+                };
+                for (device_id, cap_id) in energy_bridge.metered_capabilities() {
+                    if let Ok(wh) =
+                        db.get_capability_lifetime_wh(&device_id, &cap_id)
+                    {
+                        energy_bridge.publish_energy(&device_id, &cap_id, wh);
+                    }
+                }
+            });
+
             // System tray with right-click menu
             let show_item = MenuItem::with_id(app, "show", "Show Trellis", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -428,8 +452,8 @@ pub fn run() {
             // connects, and that publish needs the cache populated to emit
             // the per-switch `sensor.<cap>_power` entities on first boot.
             if let Some(db_state) = app.try_state::<db::Database>() {
-                if let Ok(entries) = db_state.get_all_capability_watts() {
-                    mqtt_bridge.hydrate_watts(entries);
+                if let Ok(entries) = db_state.get_all_capability_meters() {
+                    mqtt_bridge.hydrate_meters(entries);
                 }
             }
 

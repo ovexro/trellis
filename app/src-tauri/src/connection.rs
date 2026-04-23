@@ -255,14 +255,48 @@ fn ws_reader_loop(
                                             if let Some(db) =
                                                 handle.try_state::<Database>()
                                             {
+                                                let mut logged = false;
                                                 if let Some(on) = value.as_bool() {
                                                     let _ = db.log_switch_state(
                                                         device_id, cap_id, on,
                                                     );
+                                                    logged = true;
                                                 } else if let Some(n) = value.as_f64() {
                                                     let _ = db.log_slider_value_if_linear(
                                                         device_id, cap_id, n as i64,
                                                     );
+                                                    logged = true;
+                                                }
+                                                // Companion `_energy` publish on
+                                                // every transition that hit
+                                                // capability_state_log. Gated on
+                                                // bridge opt-in so non-metered
+                                                // caps skip the DB read.
+                                                if logged {
+                                                    if let Some(bridge) =
+                                                        mqtt_bridge.lock().unwrap().as_ref()
+                                                    {
+                                                        let metered = bridge
+                                                            .metered_capabilities()
+                                                            .iter()
+                                                            .any(|(d, c)| {
+                                                                d == device_id
+                                                                    && c == cap_id
+                                                            });
+                                                        if metered {
+                                                            if let Ok(wh) = db
+                                                                .get_capability_lifetime_wh(
+                                                                    device_id, cap_id,
+                                                                )
+                                                            {
+                                                                bridge.publish_energy(
+                                                                    device_id,
+                                                                    cap_id,
+                                                                    wh,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
