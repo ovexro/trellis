@@ -459,7 +459,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
       await get().refreshDevices();
       try {
         const [saved, favs] = await Promise.all([
-          invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null; sort_order: number }>>(
+          invoke<Array<{ id: string; nickname: string | null; tags: string; group_id: number | null; sort_order: number; notes: string; install_date: string }>>(
             "get_saved_devices",
           ),
           invoke<Array<[string, string]>>("get_favorite_capabilities"),
@@ -478,6 +478,8 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
                 tags: s.tags || d.tags,
                 group_id: s.group_id ?? d.group_id,
                 sort_order: s.sort_order ?? 0,
+                notes: s.notes ?? d.notes,
+                install_date: s.install_date ?? d.install_date,
               };
             }),
           }));

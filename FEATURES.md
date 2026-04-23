@@ -31,7 +31,7 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Device card: name, status indicator, RSSI, uptime, firmware version, chip type
 - [x] Click card → device detail view
 - [x] Device grouping / tagging (nicknames, tags, pills on cards)
-- [x] Search / filter devices (by name, nickname, IP, platform, chip, tags)
+- [x] Search / filter devices (by name, nickname, IP, platform, chip, tags, notes, install_date) — parity on desktop Dashboard + embedded `:9090` web UI as of post-v0.20.0; notes/install_date joined via cached savedDevices; empty-match state shows "No devices match …"
 - [x] Device rooms/groups (create groups, assign devices, grouped dashboard view)
 - [x] Group management UI (create, edit, delete, color palette)
 - [x] **Room-filtered dashboard view (post-v0.11.0)** — pill-shaped chips above the device grid narrow the view to a single floor-plan room ("Kitchen", "Living Room", …), "Unplaced" for devices without a floor-plan position or outside every room, or "All" to clear. Room membership is pure derived state: the dashboard loads all rooms (`get_all_rooms` Tauri command / `GET /api/rooms`) and all positions (`get_all_device_positions` / `GET /api/floor-plan/positions`) once, then point-in-rectangle tests each device's (floor_id, x, y) against the rooms on that floor — no schema change, no stored device↔room association. Chips only render when at least one room contains a device, and each chip shows the room's color dot and current device count. Both desktop React app and embedded `:9090` web UI. Unblocks room-scoped scenes ("turn on all lights in Greenhouse") as a follow-up.

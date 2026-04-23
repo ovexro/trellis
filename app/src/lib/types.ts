@@ -33,6 +33,8 @@ export interface Device {
   group_id?: number | null;
   sort_order?: number;
   favorite?: boolean;
+  notes?: string;
+  install_date?: string;
 }
 
 export interface DeviceGroup {

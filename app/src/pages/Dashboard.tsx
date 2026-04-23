@@ -192,7 +192,9 @@ export default function Dashboard() {
         d.ip.includes(q) ||
         d.platform.toLowerCase().includes(q) ||
         d.system.chip.toLowerCase().includes(q) ||
-        (d.tags || "").toLowerCase().includes(q)
+        (d.tags || "").toLowerCase().includes(q) ||
+        (d.notes || "").toLowerCase().includes(q) ||
+        (d.install_date || "").includes(q)
       );
     })
     .filter((d) => {
@@ -330,7 +332,7 @@ export default function Dashboard() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search devices..."
+              placeholder="Search name, nickname, tags, notes…"
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg pl-8 pr-3 py-1.5 text-sm text-zinc-300 placeholder-zinc-600 focus:border-trellis-500 focus:outline-none"
             />
           </div>
