@@ -1062,6 +1062,12 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_notes(ctx, id, &req.body)
         }
 
+        ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/install-date") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id = &p["/api/devices/".len()..p.len() - "/install-date".len()];
+            handle_set_install_date(ctx, id, &req.body)
+        }
+
         ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/favorite") => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/favorite".len()];
@@ -1980,6 +1986,36 @@ fn handle_set_notes(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, Stri
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }
+}
+
+fn handle_set_install_date(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let install_date = v["install_date"].as_str().unwrap_or("");
+
+    // Empty clears; otherwise require ISO-8601 yyyy-mm-dd (matches
+    // <input type="date">). Guards against bogus values from direct
+    // curl calls that would confuse the date input on re-open.
+    if !install_date.is_empty() && !is_iso_date(install_date) {
+        return json_error(400, "install_date must be empty or yyyy-mm-dd");
+    }
+
+    match ctx.db.set_device_install_date(device_id, install_date) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return false;
+    }
+    [0, 1, 2, 3, 5, 6, 8, 9]
+        .iter()
+        .all(|&i| b[i].is_ascii_digit())
 }
 
 fn handle_set_capability_meta(

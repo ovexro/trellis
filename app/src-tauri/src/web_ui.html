@@ -2747,6 +2747,106 @@
       }
     }
 
+    function getDeviceInstallDate(deviceId) {
+      var s = (savedDevices || []).find(function(sd) { return sd.id === deviceId; });
+      return (s && typeof s.install_date === 'string') ? s.install_date : '';
+    }
+
+    function formatInstallDate(iso) {
+      if (!iso) return '';
+      var d = new Date(iso + 'T00:00:00');
+      if (isNaN(d.getTime())) return iso;
+      try {
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      } catch (e) {
+        return iso;
+      }
+    }
+
+    function renderDeviceInstallDate(deviceId, editing) {
+      var iso = getDeviceInstallDate(deviceId);
+      var viewer = isViewer;
+      if (editing && !viewer) {
+        var clearBtn = iso ?
+          '<button class="btn btn-ghost btn-sm" onclick="clearDeviceInstallDate(\'' + esc(deviceId) + '\')" style="color:var(--text-faint);">Clear</button>' : '';
+        return '<div style="padding:0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.6rem;">'
+          + '<input id="detailInstallDateInput-' + esc(deviceId) + '" type="date" value="' + esc(iso) + '" '
+          + 'style="padding:0.5rem;font:inherit;font-size:0.8rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:0.4rem;">'
+          + '<div style="display:flex;justify-content:flex-end;gap:0.4rem;margin-top:0.5rem;">'
+          +   clearBtn
+          +   '<button class="btn btn-ghost btn-sm" onclick="cancelEditInstallDate(\'' + esc(deviceId) + '\')">Cancel</button>'
+          +   '<button class="btn btn-sm" onclick="saveDeviceInstallDate(\'' + esc(deviceId) + '\')">Save</button>'
+          + '</div>'
+          + '</div>';
+      }
+      if (iso) {
+        var editBtn = viewer ? '' :
+          '<button class="btn btn-ghost btn-sm" onclick="startEditInstallDate(\'' + esc(deviceId) + '\')" '
+          + 'style="flex-shrink:0;">Edit</button>';
+        return '<div style="padding:0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.6rem;display:flex;gap:0.75rem;align-items:center;">'
+          + '<div style="flex:1;min-width:0;font-size:0.8rem;color:var(--text);">Installed <span style="color:var(--text-muted);">' + esc(formatInstallDate(iso)) + '</span></div>'
+          + editBtn
+          + '</div>';
+      }
+      if (viewer) {
+        return '<div style="padding:0.75rem;font-size:0.75rem;color:var(--text-faint);font-style:italic;">No install date.</div>';
+      }
+      return '<button class="btn btn-ghost btn-sm" onclick="startEditInstallDate(\'' + esc(deviceId) + '\')" '
+        + 'style="width:100%;padding:0.75rem;border:1px dashed var(--border);background:transparent;color:var(--text-faint);text-align:left;">'
+        + '+ Set install date — when this device was put into service'
+        + '</button>';
+    }
+
+    function refreshInstallDateSection(deviceId, editing) {
+      var body = document.getElementById('detailInstallDateBody');
+      if (!body) return;
+      body.innerHTML = renderDeviceInstallDate(deviceId, editing);
+    }
+
+    function startEditInstallDate(deviceId) {
+      if (isViewer) return;
+      refreshInstallDateSection(deviceId, true);
+      var input = document.getElementById('detailInstallDateInput-' + deviceId);
+      if (input) input.focus();
+    }
+
+    function cancelEditInstallDate(deviceId) {
+      refreshInstallDateSection(deviceId, false);
+    }
+
+    async function putInstallDate(deviceId, value) {
+      await api('/api/devices/' + encodeURIComponent(deviceId) + '/install-date', {
+        method: 'PUT',
+        body: { install_date: value }
+      });
+      var s = (savedDevices || []).find(function(sd) { return sd.id === deviceId; });
+      if (s) s.install_date = value;
+      refreshInstallDateSection(deviceId, false);
+    }
+
+    async function saveDeviceInstallDate(deviceId) {
+      if (isViewer) return;
+      var input = document.getElementById('detailInstallDateInput-' + deviceId);
+      if (!input) return;
+      var next = input.value || '';
+      try {
+        await putInstallDate(deviceId, next);
+        toast(next ? 'Install date saved' : 'Install date cleared', 'success');
+      } catch (e) {
+        toast('Failed to save install date: ' + (e && e.message ? e.message : e), 'error');
+      }
+    }
+
+    async function clearDeviceInstallDate(deviceId) {
+      if (isViewer) return;
+      try {
+        await putInstallDate(deviceId, '');
+        toast('Install date cleared', 'success');
+      } catch (e) {
+        toast('Failed to clear install date: ' + (e && e.message ? e.message : e), 'error');
+      }
+    }
+
     function renderDiagnosticReport(deviceId, report) {
       if (!report || !report.findings) return '<div>No report.</div>';
       var overall = report.overall || 'good';
@@ -3435,6 +3535,14 @@
         <div id="detailNotesBody"></div>
       </div>`;
 
+      // Install date — optional set-once metadata (yyyy-mm-dd). Empty
+      // until admin sets it; viewer read-only. Sits in the per-device
+      // identity cluster alongside Notes.
+      html += `<div class="detail-section" id="detailInstallDateSection">
+        <div class="detail-section-title">Install Date</div>
+        <div id="detailInstallDateBody"></div>
+      </div>`;
+
       // Uptime timeline — populated by renderUptimeTimeline after
       // loadDetailCharts fetches the annotation set for this window.
       // Re-renders on every setChartRange change via the same path.
@@ -3538,6 +3646,7 @@
       body.innerHTML = html;
 
       refreshNotesSection(id, false);
+      refreshInstallDateSection(id, false);
 
       // Move focus into the panel (close button) so keyboard users
       // start inside the trap. Delay one frame so the browser has

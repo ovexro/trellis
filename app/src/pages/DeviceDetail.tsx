@@ -11,6 +11,7 @@ import MetricChart from "@/components/charts/MetricChart";
 import UptimeTimeline from "@/components/charts/UptimeTimeline";
 import DeviceNickname from "@/components/DeviceNickname";
 import DeviceNotes from "@/components/DeviceNotes";
+import DeviceInstallDate from "@/components/DeviceInstallDate";
 import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import DeviceDiagnostics from "@/components/DeviceDiagnostics";
@@ -327,6 +328,9 @@ export default function DeviceDetail() {
 
       <SectionHeader title="Notes" />
       <DeviceNotes deviceId={device.id} />
+
+      <SectionHeader title="Install Date" />
+      <DeviceInstallDate deviceId={device.id} />
 
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />

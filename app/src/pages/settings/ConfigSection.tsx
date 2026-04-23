@@ -129,7 +129,7 @@ export default function ConfigSection() {
           imported.push(`${config.groups.length} groups`);
         }
 
-        // Restore saved devices (nicknames, tags, notes, group assignment)
+        // Restore saved devices (nicknames, tags, notes, install_date, group assignment)
         if (config.devices && Array.isArray(config.devices)) {
           for (const dev of config.devices) {
             if (dev.nickname) {
@@ -140,6 +140,9 @@ export default function ConfigSection() {
             }
             if (dev.notes) {
               await invoke("set_device_notes", { deviceId: dev.id, notes: dev.notes });
+            }
+            if (dev.install_date) {
+              await invoke("set_device_install_date", { deviceId: dev.id, installDate: dev.install_date });
             }
             if (dev.group_id != null && groupIdMap.has(dev.group_id)) {
               await invoke("set_device_group", { deviceId: dev.id, groupId: groupIdMap.get(dev.group_id) });

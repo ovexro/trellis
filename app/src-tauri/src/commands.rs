@@ -90,6 +90,15 @@ pub fn set_device_notes(
 }
 
 #[tauri::command]
+pub fn set_device_install_date(
+    db: State<'_, Database>,
+    device_id: String,
+    install_date: String,
+) -> Result<(), String> {
+    db.set_device_install_date(&device_id, &install_date)
+}
+
+#[tauri::command]
 pub fn get_saved_devices(db: State<'_, Database>) -> Result<Vec<SavedDevice>, String> {
     db.get_all_saved_devices()
 }
