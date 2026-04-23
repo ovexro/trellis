@@ -2488,6 +2488,8 @@ mod tests {
         let meta = vec![CapabilityMeta {
             capability_id: "led".to_string(),
             nameplate_watts: None,
+            linear_power: false,
+            slider_max: None,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_INFO);
@@ -2499,6 +2501,8 @@ mod tests {
         let meta = vec![CapabilityMeta {
             capability_id: "led".to_string(),
             nameplate_watts: Some(60.0),
+            linear_power: false,
+            slider_max: None,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_OK);

@@ -2028,23 +2028,51 @@ fn handle_set_capability_meta(
         Ok(v) => v,
         Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
     };
-    let watts = match &v["nameplate_watts"] {
-        Value::Null => None,
-        Value::Number(n) => n.as_f64(),
-        _ => return json_error(400, "nameplate_watts must be a number or null"),
+    let has_watts = v.get("nameplate_watts").is_some();
+    let watts = match v.get("nameplate_watts") {
+        None => None,
+        Some(Value::Null) => None,
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(_) => return json_error(400, "nameplate_watts must be a number or null"),
     };
     if let Some(w) = watts {
         if !w.is_finite() || w < 0.0 {
             return json_error(400, "nameplate_watts must be a non-negative finite number");
         }
     }
-    match ctx.db.set_capability_watts(device_id, capability_id, watts) {
-        Ok(()) => {
-            ctx.mqtt_bridge.set_watts(device_id, capability_id, watts);
-            json_ok(&serde_json::json!({"updated": true}))
+    let linear_power = match v.get("linear_power") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return json_error(400, "linear_power must be a boolean"),
+    };
+    let slider_max = match v.get("slider_max") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => n.as_f64(),
+        Some(_) => return json_error(400, "slider_max must be a number or null"),
+    };
+    if let Some(m) = slider_max {
+        if !m.is_finite() || m <= 0.0 {
+            return json_error(400, "slider_max must be a positive finite number");
         }
-        Err(e) => json_error(500, &e),
     }
+
+    if has_watts {
+        if let Err(e) = ctx.db.set_capability_watts(device_id, capability_id, watts) {
+            return json_error(500, &e);
+        }
+        ctx.mqtt_bridge.set_watts(device_id, capability_id, watts);
+    }
+    if let Some(lp) = linear_power {
+        if let Err(e) = ctx.db.set_capability_linear_power(
+            device_id,
+            capability_id,
+            lp,
+            slider_max,
+        ) {
+            return json_error(500, &e);
+        }
+    }
+    json_ok(&serde_json::json!({"updated": true}))
 }
 
 fn handle_create_group(ctx: &ApiContext, body: &str) -> (u16, String) {

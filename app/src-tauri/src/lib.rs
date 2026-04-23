@@ -145,6 +145,7 @@ pub fn run() {
             set_device_notes,
             set_device_install_date,
             set_capability_watts,
+            set_capability_linear_power,
             get_device_capability_meta,
             get_device_energy,
             get_saved_devices,

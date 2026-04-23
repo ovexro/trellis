@@ -47,6 +47,10 @@ pub struct MetricPoint {
 pub struct CapabilityMeta {
     pub capability_id: String,
     pub nameplate_watts: Option<f64>,
+    #[serde(default)]
+    pub linear_power: bool,
+    #[serde(default)]
+    pub slider_max: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,6 +191,55 @@ fn compute_on_seconds_online(
     total
 }
 
+/// Linear-power slider integration. For each window interval `[last_ts, ts)`,
+/// accrue `watts × (value/max_safe) × online_dt / 3600` Wh, where
+/// `online_dt = dur − offline_overlap` is the online-portion seconds of the
+/// interval. Returns `(on_time_seconds, wh)` where `on_time_seconds` is the
+/// online-portion time spent with `value > 0` (matching the semantic of
+/// `compute_on_seconds_online` for switches — useful for the "tracked since"
+/// breakdown). `bootstrap` is the latest value seen before `window_start`
+/// (0 when unknown, per the conservative get_device_energy bootstrap rule).
+fn compute_numeric_wh_online(
+    bootstrap: i64,
+    rows: &[(i64, i64)],
+    window_start_epoch: i64,
+    now_epoch: i64,
+    offline_intervals: &[(i64, i64)],
+    watts: f64,
+    max: f64,
+) -> (i64, f64) {
+    let max_safe = if max.is_finite() && max > 0.0 { max } else { 255.0 };
+    let mut segments: Vec<(i64, i64, i64)> = Vec::new();
+    let mut current = bootstrap;
+    let mut last = window_start_epoch;
+    for (v, ts) in rows {
+        segments.push((last, *ts, current));
+        current = *v;
+        last = *ts;
+    }
+    segments.push((last, now_epoch, current));
+
+    let mut on_time: i64 = 0;
+    let mut wh: f64 = 0.0;
+    for (start, end, value) in segments {
+        let dur = (end - start).max(0);
+        if dur == 0 || value <= 0 {
+            continue;
+        }
+        let mut overlap: i64 = 0;
+        for (os, oe) in offline_intervals {
+            let ov_start = (*os).max(start);
+            let ov_end = (*oe).min(end);
+            overlap += (ov_end - ov_start).max(0);
+        }
+        let online = (dur - overlap).max(0);
+        on_time += online;
+        let fraction = (value as f64) / max_safe;
+        wh += (online as f64) * watts * fraction / 3600.0;
+    }
+    (on_time, wh)
+}
+
 impl Database {
     // ─── Device persistence ──────────────────────────────────────────────
 
@@ -294,14 +347,19 @@ impl Database {
 
         let mut stmt = conn
             .prepare(
-                "SELECT capability_id, nameplate_watts
+                "SELECT capability_id, nameplate_watts, linear_power, slider_max
                  FROM capability_meta
                  WHERE device_id = ?1 AND nameplate_watts IS NOT NULL",
             )
             .map_err(|e| e.to_string())?;
-        let metered: Vec<(String, f64)> = stmt
+        let metered: Vec<(String, f64, bool, Option<f64>)> = stmt
             .query_map(rusqlite::params![device_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get::<_, Option<f64>>(3)?,
+                ))
             })
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
@@ -360,7 +418,7 @@ impl Database {
         let mut out: Vec<CapabilityEnergy> = Vec::new();
         let mut total_wh: f64 = 0.0;
 
-        for (cap_id, watts) in metered {
+        for (cap_id, watts, linear_power, slider_max) in metered {
             // Bootstrap: latest state before window_start. If none, assume OFF
             // (conservative — we can't prove what the state was before tracking
             // began).
@@ -408,15 +466,26 @@ impl Database {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| e.to_string())?;
 
-            let on_seconds = compute_on_seconds_online(
-                bootstrap.unwrap_or(0),
-                &rows,
-                window_start_epoch,
-                now_epoch,
-                &offline_intervals,
-            );
-
-            let wh = (on_seconds as f64) * watts / 3600.0;
+            let (on_seconds, wh) = if linear_power {
+                compute_numeric_wh_online(
+                    bootstrap.unwrap_or(0),
+                    &rows,
+                    window_start_epoch,
+                    now_epoch,
+                    &offline_intervals,
+                    watts,
+                    slider_max.unwrap_or(255.0),
+                )
+            } else {
+                let sec = compute_on_seconds_online(
+                    bootstrap.unwrap_or(0),
+                    &rows,
+                    window_start_epoch,
+                    now_epoch,
+                    &offline_intervals,
+                );
+                (sec, (sec as f64) * watts / 3600.0)
+            };
             total_wh += wh;
             out.push(CapabilityEnergy {
                 capability_id: cap_id,
@@ -472,7 +541,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT capability_id, nameplate_watts
+                "SELECT capability_id, nameplate_watts, linear_power, slider_max
                  FROM capability_meta
                  WHERE device_id = ?1",
             )
@@ -482,6 +551,8 @@ impl Database {
                 Ok(CapabilityMeta {
                     capability_id: row.get(0)?,
                     nameplate_watts: row.get(1)?,
+                    linear_power: row.get::<_, i64>(2)? != 0,
+                    slider_max: row.get(3)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -490,6 +561,84 @@ impl Database {
             out.push(r.map_err(|e| e.to_string())?);
         }
         Ok(out)
+    }
+
+    /// Upsert the linear_power flag for a capability along with the slider
+    /// max value that the integration will use as its denominator. The flag
+    /// is only meaningful when nameplate_watts is also set, but the fields
+    /// are independently editable (see set_capability_watts). `slider_max`
+    /// is captured from the live Capability.max at opt-in time so the
+    /// energy computation doesn't require the device online.
+    pub fn set_capability_linear_power(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        linear_power: bool,
+        slider_max: Option<f64>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let flag: i64 = if linear_power { 1 } else { 0 };
+        conn.execute(
+            "INSERT INTO capability_meta (device_id, capability_id, linear_power, slider_max)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(device_id, capability_id)
+             DO UPDATE SET linear_power = excluded.linear_power,
+                           slider_max   = excluded.slider_max",
+            rusqlite::params![device_id, capability_id, flag, slider_max],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Dedup-write a slider value transition, but only when the capability
+    /// has opted in to linear-power tracking AND has nameplate_watts set.
+    /// Mirrors log_switch_state — reads the latest row for (device, cap),
+    /// skips the INSERT if the new value matches. Value is rounded to i64
+    /// (slider NVS persistence is integer, so we never lose precision in
+    /// practice). No-op when the capability hasn't opted in, so the caller
+    /// can invoke this on every numeric update without extra branching.
+    pub fn log_slider_value_if_linear(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        value: i64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let opt_in: bool = conn
+            .query_row(
+                "SELECT 1 FROM capability_meta
+                 WHERE device_id = ?1 AND capability_id = ?2
+                   AND linear_power = 1
+                   AND nameplate_watts IS NOT NULL",
+                rusqlite::params![device_id, capability_id],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+        if !opt_in {
+            return Ok(());
+        }
+        let last: Option<i64> = conn
+            .query_row(
+                "SELECT state FROM capability_state_log
+                 WHERE device_id = ?1 AND capability_id = ?2
+                 ORDER BY id DESC LIMIT 1",
+                rusqlite::params![device_id, capability_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if last == Some(value) {
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO capability_state_log (device_id, capability_id, state)
+             VALUES (?1, ?2, ?3)",
+            rusqlite::params![device_id, capability_id, value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn set_tags(&self, device_id: &str, tags: &str) -> Result<(), String> {
@@ -2529,6 +2678,14 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // doesn't treat stale latency numbers as intervals.
     let _ = conn.execute("ALTER TABLE device_mdns_latency ADD COLUMN sample_kind TEXT NOT NULL DEFAULT 'resolution'", []);
 
+    // Linear-power opt-in flag for slider energy tracking (phase 2).
+    // When set, the connection state-log writer persists slider value
+    // transitions and get_device_energy integrates value/max over time.
+    // slider_max is captured at opt-in from the live Capability.max so the
+    // integration doesn't need the device online to compute Wh.
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN linear_power INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN slider_max REAL", []);
+
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS favorite_capabilities (
@@ -2675,6 +2832,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             device_id TEXT NOT NULL,
             capability_id TEXT NOT NULL,
             nameplate_watts REAL,
+            linear_power INTEGER NOT NULL DEFAULT 0,
+            slider_max REAL,
             PRIMARY KEY (device_id, capability_id)
         );
         CREATE TABLE IF NOT EXISTS capability_state_log (
@@ -2786,5 +2945,65 @@ mod tests {
         let s = compute_on_seconds_online(1, &rows, 0, 3600, &offline);
         // 1000 total − 100 (200-300) − 200 (700-900) = 700.
         assert_eq!(s, 700);
+    }
+
+    #[test]
+    fn numeric_wh_constant_half_value_half_power() {
+        // Slider pinned at 128 (bootstrap) for full hour, watts=100, max=255.
+        // Fraction ≈ 0.502, Wh ≈ 50.2. No offline overlap.
+        let (on, wh) = compute_numeric_wh_online(128, &[], 0, 3600, &[], 100.0, 255.0);
+        assert_eq!(on, 3600);
+        let expected = 3600.0 * 100.0 * (128.0 / 255.0) / 3600.0;
+        assert!(
+            (wh - expected).abs() < 1e-9,
+            "wh {} vs expected {}",
+            wh,
+            expected
+        );
+    }
+
+    #[test]
+    fn numeric_wh_stepped_transitions_sum_correctly() {
+        // Bootstrap 0 (off). At t=600 → 255 (full power). At t=1800 → 64
+        // (quarter power). Window closes at t=3600. No offline.
+        // Segment 1: [0, 600)   value 0     → 0 Wh
+        // Segment 2: [600, 1800) value 255  → 1200 × 100 × 1.0 / 3600
+        // Segment 3: [1800, 3600) value 64  → 1800 × 100 × (64/255) / 3600
+        let rows = vec![(255i64, 600i64), (64i64, 1800i64)];
+        let (on, wh) = compute_numeric_wh_online(0, &rows, 0, 3600, &[], 100.0, 255.0);
+        let expected_wh =
+            (1200.0 * 100.0 * 1.0 + 1800.0 * 100.0 * (64.0 / 255.0)) / 3600.0;
+        assert_eq!(on, 3000);
+        assert!((wh - expected_wh).abs() < 1e-6);
+    }
+
+    #[test]
+    fn numeric_wh_subtracts_offline_overlap() {
+        // Slider at 255 throughout, watts=60, max=255, window 3600s.
+        // Device offline 600-1800 (1200s overlap). Online Wh = 2400×60/3600.
+        let offline = vec![(600i64, 1800i64)];
+        let (on, wh) = compute_numeric_wh_online(255, &[], 0, 3600, &offline, 60.0, 255.0);
+        assert_eq!(on, 2400);
+        let expected_wh = 2400.0 * 60.0 * 1.0 / 3600.0;
+        assert!((wh - expected_wh).abs() < 1e-9);
+    }
+
+    #[test]
+    fn numeric_wh_zero_bootstrap_and_no_rows_is_zero() {
+        // No history, no bootstrap → nothing to integrate.
+        let (on, wh) = compute_numeric_wh_online(0, &[], 0, 3600, &[], 50.0, 255.0);
+        assert_eq!(on, 0);
+        assert_eq!(wh, 0.0);
+    }
+
+    #[test]
+    fn numeric_wh_uses_default_max_when_zero_passed() {
+        // Caller forgot to set slider_max (value 0 or negative). Fallback 255
+        // prevents div-by-zero; result is the same as explicit 255.
+        let (_, wh_default) =
+            compute_numeric_wh_online(128, &[], 0, 3600, &[], 100.0, 0.0);
+        let (_, wh_explicit) =
+            compute_numeric_wh_online(128, &[], 0, 3600, &[], 100.0, 255.0);
+        assert!((wh_default - wh_explicit).abs() < 1e-12);
     }
 }

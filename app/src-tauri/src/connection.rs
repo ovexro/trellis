@@ -242,18 +242,26 @@ fn ws_reader_loop(
                                         {
                                             bridge.on_state_change(device_id, cap_id, value);
                                         }
-                                        // Persist switch on/off transitions so the
-                                        // energy rule can pair them into intervals.
-                                        // Bool-only for now; sliders are phase 2.
-                                        if let Some(on) = value.as_bool() {
-                                            if let Some(handle) =
-                                                app_handle.lock().unwrap().as_ref()
+                                        // Persist capability transitions so the energy
+                                        // rollup can integrate them. Switches go through
+                                        // log_switch_state (bool state). Sliders that have
+                                        // opted in to linear_power (phase 2) are rounded
+                                        // to i64 and logged via
+                                        // log_slider_value_if_linear, which no-ops if the
+                                        // capability hasn't enabled the opt-in.
+                                        if let Some(handle) =
+                                            app_handle.lock().unwrap().as_ref()
+                                        {
+                                            if let Some(db) =
+                                                handle.try_state::<Database>()
                                             {
-                                                if let Some(db) =
-                                                    handle.try_state::<Database>()
-                                                {
+                                                if let Some(on) = value.as_bool() {
                                                     let _ = db.log_switch_state(
                                                         device_id, cap_id, on,
+                                                    );
+                                                } else if let Some(n) = value.as_f64() {
+                                                    let _ = db.log_slider_value_if_linear(
+                                                        device_id, cap_id, n as i64,
                                                     );
                                                 }
                                             }

@@ -127,6 +127,22 @@ pub fn get_device_capability_meta(
 }
 
 #[tauri::command]
+pub fn set_capability_linear_power(
+    db: State<'_, Database>,
+    device_id: String,
+    capability_id: String,
+    linear_power: bool,
+    slider_max: Option<f64>,
+) -> Result<(), String> {
+    db.set_capability_linear_power(
+        &device_id,
+        &capability_id,
+        linear_power,
+        slider_max,
+    )
+}
+
+#[tauri::command]
 pub fn get_device_energy(
     db: State<'_, Database>,
     device_id: String,

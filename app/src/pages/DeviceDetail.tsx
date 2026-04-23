@@ -22,6 +22,8 @@ import type { Capability } from "@/lib/types";
 interface CapabilityMetaRow {
   capability_id: string;
   nameplate_watts: number | null;
+  linear_power: boolean;
+  slider_max: number | null;
 }
 
 function SectionHeader({ title }: { title: string }) {
@@ -42,6 +44,9 @@ export default function DeviceDetail() {
   const device = devices.find((d) => d.id === id);
   const logsRef = useRef<DeviceLogsHandle>(null);
   const [capMeta, setCapMeta] = useState<Record<string, number | null>>({});
+  const [linearPowerMeta, setLinearPowerMeta] = useState<
+    Record<string, boolean>
+  >({});
   const [costPerKwh, setCostPerKwh] = useState<number | null>(null);
   const [currency, setCurrency] = useState<string>("USD");
 
@@ -51,9 +56,14 @@ export default function DeviceDetail() {
     invoke<CapabilityMetaRow[]>("get_device_capability_meta", { deviceId: id })
       .then((rows) => {
         if (cancelled) return;
-        const map: Record<string, number | null> = {};
-        for (const r of rows) map[r.capability_id] = r.nameplate_watts;
-        setCapMeta(map);
+        const watts: Record<string, number | null> = {};
+        const linear: Record<string, boolean> = {};
+        for (const r of rows) {
+          watts[r.capability_id] = r.nameplate_watts;
+          linear[r.capability_id] = r.linear_power;
+        }
+        setCapMeta(watts);
+        setLinearPowerMeta(linear);
       })
       .catch((err) => console.error("Failed to load capability meta:", err));
     return () => {
@@ -144,9 +154,15 @@ export default function DeviceDetail() {
               <CapabilityWatts
                 deviceId={device.id}
                 capabilityId={cap.id}
+                capType="switch"
                 watts={capMeta[cap.id] ?? null}
+                linearPower={linearPowerMeta[cap.id] ?? false}
+                sliderMax={null}
                 onChange={(w) =>
                   setCapMeta((prev) => ({ ...prev, [cap.id]: w }))
+                }
+                onLinearPowerChange={(lp) =>
+                  setLinearPowerMeta((prev) => ({ ...prev, [cap.id]: lp }))
                 }
               />
             )}
@@ -154,15 +170,32 @@ export default function DeviceDetail() {
         );
       case "slider":
         return (
-          <Slider
-            key={cap.id}
-            label={cap.label}
-            value={cap.value as number}
-            min={cap.min ?? 0}
-            max={cap.max ?? 100}
-            unit={cap.unit}
-            onChange={(v) => handleChange(cap.id, v)}
-          />
+          <div key={cap.id}>
+            <Slider
+              label={cap.label}
+              value={cap.value as number}
+              min={cap.min ?? 0}
+              max={cap.max ?? 100}
+              unit={cap.unit}
+              onChange={(v) => handleChange(cap.id, v)}
+            />
+            {device && (
+              <CapabilityWatts
+                deviceId={device.id}
+                capabilityId={cap.id}
+                capType="slider"
+                watts={capMeta[cap.id] ?? null}
+                linearPower={linearPowerMeta[cap.id] ?? false}
+                sliderMax={cap.max ?? 255}
+                onChange={(w) =>
+                  setCapMeta((prev) => ({ ...prev, [cap.id]: w }))
+                }
+                onLinearPowerChange={(lp) =>
+                  setLinearPowerMeta((prev) => ({ ...prev, [cap.id]: lp }))
+                }
+              />
+            )}
+          </div>
         );
       case "sensor":
         return (
@@ -336,16 +369,21 @@ export default function DeviceDetail() {
       <SectionHeader title="Uptime History" />
       <UptimeTimeline deviceId={device.id} onSegmentClick={handleSegmentClick} />
 
-      {/* Energy — renders only when at least one switch has nameplate_watts set */}
+      {/* Energy — renders when at least one switch has nameplate_watts set,
+          or at least one slider has opted in to linear-power tracking. */}
       {device.capabilities.some(
-        (c) => c.type === "switch" && capMeta[c.id] != null
+        (c) =>
+          (c.type === "switch" && capMeta[c.id] != null) ||
+          (c.type === "slider" &&
+            capMeta[c.id] != null &&
+            linearPowerMeta[c.id])
       ) && (
         <>
           <SectionHeader title="Energy" />
           <DeviceEnergy
             deviceId={device.id}
             capabilityLabels={device.capabilities
-              .filter((c) => c.type === "switch")
+              .filter((c) => c.type === "switch" || c.type === "slider")
               .map((c) => ({ id: c.id, label: c.label }))}
             costPerKwh={costPerKwh}
             currency={currency}

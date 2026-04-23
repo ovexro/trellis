@@ -258,6 +258,30 @@
     }
     .cap-watts-row .watts-mini-btn.ok:hover { color: var(--accent); }
     .cap-watts-row .watts-mini-btn.cancel:hover { color: var(--text); }
+    .cap-watts-row { flex-wrap: wrap; }
+    .cap-watts-edit-row {
+      display: flex; align-items: center; gap: 0.35rem;
+      width: 100%;
+    }
+    .cap-watts-linear {
+      flex-basis: 100%; margin: 0.1rem 0 0.15rem 0.95rem;
+    }
+    .cap-watts-linear-label {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-size: 0.65rem; color: var(--text-faint);
+      cursor: pointer; user-select: none;
+    }
+    .cap-watts-linear-input {
+      accent-color: #fbbf24; height: 0.7rem; width: 0.7rem; cursor: pointer;
+    }
+    .cap-watts-linear-hint {
+      margin: 0.15rem 0 0 1.1rem; max-width: 26rem;
+      font-size: 0.62rem; line-height: 1.3; color: var(--text-faint);
+      opacity: 0.75;
+    }
+    .cap-watts-linear-badge {
+      margin-left: 0.35rem; color: var(--text-faint); opacity: 0.65;
+    }
 
     /* ── Device Energy card ── */
     .energy-total {
@@ -1192,6 +1216,8 @@
     // currently-open detail panel, plus the active window + last-loaded report.
     // Tariff is fetched lazily once per session.
     var detailCapMeta = {};
+    var detailLinearPower = {};
+    var detailSliderMax = {};
     var detailEnergyRange = 24;
     var detailEnergyReport = null;
     var energyTariff = null; // { costPerKwh: number|null, currency: string } once loaded
@@ -2234,7 +2260,8 @@
                 <span class="slider-val">${val}</span>
               </div>
             </div>
-          </div>`;
+          </div>
+          <div class="cap-watts-row" id="capWatts-${esc(deviceId)}-${esc(cap.id)}" data-slider-max="${max}"></div>`;
         }
 
         case 'sensor': {
@@ -3697,6 +3724,8 @@
       // Reset per-detail energy state on panel open so the previous device's
       // watts map doesn't leak into renderCapWatts for this one.
       detailCapMeta = {};
+      detailLinearPower = {};
+      detailSliderMax = {};
       detailEnergyReport = null;
       detailEnergyRange = 24;
 
@@ -3758,15 +3787,16 @@
       if (Array.isArray(capMeta)) {
         for (var ci = 0; ci < capMeta.length; ci++) {
           var m = capMeta[ci];
-          if (m && m.nameplate_watts != null) {
-            detailCapMeta[m.capability_id] = m.nameplate_watts;
-          }
+          if (!m) continue;
+          if (m.nameplate_watts != null) detailCapMeta[m.capability_id] = m.nameplate_watts;
+          detailLinearPower[m.capability_id] = !!m.linear_power;
+          if (m.slider_max != null) detailSliderMax[m.capability_id] = m.slider_max;
         }
       }
       if (dev.capabilities) {
         for (var sci = 0; sci < dev.capabilities.length; sci++) {
           var sc = dev.capabilities[sci];
-          if (sc.type === 'switch') {
+          if (sc.type === 'switch' || sc.type === 'slider') {
             renderCapWatts(id, sc.id);
           }
         }
@@ -3837,28 +3867,46 @@
       var el = document.getElementById('capWatts-' + deviceId + '-' + capId);
       if (!el) return;
       var watts = detailCapMeta[capId];
+      var isSlider = el.hasAttribute('data-slider-max');
+      var linearOn = !!detailLinearPower[capId];
       var editing = !!(opts && opts.editing);
       if (editing && !isViewer) {
         var initial = watts != null ? String(watts) : '';
-        el.innerHTML = '<span class="watts-bolt' + (watts != null ? ' set' : '') + '">⚡</span>'
+        var checkboxHtml = '';
+        if (isSlider) {
+          checkboxHtml = '<div class="cap-watts-linear">'
+            + '<label class="cap-watts-linear-label">'
+            + '<input type="checkbox" class="cap-watts-linear-input"'
+            + (linearOn ? ' checked' : '') + '>'
+            + '<span>Linear power</span></label>'
+            + '<p class="cap-watts-linear-hint">Assumes power scales linearly with slider value. '
+            + 'Accurate for resistive loads; rough for LEDs and motors.</p></div>';
+        }
+        el.innerHTML = '<div class="cap-watts-edit-row">'
+          + '<span class="watts-bolt' + (watts != null ? ' set' : '') + '">⚡</span>'
           + '<input type="number" min="0" step="0.1" class="cap-watts-input" placeholder="watts"'
           + ' value="' + esc(initial) + '"'
-          + ' onkeydown="if(event.key===\'Enter\')saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',this);'
+          + ' onkeydown="if(event.key===\'Enter\')saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\');'
           + 'if(event.key===\'Escape\')renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">'
           + '<span>W</span>'
           + '<button class="watts-mini-btn ok" title="Save"'
-          + ' onclick="saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',this.parentElement.querySelector(\'.cap-watts-input\'))">✓</button>'
+          + ' onclick="saveCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">✓</button>'
           + '<button class="watts-mini-btn cancel" title="Cancel"'
-          + ' onclick="renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">×</button>';
+          + ' onclick="renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">×</button>'
+          + '</div>'
+          + checkboxHtml;
         var inp = el.querySelector('.cap-watts-input');
         if (inp) inp.focus();
         return;
       }
       var hasWatts = watts != null;
+      var linearBadge = (isSlider && linearOn && hasWatts)
+        ? '<span class="cap-watts-linear-badge">· linear</span>' : '';
       if (isViewer) {
         el.innerHTML = hasWatts
           ? '<span class="watts-bolt set">⚡</span>'
             + '<span class="watts-val">' + esc(String(watts)) + ' W</span>'
+            + linearBadge
           : '';
         return;
       }
@@ -3866,11 +3914,14 @@
         + ' title="' + (hasWatts ? 'Edit nameplate watts' : 'Set nameplate watts to track estimated energy') + '"'
         + ' onclick="renderCapWatts(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',{editing:true})">'
         + '<span class="watts-bolt' + (hasWatts ? ' set' : '') + '">⚡</span>'
-        + (hasWatts ? '<span class="watts-val">' + esc(String(watts)) + ' W</span>' : '<span>set watts</span>')
+        + (hasWatts ? '<span class="watts-val">' + esc(String(watts)) + ' W</span>' + linearBadge : '<span>set watts</span>')
         + '</button>';
     }
 
-    async function saveCapWatts(deviceId, capId, inputEl) {
+    async function saveCapWatts(deviceId, capId) {
+      var el = document.getElementById('capWatts-' + deviceId + '-' + capId);
+      if (!el) return;
+      var inputEl = el.querySelector('.cap-watts-input');
       if (!inputEl) return;
       var raw = inputEl.value.trim();
       var watts = null;
@@ -3879,11 +3930,29 @@
         if (!Number.isFinite(n) || n < 0) { toast('Watts must be a non-negative number', 'error'); return; }
         watts = n;
       }
+      var isSlider = el.hasAttribute('data-slider-max');
+      var body = { nameplate_watts: watts };
+      var linearEl = el.querySelector('.cap-watts-linear-input');
+      if (isSlider && linearEl) {
+        body.linear_power = !!linearEl.checked;
+        if (body.linear_power) {
+          var smRaw = el.getAttribute('data-slider-max');
+          var sm = Number(smRaw);
+          if (Number.isFinite(sm) && sm > 0) body.slider_max = sm;
+        } else {
+          body.slider_max = null;
+        }
+      }
       inputEl.disabled = true;
       try {
         await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(capId) + '/meta',
-          { method: 'PUT', body: { nameplate_watts: watts } });
+          { method: 'PUT', body: body });
         if (watts == null) delete detailCapMeta[capId]; else detailCapMeta[capId] = watts;
+        if (isSlider && linearEl) {
+          detailLinearPower[capId] = !!linearEl.checked;
+          if (!linearEl.checked) delete detailSliderMax[capId];
+          else if (body.slider_max != null) detailSliderMax[capId] = body.slider_max;
+        }
         renderCapWatts(deviceId, capId);
         // Re-fetch energy to reflect the new meter. Silent failure is OK —
         // the stale previous report stays on screen if the endpoint hiccups.
