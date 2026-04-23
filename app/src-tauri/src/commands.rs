@@ -81,6 +81,15 @@ pub fn set_device_tags(
 }
 
 #[tauri::command]
+pub fn set_device_notes(
+    db: State<'_, Database>,
+    device_id: String,
+    notes: String,
+) -> Result<(), String> {
+    db.set_device_notes(&device_id, &notes)
+}
+
+#[tauri::command]
 pub fn get_saved_devices(db: State<'_, Database>) -> Result<Vec<SavedDevice>, String> {
     db.get_all_saved_devices()
 }

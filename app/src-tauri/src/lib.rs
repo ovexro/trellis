@@ -142,6 +142,7 @@ pub fn run() {
             send_command,
             set_device_nickname,
             set_device_tags,
+            set_device_notes,
             set_capability_watts,
             get_device_capability_meta,
             get_device_energy,

@@ -2,6 +2,12 @@
 
 All notable changes to Trellis will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Per-device notes.** Free-form text field per device for wiring, install date, calibration, breaker number — anything worth remembering that doesn't fit nickname or tags. New `notes TEXT NOT NULL DEFAULT ''` column on `devices` table with matching ALTER-TABLE migration. Rust CRUD via `Database::set_device_notes`, exposed as `set_device_notes` Tauri command + admin-gated `PUT /api/devices/:id/notes` REST endpoint (body `{"notes": "…"}`). Desktop: new `DeviceNotes` React component renders as its own "Notes" section on the Device Detail page between Diagnostics and Uptime History — empty state is a dashed-border "+ Add notes" affordance, populated state shows the text pre-wrapped with a pencil edit button, edit mode uses a resizable textarea with Save / Cancel. Embedded `:9090` web UI has full parity via `renderDeviceNotes` / `saveDeviceNotes` in `web_ui.html` following the existing `renderGithubRepoBinding` pattern. Viewer role is read-only on both surfaces (affordance suppressed, Edit button hidden, REST endpoint enforces via existing `require_admin`). Notes are included in `get_saved_device` / `get_all_saved_devices` so the web UI's cached `savedDevices` list picks them up at page load.
+
 ## [0.20.0] — 2026-04-22
 
 Energy tracking, fully wired. The v0.19.0 desktop MVP grows three sibling features and one diagnostics rail: device-online correctness in the on-time math, complete parity in the embedded `:9090` web dashboard, a per-switch power sensor that auto-discovers in Home Assistant, and an `energy_coverage` diagnostics rule that names whether the feature is wired up on each device. No library or firmware change in this release — every commit lands desktop-side.

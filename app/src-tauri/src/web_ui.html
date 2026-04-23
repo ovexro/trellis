@@ -2674,6 +2674,79 @@
       }
     }
 
+    function getDeviceNotes(deviceId) {
+      var s = (savedDevices || []).find(function(sd) { return sd.id === deviceId; });
+      return (s && typeof s.notes === 'string') ? s.notes : '';
+    }
+
+    function renderDeviceNotes(deviceId, editing) {
+      var notes = getDeviceNotes(deviceId);
+      var viewer = isViewer;
+      if (editing && !viewer) {
+        return '<div style="padding:0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.6rem;">'
+          + '<textarea id="detailNotesInput-' + esc(deviceId) + '" rows="5" placeholder="Wiring, install date, calibration, breaker #, anything worth remembering&hellip;" '
+          + 'style="width:100%;box-sizing:border-box;padding:0.5rem;font:inherit;font-size:0.8rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:0.4rem;resize:vertical;min-height:6rem;">'
+          + esc(notes) + '</textarea>'
+          + '<div style="display:flex;justify-content:flex-end;gap:0.4rem;margin-top:0.5rem;">'
+          +   '<button class="btn btn-ghost btn-sm" onclick="cancelEditNotes(\'' + esc(deviceId) + '\')">Cancel</button>'
+          +   '<button class="btn btn-sm" onclick="saveDeviceNotes(\'' + esc(deviceId) + '\')">Save</button>'
+          + '</div>'
+          + '</div>';
+      }
+      if (notes) {
+        var editBtn = viewer ? '' :
+          '<button class="btn btn-ghost btn-sm" onclick="startEditNotes(\'' + esc(deviceId) + '\')" '
+          + 'style="flex-shrink:0;">Edit</button>';
+        return '<div style="padding:0.75rem;background:var(--surface-alt);border:1px solid var(--border);border-radius:0.6rem;display:flex;gap:0.75rem;align-items:flex-start;">'
+          + '<div style="flex:1;min-width:0;font-size:0.8rem;color:var(--text);white-space:pre-wrap;word-break:break-word;">' + esc(notes) + '</div>'
+          + editBtn
+          + '</div>';
+      }
+      if (viewer) {
+        return '<div style="padding:0.75rem;font-size:0.75rem;color:var(--text-faint);font-style:italic;">No notes.</div>';
+      }
+      return '<button class="btn btn-ghost btn-sm" onclick="startEditNotes(\'' + esc(deviceId) + '\')" '
+        + 'style="width:100%;padding:0.75rem;border:1px dashed var(--border);background:transparent;color:var(--text-faint);text-align:left;">'
+        + '+ Add notes — wiring, install date, breaker #, anything worth remembering'
+        + '</button>';
+    }
+
+    function refreshNotesSection(deviceId, editing) {
+      var body = document.getElementById('detailNotesBody');
+      if (!body) return;
+      body.innerHTML = renderDeviceNotes(deviceId, editing);
+    }
+
+    function startEditNotes(deviceId) {
+      if (isViewer) return;
+      refreshNotesSection(deviceId, true);
+      var ta = document.getElementById('detailNotesInput-' + deviceId);
+      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+    }
+
+    function cancelEditNotes(deviceId) {
+      refreshNotesSection(deviceId, false);
+    }
+
+    async function saveDeviceNotes(deviceId) {
+      if (isViewer) return;
+      var ta = document.getElementById('detailNotesInput-' + deviceId);
+      if (!ta) return;
+      var next = ta.value;
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/notes', {
+          method: 'PUT',
+          body: { notes: next }
+        });
+        var s = (savedDevices || []).find(function(sd) { return sd.id === deviceId; });
+        if (s) s.notes = next;
+        refreshNotesSection(deviceId, false);
+        toast('Notes saved', 'success');
+      } catch (e) {
+        toast('Failed to save notes: ' + (e && e.message ? e.message : e), 'error');
+      }
+    }
+
     function renderDiagnosticReport(deviceId, report) {
       if (!report || !report.findings) return '<div>No report.</div>';
       var overall = report.overall || 'good';
@@ -3354,6 +3427,14 @@
         </div>
       </div>`;
 
+      // Notes — free-form per-device context (wiring, install date, etc.).
+      // Admin-editable, viewer read-only. Renders as an empty-state link
+      // when no notes are set and the user can edit.
+      html += `<div class="detail-section" id="detailNotesSection">
+        <div class="detail-section-title">Notes</div>
+        <div id="detailNotesBody"></div>
+      </div>`;
+
       // Uptime timeline — populated by renderUptimeTimeline after
       // loadDetailCharts fetches the annotation set for this window.
       // Re-renders on every setChartRange change via the same path.
@@ -3455,6 +3536,8 @@
       </div>`;
 
       body.innerHTML = html;
+
+      refreshNotesSection(id, false);
 
       // Move focus into the panel (close button) so keyboard users
       // start inside the trap. Delay one frame so the browser has

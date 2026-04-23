@@ -87,6 +87,8 @@ pub struct SavedDevice {
     pub github_owner: Option<String>,
     #[serde(default)]
     pub github_repo: Option<String>,
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,10 +500,20 @@ impl Database {
         Ok(())
     }
 
+    pub fn set_device_notes(&self, device_id: &str, notes: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE devices SET notes = ?1 WHERE id = ?2",
+            rusqlite::params![notes, device_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn get_saved_device(&self, device_id: &str) -> Result<Option<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo FROM devices WHERE id = ?1")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo, notes FROM devices WHERE id = ?1")
             .map_err(|e| e.to_string())?;
         let mut rows = stmt
             .query_map(rusqlite::params![device_id], |row| {
@@ -521,6 +533,7 @@ impl Database {
                     favorite: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
                     github_owner: row.get(13)?,
                     github_repo: row.get(14)?,
+                    notes: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -533,7 +546,7 @@ impl Database {
     pub fn get_all_saved_devices(&self) -> Result<Vec<SavedDevice>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo FROM devices ORDER BY sort_order ASC, last_seen DESC")
+            .prepare("SELECT id, name, ip, port, firmware, platform, nickname, tags, first_seen, last_seen, group_id, sort_order, favorite, github_owner, github_repo, notes FROM devices ORDER BY sort_order ASC, last_seen DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
@@ -553,6 +566,7 @@ impl Database {
                     favorite: row.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
                     github_owner: row.get(13)?,
                     github_repo: row.get(14)?,
+                    notes: row.get::<_, Option<String>>(15)?.unwrap_or_default(),
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -2288,7 +2302,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             nickname TEXT,
             tags TEXT DEFAULT '',
             first_seen TEXT NOT NULL DEFAULT (datetime('now')),
-            last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+            last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+            notes TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS metrics (
@@ -2469,6 +2484,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // Per-device GitHub repo binding for Diagnostics v3 firmware auto-remediation (post-v0.13.0)
     let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_owner TEXT", []);
     let _ = conn.execute("ALTER TABLE devices ADD COLUMN github_repo TEXT", []);
+
+    let _ = conn.execute("ALTER TABLE devices ADD COLUMN notes TEXT NOT NULL DEFAULT ''", []);
 
     // OTA delivery outcome persistence (v0.15.0). Null on existing rows and on
     // any new upload until the device confirms (or fails to confirm) the apply.

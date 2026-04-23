@@ -1056,6 +1056,12 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             handle_set_nickname(ctx, id, &req.body)
         }
 
+        ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/notes") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id = &p["/api/devices/".len()..p.len() - "/notes".len()];
+            handle_set_notes(ctx, id, &req.body)
+        }
+
         ("PUT", p) if p.starts_with("/api/devices/") && p.ends_with("/favorite") => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id = &p["/api/devices/".len()..p.len() - "/favorite".len()];
@@ -1958,6 +1964,19 @@ fn handle_set_nickname(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, S
     let nickname = v["nickname"].as_str().unwrap_or("");
 
     match ctx.db.set_nickname(device_id, nickname) {
+        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+fn handle_set_notes(ctx: &ApiContext, device_id: &str, body: &str) -> (u16, String) {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    let notes = v["notes"].as_str().unwrap_or("");
+
+    match ctx.db.set_device_notes(device_id, notes) {
         Ok(()) => json_ok(&serde_json::json!({"updated": true})),
         Err(e) => json_error(500, &e),
     }

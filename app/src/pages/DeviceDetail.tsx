@@ -10,6 +10,7 @@ import ColorPicker from "@/components/controls/ColorPicker";
 import MetricChart from "@/components/charts/MetricChart";
 import UptimeTimeline from "@/components/charts/UptimeTimeline";
 import DeviceNickname from "@/components/DeviceNickname";
+import DeviceNotes from "@/components/DeviceNotes";
 import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import DeviceDiagnostics from "@/components/DeviceDiagnostics";
@@ -323,6 +324,9 @@ export default function DeviceDetail() {
       {/* Diagnostics */}
       <SectionHeader title="Diagnostics" />
       <DeviceDiagnostics deviceId={device.id} deviceIp={device.ip} devicePort={device.port} />
+
+      <SectionHeader title="Notes" />
+      <DeviceNotes deviceId={device.id} />
 
       {/* Uptime History */}
       <SectionHeader title="Uptime History" />
