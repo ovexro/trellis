@@ -991,38 +991,7 @@ fn run_scene_from_sinric(
     let scene = db.get_scene(scene_id)?
         .ok_or_else(|| format!("Scene {} not found", scene_id))?;
 
-    for action in &scene.actions {
-        let saved = match db.get_saved_device(&action.device_id) {
-            Ok(Some(d)) => d,
-            _ => {
-                log::warn!("[Sinric] Scene action: device {} not found, skipping", action.device_id);
-                continue;
-            }
-        };
-
-        let value: Value = if action.value == "true" {
-            Value::Bool(true)
-        } else if action.value == "false" {
-            Value::Bool(false)
-        } else if let Ok(n) = action.value.parse::<f64>() {
-            json!(n)
-        } else {
-            Value::String(action.value.clone())
-        };
-
-        let cmd = json!({
-            "command": "set",
-            "id": action.capability_id,
-            "value": value
-        });
-        let msg = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-        let ws_port = saved.port + 1;
-
-        if let Err(e) = conn_mgr.send_to_device(&action.device_id, &saved.ip, ws_port, &msg) {
-            log::warn!("[Sinric] Scene action failed for {}: {}", action.device_id, e);
-        }
-    }
-    Ok(())
+    crate::scheduler::fire_scene(handle, conn_mgr.as_ref(), &scene)
 }
 
 // ─── Outgoing message construction ───────────────────────────────────────────

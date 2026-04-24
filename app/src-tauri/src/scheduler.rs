@@ -132,32 +132,12 @@ pub fn fire_schedule(
             .map_err(|e| format!("Failed to load scene {}: {}", scene_id, e))?
             .ok_or_else(|| format!("Scene {} not found", scene_id))?;
 
-        let mut failures = Vec::new();
-        for action in &scene.actions {
-            if let Err(e) = send_action(
-                app_handle, conn_mgr,
-                &action.device_id, &action.capability_id, &action.value,
-            ) {
-                log::warn!("[Scheduler] Scene action failed for {}: {}", action.device_id, e);
-                failures.push(format!("{}: {}", action.device_id, e));
-            }
-        }
+        let fire_result = fire_scene(app_handle, conn_mgr, &scene);
 
         db.update_schedule_last_run(schedule.id)
             .map_err(|e| format!("Failed to stamp last_run: {}", e))?;
 
-        if failures.is_empty() {
-            log::info!(
-                "[Scheduler] Scene '{}' executed ({} actions)",
-                scene.name, scene.actions.len()
-            );
-            Ok(())
-        } else {
-            Err(format!(
-                "{}/{} scene actions failed: {}",
-                failures.len(), scene.actions.len(), failures.join("; ")
-            ))
-        }
+        fire_result
     } else {
         log::info!(
             "[Scheduler] Firing schedule '{}': {}.{} = {}",
@@ -202,6 +182,52 @@ pub fn fire_rule(
 
     log::info!("[Scheduler] Rule action sent successfully");
     Ok(())
+}
+
+/// Execute every action on a scene once and stamp last_run on success.
+/// Shared by the manual Tauri + REST `run_scene` paths, the Sinric voice
+/// scene execution, and `fire_schedule` when the schedule targets a scene.
+/// Returns Err listing per-action failures if any action send failed; last_run
+/// is stamped when at least one action succeeded (mirrors the prior semantics).
+pub fn fire_scene(
+    app_handle: &AppHandle,
+    conn_mgr: &ConnectionManager,
+    scene: &crate::db::Scene,
+) -> Result<(), String> {
+    let db = app_handle
+        .try_state::<Database>()
+        .ok_or_else(|| "Database state unavailable".to_string())?;
+
+    log::info!(
+        "[Scheduler] Firing scene '{}' ({} actions)",
+        scene.name, scene.actions.len()
+    );
+
+    let mut failures = Vec::new();
+    for action in &scene.actions {
+        if let Err(e) = send_action(
+            app_handle, conn_mgr,
+            &action.device_id, &action.capability_id, &action.value,
+        ) {
+            log::warn!("[Scheduler] Scene action failed for {}: {}", action.device_id, e);
+            failures.push(format!("{}: {}", action.device_id, e));
+        }
+    }
+
+    if failures.len() < scene.actions.len() {
+        db.update_scene_last_run(scene.id)
+            .map_err(|e| format!("Failed to stamp last_run: {}", e))?;
+    }
+
+    if failures.is_empty() {
+        log::info!("[Scheduler] Scene '{}' executed", scene.name);
+        Ok(())
+    } else {
+        Err(format!(
+            "{}/{} scene actions failed: {}",
+            failures.len(), scene.actions.len(), failures.join("; ")
+        ))
+    }
 }
 
 fn send_action(

@@ -14,6 +14,7 @@ interface Scene {
   name: string;
   actions: SceneAction[];
   created_at: string;
+  last_run?: string | null;
 }
 
 export default function Scenes() {
@@ -248,6 +249,9 @@ export default function Scenes() {
                     return d?.name ?? a.device_id;
                   }))].join(", ")}
                 </p>
+                {scene.last_run && (
+                  <p className="text-[11px] text-zinc-600 mt-0.5">Last run: {scene.last_run}</p>
+                )}
               </div>
               <div className="flex gap-2">
                 <button

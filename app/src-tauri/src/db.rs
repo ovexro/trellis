@@ -2478,15 +2478,20 @@ impl Database {
     pub fn get_scenes(&self) -> Result<Vec<Scene>, String> {
         let conn = self.conn.lock().unwrap();
         let mut scene_stmt = conn.prepare(
-            "SELECT id, name, created_at FROM scenes ORDER BY id"
+            "SELECT id, name, created_at, last_run FROM scenes ORDER BY id"
         ).map_err(|e| e.to_string())?;
         let scene_rows = scene_stmt.query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
         }).map_err(|e| e.to_string())?;
         let mut scenes = Vec::new();
         for row in scene_rows {
-            let (id, name, created_at) = row.map_err(|e| e.to_string())?;
-            scenes.push(Scene { id, name, created_at, actions: Vec::new() });
+            let (id, name, created_at, last_run) = row.map_err(|e| e.to_string())?;
+            scenes.push(Scene { id, name, created_at, last_run, actions: Vec::new() });
         }
         drop(scene_stmt);
 
@@ -2510,11 +2515,16 @@ impl Database {
     pub fn get_scene(&self, id: i64) -> Result<Option<Scene>, String> {
         let conn = self.conn.lock().unwrap();
         let scene = conn.query_row(
-            "SELECT id, name, created_at FROM scenes WHERE id = ?1",
+            "SELECT id, name, created_at, last_run FROM scenes WHERE id = ?1",
             rusqlite::params![id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            )),
         );
-        let (scene_id, name, created_at) = match scene {
+        let (scene_id, name, created_at, last_run) = match scene {
             Ok(s) => s,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(e) => return Err(e.to_string()),
@@ -2531,7 +2541,16 @@ impl Database {
             })
         }).map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-        Ok(Some(Scene { id: scene_id, name, created_at, actions }))
+        Ok(Some(Scene { id: scene_id, name, created_at, last_run, actions }))
+    }
+
+    pub fn update_scene_last_run(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE scenes SET last_run = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn update_scene(&self, id: i64, name: &str, actions: &[SceneActionInput]) -> Result<(), String> {
@@ -2567,6 +2586,8 @@ pub struct Scene {
     pub id: i64,
     pub name: String,
     pub created_at: String,
+    #[serde(default)]
+    pub last_run: Option<String>,
     pub actions: Vec<SceneAction>,
 }
 
@@ -3119,6 +3140,7 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN logic TEXT NOT NULL DEFAULT 'and'", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN conditions TEXT", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN last_triggered TEXT", []);
+    let _ = conn.execute("ALTER TABLE scenes ADD COLUMN last_run TEXT", []);
 
     // Webhook delivery history (post-v0.9.0 — retry + delivery log)
     conn.execute_batch("
@@ -3804,5 +3826,68 @@ mod tests {
         db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
         let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
         assert_eq!(w.last_success, Some(true), "last delivery was successful");
+    }
+
+    fn new_scenes_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE scenes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_run TEXT
+            );
+            CREATE TABLE scene_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scene_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        Database { conn: Mutex::new(conn) }
+    }
+
+    fn seed_scene(db: &Database, name: &str) -> i64 {
+        let actions = vec![SceneActionInput {
+            device_id: "dev1".into(),
+            capability_id: "led".into(),
+            value: "true".into(),
+        }];
+        db.create_scene(name, &actions).unwrap()
+    }
+
+    #[test]
+    fn new_scene_has_null_last_run() {
+        let db = new_scenes_test_db();
+        let id = seed_scene(&db, "Good night");
+        let scene = db.get_scene(id).unwrap().unwrap();
+        assert_eq!(scene.last_run, None);
+    }
+
+    #[test]
+    fn update_scene_last_run_stamps_timestamp() {
+        let db = new_scenes_test_db();
+        let id = seed_scene(&db, "Movie mode");
+        db.update_scene_last_run(id).unwrap();
+        let scene = db.get_scene(id).unwrap().unwrap();
+        let ts = scene.last_run.expect("last_run should be set");
+        assert_eq!(ts.len(), 19, "unexpected timestamp shape: {}", ts);
+        assert!(ts.starts_with('2'), "expected century prefix, got {}", ts);
+    }
+
+    #[test]
+    fn get_scenes_exposes_last_run_on_every_row() {
+        let db = new_scenes_test_db();
+        let a = seed_scene(&db, "A");
+        let b = seed_scene(&db, "B");
+        db.update_scene_last_run(a).unwrap();
+        let scenes = db.get_scenes().unwrap();
+        let sa = scenes.iter().find(|s| s.id == a).unwrap();
+        let sb = scenes.iter().find(|s| s.id == b).unwrap();
+        assert!(sa.last_run.is_some(), "A has been fired, last_run should be set");
+        assert_eq!(sb.last_run, None, "B has not been fired, last_run should be null");
     }
 }

@@ -1733,45 +1733,13 @@ pub fn delete_scene(db: State<'_, Database>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn run_scene(
-    state: State<'_, AppState>, db: State<'_, Database>, id: i64,
+pub fn run_scene(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    db: State<'_, Database>,
+    id: i64,
 ) -> Result<(), String> {
     let scene = db.get_scene(id)?
         .ok_or_else(|| format!("Scene {} not found", id))?;
-    let conn_mgr = state.connection_manager.clone();
-
-    for action in &scene.actions {
-        // Look up device IP/port from the saved device record
-        let saved = db.get_saved_device(&action.device_id)?;
-        let (ip, port) = match saved {
-            Some(d) => (d.ip, d.port),
-            None => {
-                log::warn!("[Scene] Device {} not found, skipping", action.device_id);
-                continue;
-            }
-        };
-
-        let value: serde_json::Value = if action.value == "true" {
-            serde_json::Value::Bool(true)
-        } else if action.value == "false" {
-            serde_json::Value::Bool(false)
-        } else if let Ok(n) = action.value.parse::<f64>() {
-            serde_json::json!(n)
-        } else {
-            serde_json::Value::String(action.value.clone())
-        };
-
-        let cmd = serde_json::json!({
-            "command": "set",
-            "id": action.capability_id,
-            "value": value
-        });
-        let msg = serde_json::to_string(&cmd).map_err(|e| e.to_string())?;
-        let ws_port = port + 1;
-
-        if let Err(e) = conn_mgr.send_to_device(&action.device_id, &ip, ws_port, &msg) {
-            log::warn!("[Scene] Failed to send to {}: {}", action.device_id, e);
-        }
-    }
-    Ok(())
+    crate::scheduler::fire_scene(&app_handle, state.connection_manager.as_ref(), &scene)
 }

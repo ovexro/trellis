@@ -2275,32 +2275,11 @@ fn handle_run_scene(ctx: &ApiContext, id: i64) -> (u16, String) {
         Ok(None) => return json_error(404, "Scene not found"),
         Err(e) => return json_error(500, &e),
     };
-    for action in &scene.actions {
-        let saved = match ctx.db.get_saved_device(&action.device_id) {
-            Ok(Some(d)) => d,
-            _ => continue,
-        };
-        let value: Value = if action.value == "true" {
-            Value::Bool(true)
-        } else if action.value == "false" {
-            Value::Bool(false)
-        } else if let Ok(n) = action.value.parse::<f64>() {
-            serde_json::json!(n)
-        } else {
-            Value::String(action.value.clone())
-        };
-        let cmd = serde_json::json!({
-            "command": "set",
-            "id": action.capability_id,
-            "value": value
-        });
-        let msg = serde_json::to_string(&cmd).unwrap_or_default();
-        let ws_port = saved.port + 1;
-        if let Err(e) = ctx.connection_manager.send_to_device(&action.device_id, &saved.ip, ws_port, &msg) {
-            log::warn!("[Scene API] Failed to send to {}: {}", action.device_id, e);
-        }
+    let action_count = scene.actions.len();
+    match crate::scheduler::fire_scene(&ctx.app_handle, ctx.connection_manager.as_ref(), &scene) {
+        Ok(()) => json_ok(&serde_json::json!({"ran": true, "actions": action_count})),
+        Err(e) => json_error(500, &e),
     }
-    json_ok(&serde_json::json!({"ran": true, "actions": scene.actions.len()}))
 }
 
 fn handle_create_schedule(ctx: &ApiContext, body: &str) -> (u16, String) {
