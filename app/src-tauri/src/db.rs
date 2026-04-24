@@ -3644,4 +3644,90 @@ mod tests {
         db.delete_rule(id).unwrap();
         assert!(db.get_rule(id).unwrap().is_none(), "rule must not exist after delete");
     }
+
+    fn new_schedules_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                scene_id INTEGER
+            );",
+        )
+        .unwrap();
+        Database { conn: Mutex::new(conn) }
+    }
+
+    #[test]
+    fn toggle_schedule_flips_enabled_state() {
+        let db = new_schedules_test_db();
+        let id = db
+            .create_schedule("dev1", "led", "true", "0 6 * * *", "Morning", None)
+            .unwrap();
+        assert!(db.get_schedule(id).unwrap().unwrap().enabled, "new schedule defaults to enabled");
+        db.toggle_schedule(id, false).unwrap();
+        assert!(!db.get_schedule(id).unwrap().unwrap().enabled, "toggle to false disables schedule");
+        db.toggle_schedule(id, true).unwrap();
+        assert!(db.get_schedule(id).unwrap().unwrap().enabled, "toggle back to true re-enables schedule");
+    }
+
+    #[test]
+    fn delete_schedule_removes_row() {
+        let db = new_schedules_test_db();
+        let id = db
+            .create_schedule("dev1", "led", "true", "0 6 * * *", "Morning", None)
+            .unwrap();
+        assert!(db.get_schedule(id).unwrap().is_some());
+        db.delete_schedule(id).unwrap();
+        assert!(db.get_schedule(id).unwrap().is_none(), "schedule must not exist after delete");
+    }
+
+    fn new_webhooks_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE webhooks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                device_id TEXT,
+                url TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );",
+        )
+        .unwrap();
+        Database { conn: Mutex::new(conn) }
+    }
+
+    #[test]
+    fn toggle_webhook_flips_enabled_state() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        let fetched = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert!(fetched.enabled, "new webhook defaults to enabled");
+        db.toggle_webhook(id, false).unwrap();
+        let disabled = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert!(!disabled.enabled, "toggle to false disables webhook");
+        db.toggle_webhook(id, true).unwrap();
+        let re_enabled = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert!(re_enabled.enabled, "toggle back to true re-enables webhook");
+    }
+
+    #[test]
+    fn delete_webhook_removes_row() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        assert!(db.get_webhooks().unwrap().iter().any(|w| w.id == id));
+        db.delete_webhook(id).unwrap();
+        assert!(!db.get_webhooks().unwrap().iter().any(|w| w.id == id), "webhook must not exist after delete");
+    }
 }

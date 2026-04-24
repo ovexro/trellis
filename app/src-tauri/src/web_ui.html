@@ -4364,6 +4364,52 @@
       }
     }
 
+    async function toggleSchedule(id, enabled, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/schedules/' + id + '/enabled', { method: 'PATCH', body: { enabled } });
+        toast(enabled ? 'Schedule enabled' : 'Schedule disabled', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Toggle failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function deleteScheduleFromDashboard(id) {
+      if (!confirm('Delete this schedule? This cannot be undone.')) return;
+      try {
+        await api('/api/schedules/' + id, { method: 'DELETE' });
+        toast('Schedule deleted', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Failed to delete schedule: ' + (e.message || e), 'error');
+      }
+    }
+
+    async function toggleWebhook(id, enabled, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/webhooks/' + id + '/enabled', { method: 'PATCH', body: { enabled } });
+        toast(enabled ? 'Webhook enabled' : 'Webhook disabled', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Toggle failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function deleteWebhookFromDashboard(id) {
+      if (!confirm('Delete this webhook? This cannot be undone.')) return;
+      try {
+        await api('/api/webhooks/' + id, { method: 'DELETE' });
+        toast('Webhook deleted', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Failed to delete webhook: ' + (e.message || e), 'error');
+      }
+    }
+
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
@@ -4396,6 +4442,10 @@
               ? `<div class="auto-card-detail" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.1rem;">Last run: ${esc(s.last_run)}</div>`
               : '';
             const runBtn = (isViewer || s.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runSchedule(${s.id}, this)" title="Run now">Run now</button>`;
+            const sToggleLabel = s.enabled !== false ? 'Disable' : 'Enable';
+            const sToggleNext = s.enabled !== false ? 'false' : 'true';
+            const sToggleBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="toggleSchedule(${s.id}, ${sToggleNext}, this)" title="${sToggleLabel} schedule">${sToggleLabel}</button>`;
+            const sDeleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteScheduleFromDashboard(${s.id})" title="Delete schedule">&times;</button>`;
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                 <div style="min-width:0;flex:1;">
@@ -4407,6 +4457,8 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
                   <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                   ${runBtn}
+                  ${sToggleBtn}
+                  ${sDeleteBtn}
                 </div>
               </div>
             </div>`;
@@ -4456,6 +4508,10 @@
         if (webhooks && webhooks.length) {
           html += webhooks.map(w => {
             var testBtn = isViewer ? '' : `<button onclick="testWebhookFromDash(${w.id}, '${esc(w.url)}')" style="font-size:0.7rem;padding:0.2rem 0.5rem;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;white-space:nowrap;">Test</button>`;
+            const wToggleLabel = w.enabled !== false ? 'Disable' : 'Enable';
+            const wToggleNext = w.enabled !== false ? 'false' : 'true';
+            const wToggleBtn = isViewer ? '' : `<button class="btn btn-sm" onclick="toggleWebhook(${w.id}, ${wToggleNext}, this)" title="${wToggleLabel} webhook">${wToggleLabel}</button>`;
+            const wDeleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteWebhookFromDashboard(${w.id})" title="Delete webhook">&times;</button>`;
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
@@ -4468,6 +4524,8 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;">
                   ${testBtn}
                   <span class="auto-card-badge ${w.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${w.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                  ${wToggleBtn}
+                  ${wDeleteBtn}
                 </div>
               </div>
             </div>`;

@@ -1335,6 +1335,26 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("PATCH", p) if p.starts_with("/api/schedules/") && p.ends_with("/enabled") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/schedules/".len()..p.len() - "/enabled".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid schedule ID"),
+            };
+            let enabled = match serde_json::from_str::<serde_json::Value>(&req.body)
+                .ok()
+                .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            {
+                Some(e) => e,
+                None => return json_error(400, "Body must be {\"enabled\": bool}"),
+            };
+            match ctx.db.toggle_schedule(id, enabled) {
+                Ok(()) => json_ok(&serde_json::json!({"enabled": enabled})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
         ("POST", p) if p.starts_with("/api/schedules/") && p.ends_with("/run") => {
             if let Some(denied) = require_admin(role) { return denied; }
             let id_str = &p["/api/schedules/".len()..p.len() - "/run".len()];
@@ -1445,6 +1465,26 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             };
             match ctx.db.delete_webhook(id) {
                 Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("PATCH", p) if p.starts_with("/api/webhooks/") && p.ends_with("/enabled") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/webhooks/".len()..p.len() - "/enabled".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid webhook ID"),
+            };
+            let enabled = match serde_json::from_str::<serde_json::Value>(&req.body)
+                .ok()
+                .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            {
+                Some(e) => e,
+                None => return json_error(400, "Body must be {\"enabled\": bool}"),
+            };
+            match ctx.db.toggle_webhook(id, enabled) {
+                Ok(()) => json_ok(&serde_json::json!({"enabled": enabled})),
                 Err(e) => json_error(500, &e),
             }
         }
