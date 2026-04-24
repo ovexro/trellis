@@ -5610,7 +5610,7 @@ dependencies = [
 
 [[package]]
 name = "trellis"
-version = "0.23.0"
+version = "0.24.0"
 dependencies = [
  "age",
  "base64 0.22.1",
