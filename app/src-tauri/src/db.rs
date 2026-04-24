@@ -1442,12 +1442,25 @@ impl Database {
     pub fn get_webhooks(&self) -> Result<Vec<Webhook>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, event_type, device_id, url, label, enabled FROM webhooks"
+            "SELECT w.id, w.event_type, w.device_id, w.url, w.label, w.enabled,
+                    (SELECT timestamp FROM webhook_deliveries
+                       WHERE webhook_id = w.id ORDER BY id DESC LIMIT 1) AS last_delivery,
+                    (SELECT success FROM webhook_deliveries
+                       WHERE webhook_id = w.id ORDER BY id DESC LIMIT 1) AS last_success,
+                    (SELECT COUNT(*) FROM webhook_deliveries
+                       WHERE webhook_id = w.id AND success = 1) AS success_count,
+                    (SELECT COUNT(*) FROM webhook_deliveries
+                       WHERE webhook_id = w.id AND success = 0) AS failure_count
+             FROM webhooks w"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(Webhook {
                 id: row.get(0)?, event_type: row.get(1)?, device_id: row.get(2)?,
                 url: row.get(3)?, label: row.get(4)?, enabled: row.get(5)?,
+                last_delivery: row.get(6)?,
+                last_success: row.get(7)?,
+                success_count: row.get(8)?,
+                failure_count: row.get(9)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -2618,6 +2631,14 @@ pub struct Webhook {
     pub url: String,
     pub label: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub last_delivery: Option<String>,
+    #[serde(default)]
+    pub last_success: Option<bool>,
+    #[serde(default)]
+    pub success_count: i64,
+    #[serde(default)]
+    pub failure_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3698,6 +3719,16 @@ mod tests {
                 url TEXT NOT NULL,
                 label TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE webhook_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                webhook_id INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                status_code INTEGER,
+                success INTEGER NOT NULL,
+                error TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                timestamp TEXT NOT NULL
             );",
         )
         .unwrap();
@@ -3729,5 +3760,49 @@ mod tests {
         assert!(db.get_webhooks().unwrap().iter().any(|w| w.id == id));
         db.delete_webhook(id).unwrap();
         assert!(!db.get_webhooks().unwrap().iter().any(|w| w.id == id), "webhook must not exist after delete");
+    }
+
+    #[test]
+    fn new_webhook_has_null_summary_fields() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert!(w.last_delivery.is_none(), "new webhook has no deliveries");
+        assert!(w.last_success.is_none(), "new webhook has no last_success");
+        assert_eq!(w.success_count, 0);
+        assert_eq!(w.failure_count, 0);
+    }
+
+    #[test]
+    fn get_webhooks_aggregates_delivery_stats() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", None, false, Some("timeout"), 2).unwrap();
+
+        let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert_eq!(w.success_count, 3, "should have 3 successful deliveries");
+        assert_eq!(w.failure_count, 2, "should have 2 failed deliveries");
+        assert!(w.last_delivery.is_some(), "last_delivery populated after logging");
+        assert_eq!(w.last_success, Some(false), "last delivery was a failure");
+    }
+
+    #[test]
+    fn get_webhooks_last_success_reflects_most_recent() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
+        let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
+        assert_eq!(w.last_success, Some(true), "last delivery was successful");
     }
 }

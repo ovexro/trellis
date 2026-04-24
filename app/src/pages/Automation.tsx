@@ -53,6 +53,10 @@ interface WebhookDef {
   url: string;
   label: string;
   enabled: boolean;
+  last_delivery?: string | null;
+  last_success?: boolean | null;
+  success_count?: number;
+  failure_count?: number;
 }
 
 interface WebhookDelivery {
@@ -749,6 +753,15 @@ export default function Automation() {
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium text-zinc-200">{w.label}</p>
                       <p className="text-xs text-zinc-500 mt-0.5 truncate">{w.event_type} → <span className="font-mono">{w.url.slice(0, 50)}{w.url.length > 50 ? "..." : ""}</span></p>
+                      {((w.success_count || 0) + (w.failure_count || 0)) > 0 && (
+                        <p className={`text-[11px] mt-0.5 ${w.last_success === false ? "text-red-400" : "text-zinc-500"}`}>
+                          Last delivery: <span className="font-mono">{w.last_delivery || "—"}</span>
+                          <span className="mx-1.5 text-zinc-600">·</span>
+                          <span className="text-green-500">{w.success_count || 0}✓</span>
+                          <span className="mx-1 text-zinc-600">/</span>
+                          <span className="text-red-400">{w.failure_count || 0}✗</span>
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
                       <button onClick={() => testWebhook(w)} title="Send test"

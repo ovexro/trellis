@@ -4512,6 +4512,14 @@
             const wToggleNext = w.enabled !== false ? 'false' : 'true';
             const wToggleBtn = isViewer ? '' : `<button class="btn btn-sm" onclick="toggleWebhook(${w.id}, ${wToggleNext}, this)" title="${wToggleLabel} webhook">${wToggleLabel}</button>`;
             const wDeleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteWebhookFromDashboard(${w.id})" title="Delete webhook">&times;</button>`;
+            const wSuccess = Number(w.success_count || 0);
+            const wFailure = Number(w.failure_count || 0);
+            const wTotal = wSuccess + wFailure;
+            let wStatsLine = '';
+            if (wTotal > 0) {
+              const wLastColor = w.last_success === false ? 'var(--danger,#ef4444)' : 'var(--text-faint)';
+              wStatsLine = `<div class="auto-card-detail" style="font-size:0.7rem;color:${wLastColor};margin-top:0.1rem;">Last delivery: ${esc(w.last_delivery || '—')} &middot; <span style="color:#22c55e;">${wSuccess}&check;</span> / <span style="color:#ef4444;">${wFailure}&cross;</span></div>`;
+            }
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
@@ -4520,6 +4528,7 @@
                     ${w.url ? `URL: <code style="font-size:0.75rem;color:var(--accent);">${esc(w.url)}</code>` : ''}
                     ${w.event_type ? ` &middot; Event: ${esc(w.event_type)}` : ''}
                   </div>
+                  ${wStatsLine}
                 </div>
                 <div style="display:flex;align-items:center;gap:0.5rem;">
                   ${testBtn}
