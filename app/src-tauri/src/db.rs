@@ -3620,4 +3620,28 @@ mod tests {
         assert_eq!(ts.len(), 19, "unexpected timestamp shape: {}", ts);
         assert!(ts.starts_with('2'), "expected century prefix, got {}", ts);
     }
+
+    #[test]
+    fn toggle_rule_flips_enabled_state() {
+        let db = new_rules_test_db();
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .unwrap();
+        assert!(db.get_rule(id).unwrap().unwrap().enabled, "new rule defaults to enabled");
+        db.toggle_rule(id, false).unwrap();
+        assert!(!db.get_rule(id).unwrap().unwrap().enabled, "toggle to false disables rule");
+        db.toggle_rule(id, true).unwrap();
+        assert!(db.get_rule(id).unwrap().unwrap().enabled, "toggle back to true re-enables rule");
+    }
+
+    #[test]
+    fn delete_rule_removes_row() {
+        let db = new_rules_test_db();
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .unwrap();
+        assert!(db.get_rule(id).unwrap().is_some());
+        db.delete_rule(id).unwrap();
+        assert!(db.get_rule(id).unwrap().is_none(), "rule must not exist after delete");
+    }
 }

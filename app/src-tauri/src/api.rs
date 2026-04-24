@@ -268,7 +268,7 @@ fn send_json(stream: &mut TcpStream, status: u16, body: &str) {
         _ => "OK",
     };
     let response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n{}",
         status, status_text, body.len(), body
     );
     let _ = stream.write_all(response.as_bytes());
@@ -294,7 +294,7 @@ fn send_csv(stream: &mut TcpStream, body: &str) {
 }
 
 fn send_cors_preflight(stream: &mut TcpStream) {
-    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
@@ -1388,6 +1388,26 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 &rule,
             ) {
                 Ok(()) => json_ok(&serde_json::json!({"fired": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("PATCH", p) if p.starts_with("/api/rules/") && p.ends_with("/enabled") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/rules/".len()..p.len() - "/enabled".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid rule ID"),
+            };
+            let enabled = match serde_json::from_str::<serde_json::Value>(&req.body)
+                .ok()
+                .and_then(|v| v.get("enabled").and_then(|e| e.as_bool()))
+            {
+                Some(e) => e,
+                None => return json_error(400, "Body must be {\"enabled\": bool}"),
+            };
+            match ctx.db.toggle_rule(id, enabled) {
+                Ok(()) => json_ok(&serde_json::json!({"enabled": enabled})),
                 Err(e) => json_error(500, &e),
             }
         }

@@ -4341,6 +4341,29 @@
       }
     }
 
+    async function toggleRule(id, enabled, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/rules/' + id + '/enabled', { method: 'PATCH', body: { enabled } });
+        toast(enabled ? 'Rule enabled' : 'Rule disabled', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Toggle failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function deleteRuleFromDashboard(id) {
+      if (!confirm('Delete this rule? This cannot be undone.')) return;
+      try {
+        await api('/api/rules/' + id, { method: 'DELETE' });
+        toast('Rule deleted', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Failed to delete rule: ' + (e.message || e), 'error');
+      }
+    }
+
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
@@ -4402,6 +4425,10 @@
               ? `<div class="auto-card-detail" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.1rem;">Last triggered: ${esc(r.last_triggered)}</div>`
               : '';
             const runBtn = (isViewer || r.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runRule(${r.id}, this)" title="Run now (bypass conditions)">Run now</button>`;
+            const toggleLabel = r.enabled !== false ? 'Disable' : 'Enable';
+            const toggleNext = r.enabled !== false ? 'false' : 'true';
+            const toggleBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="toggleRule(${r.id}, ${toggleNext}, this)" title="${toggleLabel} rule">${toggleLabel}</button>`;
+            const deleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteRuleFromDashboard(${r.id})" title="Delete rule">&times;</button>`;
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                 <div style="min-width:0;flex:1;">
@@ -4412,6 +4439,8 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
                   <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                   ${runBtn}
+                  ${toggleBtn}
+                  ${deleteBtn}
                 </div>
               </div>
             </div>`;
