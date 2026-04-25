@@ -8,6 +8,15 @@ pub struct Database {
     pub conn: Mutex<Connection>,
 }
 
+fn copy_label(src: &str) -> String {
+    let trimmed = src.trim_end();
+    if trimmed.is_empty() {
+        "(copy)".to_string()
+    } else {
+        format!("{} (copy)", trimmed)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FloorPlan {
     pub id: i64,
@@ -1339,6 +1348,15 @@ impl Database {
         Ok(())
     }
 
+    pub fn duplicate_schedule(&self, id: i64) -> Result<i64, String> {
+        let src = self.get_schedule(id)?
+            .ok_or_else(|| format!("Schedule {} not found", id))?;
+        self.create_schedule(
+            &src.device_id, &src.capability_id, &src.value,
+            &src.cron, &copy_label(&src.label), src.scene_id,
+        )
+    }
+
     // ─── Conditional rules ───────────────────────────────────────────────
 
     pub fn create_rule(
@@ -1426,6 +1444,17 @@ impl Database {
         Ok(())
     }
 
+    pub fn duplicate_rule(&self, id: i64) -> Result<i64, String> {
+        let src = self.get_rule(id)?
+            .ok_or_else(|| format!("Rule {} not found", id))?;
+        self.create_rule(
+            &src.source_device_id, &src.source_metric_id,
+            &src.condition, src.threshold,
+            &src.target_device_id, &src.target_capability_id, &src.target_value,
+            &copy_label(&src.label), &src.logic, src.conditions.as_deref(),
+        )
+    }
+
     // ─── Webhooks ────────────────────────────────────────────────────────
 
     pub fn create_webhook(
@@ -1466,6 +1495,23 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    pub fn get_webhook(&self, id: i64) -> Result<Option<Webhook>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, event_type, device_id, url, label, enabled
+             FROM webhooks WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                Ok(Webhook {
+                    id: row.get(0)?, event_type: row.get(1)?, device_id: row.get(2)?,
+                    url: row.get(3)?, label: row.get(4)?, enabled: row.get(5)?,
+                    last_delivery: None, last_success: None,
+                    success_count: 0, failure_count: 0,
+                })
+            },
+        ).optional().map_err(|e| e.to_string())
+    }
+
     pub fn delete_webhook(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM webhooks WHERE id = ?1", rusqlite::params![id])
@@ -1478,6 +1524,15 @@ impl Database {
         conn.execute("UPDATE webhooks SET enabled = ?1 WHERE id = ?2", rusqlite::params![enabled, id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    pub fn duplicate_webhook(&self, id: i64) -> Result<i64, String> {
+        let src = self.get_webhook(id)?
+            .ok_or_else(|| format!("Webhook {} not found", id))?;
+        self.create_webhook(
+            &src.event_type, src.device_id.as_deref(), &src.url,
+            &copy_label(&src.label),
+        )
     }
 
     // ─── Webhook delivery history ───────────────────────────────────────
@@ -2569,6 +2624,17 @@ impl Database {
             ).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    pub fn duplicate_scene(&self, id: i64) -> Result<i64, String> {
+        let src = self.get_scene(id)?
+            .ok_or_else(|| format!("Scene {} not found", id))?;
+        let inputs: Vec<SceneActionInput> = src.actions.iter().map(|a| SceneActionInput {
+            device_id: a.device_id.clone(),
+            capability_id: a.capability_id.clone(),
+            value: a.value.clone(),
+        }).collect();
+        self.create_scene(&copy_label(&src.name), &inputs)
     }
 
     pub fn delete_scene(&self, id: i64) -> Result<(), String> {
@@ -3889,5 +3955,187 @@ mod tests {
         let sb = scenes.iter().find(|s| s.id == b).unwrap();
         assert!(sa.last_run.is_some(), "A has been fired, last_run should be set");
         assert_eq!(sb.last_run, None, "B has not been fired, last_run should be null");
+    }
+
+    // ─── Copy / duplicate parity ─────────────────────────────────────────
+
+    #[test]
+    fn copy_label_appends_suffix_and_handles_blank() {
+        assert_eq!(copy_label("Morning"), "Morning (copy)");
+        assert_eq!(copy_label("Morning   "), "Morning (copy)", "trailing space trimmed");
+        assert_eq!(copy_label(""), "(copy)");
+        assert_eq!(copy_label("   "), "(copy)", "all-whitespace label");
+    }
+
+    #[test]
+    fn duplicate_schedule_creates_independent_row() {
+        let db = new_schedules_test_db();
+        let src_id = db
+            .create_schedule("dev1", "led", "true", "0 6 * * *", "Morning", None)
+            .unwrap();
+        db.toggle_schedule(src_id, false).unwrap();
+
+        let new_id = db.duplicate_schedule(src_id).unwrap();
+        assert_ne!(src_id, new_id);
+
+        let dup = db.get_schedule(new_id).unwrap().unwrap();
+        assert_eq!(dup.label, "Morning (copy)");
+        assert_eq!(dup.cron, "0 6 * * *");
+        assert_eq!(dup.device_id, "dev1");
+        assert_eq!(dup.capability_id, "led");
+        assert_eq!(dup.value, "true");
+        assert!(dup.enabled, "duplicate starts enabled even if source is disabled");
+        assert_eq!(dup.last_run, None, "duplicate has fresh last_run");
+
+        // Source untouched
+        let src = db.get_schedule(src_id).unwrap().unwrap();
+        assert_eq!(src.label, "Morning");
+        assert!(!src.enabled);
+    }
+
+    #[test]
+    fn duplicate_schedule_preserves_scene_link() {
+        let db = new_schedules_test_db();
+        let src_id = db
+            .create_schedule("dev1", "led", "true", "0 7 * * *", "Scene fire", Some(42))
+            .unwrap();
+        let new_id = db.duplicate_schedule(src_id).unwrap();
+        let dup = db.get_schedule(new_id).unwrap().unwrap();
+        assert_eq!(dup.scene_id, Some(42));
+    }
+
+    #[test]
+    fn duplicate_schedule_404s_on_missing() {
+        let db = new_schedules_test_db();
+        let err = db.duplicate_schedule(999).unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_rule_creates_independent_row_with_conditions() {
+        let db = new_rules_test_db();
+        let conditions_json = r#"[{"device_id":"dev1","metric_id":"temp","operator":"above","threshold":30.0}]"#;
+        let src_id = db
+            .create_rule(
+                "dev1", "temp", "above", 30.0,
+                "dev2", "fan", "true", "Cool it",
+                "or", Some(conditions_json),
+            )
+            .unwrap();
+        db.toggle_rule(src_id, false).unwrap();
+
+        let new_id = db.duplicate_rule(src_id).unwrap();
+        assert_ne!(src_id, new_id);
+
+        let dup = db.get_rule(new_id).unwrap().unwrap();
+        assert_eq!(dup.label, "Cool it (copy)");
+        assert_eq!(dup.threshold, 30.0);
+        assert_eq!(dup.condition, "above");
+        assert_eq!(dup.logic, "or");
+        assert_eq!(dup.conditions.as_deref(), Some(conditions_json));
+        assert!(dup.enabled, "duplicate starts enabled even if source is disabled");
+        assert_eq!(dup.last_triggered, None, "duplicate has fresh last_triggered");
+    }
+
+    #[test]
+    fn duplicate_rule_404s_on_missing() {
+        let db = new_rules_test_db();
+        let err = db.duplicate_rule(999).unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_webhook_creates_independent_row() {
+        let db = new_webhooks_test_db();
+        let src_id = db
+            .create_webhook("device.offline", Some("dev1"), "https://example.com/hook", "Offline ping")
+            .unwrap();
+        db.log_webhook_delivery(src_id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
+        db.toggle_webhook(src_id, false).unwrap();
+
+        let new_id = db.duplicate_webhook(src_id).unwrap();
+        assert_ne!(src_id, new_id);
+
+        let dup = db.get_webhook(new_id).unwrap().unwrap();
+        assert_eq!(dup.label, "Offline ping (copy)");
+        assert_eq!(dup.event_type, "device.offline");
+        assert_eq!(dup.device_id.as_deref(), Some("dev1"));
+        assert_eq!(dup.url, "https://example.com/hook");
+        assert!(dup.enabled, "duplicate starts enabled even if source is disabled");
+
+        // Delivery history is per-webhook and must NOT carry over
+        let dup_full = db.get_webhooks().unwrap().into_iter().find(|w| w.id == new_id).unwrap();
+        assert_eq!(dup_full.success_count, 0);
+        assert_eq!(dup_full.failure_count, 0);
+        assert!(dup_full.last_delivery.is_none());
+    }
+
+    #[test]
+    fn duplicate_webhook_handles_null_device_id() {
+        let db = new_webhooks_test_db();
+        let src_id = db
+            .create_webhook("alert.triggered", None, "https://example.com/all", "All alerts")
+            .unwrap();
+        let new_id = db.duplicate_webhook(src_id).unwrap();
+        let dup = db.get_webhook(new_id).unwrap().unwrap();
+        assert!(dup.device_id.is_none(), "device_id NULL must round-trip");
+    }
+
+    #[test]
+    fn duplicate_webhook_404s_on_missing() {
+        let db = new_webhooks_test_db();
+        let err = db.duplicate_webhook(999).unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn duplicate_scene_copies_actions_and_resets_last_run() {
+        let db = new_scenes_test_db();
+        let actions = vec![
+            SceneActionInput { device_id: "dev1".into(), capability_id: "led".into(), value: "true".into() },
+            SceneActionInput { device_id: "dev2".into(), capability_id: "fan".into(), value: "false".into() },
+            SceneActionInput { device_id: "dev3".into(), capability_id: "bright".into(), value: "0.4".into() },
+        ];
+        let src_id = db.create_scene("Movie mode", &actions).unwrap();
+        db.update_scene_last_run(src_id).unwrap();
+
+        let new_id = db.duplicate_scene(src_id).unwrap();
+        assert_ne!(src_id, new_id);
+
+        let dup = db.get_scene(new_id).unwrap().unwrap();
+        assert_eq!(dup.name, "Movie mode (copy)");
+        assert_eq!(dup.actions.len(), 3);
+        assert_eq!(dup.actions[0].device_id, "dev1");
+        assert_eq!(dup.actions[1].capability_id, "fan");
+        assert_eq!(dup.actions[2].value, "0.4");
+        assert_eq!(dup.last_run, None, "duplicate has fresh last_run");
+
+        // Source untouched
+        let src = db.get_scene(src_id).unwrap().unwrap();
+        assert_eq!(src.name, "Movie mode");
+        assert!(src.last_run.is_some());
+        assert_eq!(src.actions.len(), 3, "source still has its 3 actions");
+    }
+
+    #[test]
+    fn duplicate_scene_preserves_action_order() {
+        let db = new_scenes_test_db();
+        let actions = vec![
+            SceneActionInput { device_id: "z".into(), capability_id: "c1".into(), value: "1".into() },
+            SceneActionInput { device_id: "a".into(), capability_id: "c2".into(), value: "2".into() },
+            SceneActionInput { device_id: "m".into(), capability_id: "c3".into(), value: "3".into() },
+        ];
+        let src_id = db.create_scene("Ordering", &actions).unwrap();
+        let new_id = db.duplicate_scene(src_id).unwrap();
+        let dup = db.get_scene(new_id).unwrap().unwrap();
+        let ordered: Vec<&str> = dup.actions.iter().map(|a| a.device_id.as_str()).collect();
+        assert_eq!(ordered, vec!["z", "a", "m"], "duplicate preserves sort_order from source");
+    }
+
+    #[test]
+    fn duplicate_scene_404s_on_missing() {
+        let db = new_scenes_test_db();
+        let err = db.duplicate_scene(999).unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
     }
 }

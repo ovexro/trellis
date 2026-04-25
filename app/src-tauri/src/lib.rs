@@ -176,15 +176,18 @@ pub fn run() {
             delete_schedule,
             toggle_schedule,
             run_schedule,
+            duplicate_schedule,
             create_rule,
             get_rules,
             delete_rule,
             toggle_rule,
             run_rule,
+            duplicate_rule,
             create_webhook,
             get_webhooks,
             delete_webhook,
             toggle_webhook,
+            duplicate_webhook,
             log_webhook_delivery,
             get_webhook_deliveries,
             create_template,
@@ -248,6 +251,7 @@ pub fn run() {
             update_scene,
             delete_scene,
             run_scene,
+            duplicate_scene,
         ])
         .setup(move |app| {
             db::init_db(app.handle())?;

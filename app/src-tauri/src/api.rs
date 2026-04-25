@@ -1377,6 +1377,22 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("POST", p) if p.starts_with("/api/schedules/") && p.ends_with("/duplicate") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/schedules/".len()..p.len() - "/duplicate".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid schedule ID"),
+            };
+            match ctx.db.duplicate_schedule(id) {
+                Ok(new_id) => json_ok(&serde_json::json!({"id": new_id})),
+                Err(e) => {
+                    let code = if e.contains("not found") { 404 } else { 500 };
+                    json_error(code, &e)
+                },
+            }
+        }
+
         // ─── Rules ──────────────────────────────────────────────────
         ("GET", "/api/rules") => {
             match ctx.db.get_rules() {
@@ -1409,6 +1425,22 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             ) {
                 Ok(()) => json_ok(&serde_json::json!({"fired": true})),
                 Err(e) => json_error(500, &e),
+            }
+        }
+
+        ("POST", p) if p.starts_with("/api/rules/") && p.ends_with("/duplicate") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/rules/".len()..p.len() - "/duplicate".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid rule ID"),
+            };
+            match ctx.db.duplicate_rule(id) {
+                Ok(new_id) => json_ok(&serde_json::json!({"id": new_id})),
+                Err(e) => {
+                    let code = if e.contains("not found") { 404 } else { 500 };
+                    json_error(code, &e)
+                },
             }
         }
 
@@ -1489,6 +1521,22 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        ("POST", p) if p.starts_with("/api/webhooks/") && p.ends_with("/duplicate") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/webhooks/".len()..p.len() - "/duplicate".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid webhook ID"),
+            };
+            match ctx.db.duplicate_webhook(id) {
+                Ok(new_id) => json_ok(&serde_json::json!({"id": new_id})),
+                Err(e) => {
+                    let code = if e.contains("not found") { 404 } else { 500 };
+                    json_error(code, &e)
+                },
+            }
+        }
+
         // ─── Webhook deliveries ────────────────────────────────────
         ("GET", p) if p.starts_with("/api/webhooks/") && p.ends_with("/deliveries") => {
             let middle = &p["/api/webhooks/".len()..p.len()-"/deliveries".len()];
@@ -1544,6 +1592,22 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 Err(_) => return json_error(400, "Invalid scene ID"),
             };
             handle_run_scene(ctx, id)
+        }
+
+        ("POST", p) if p.starts_with("/api/scenes/") && p.ends_with("/duplicate") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/scenes/".len()..p.len() - "/duplicate".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid scene ID"),
+            };
+            match ctx.db.duplicate_scene(id) {
+                Ok(new_id) => json_ok(&serde_json::json!({"id": new_id})),
+                Err(e) => {
+                    let code = if e.contains("not found") { 404 } else { 500 };
+                    json_error(code, &e)
+                },
+            }
         }
 
         // ─── Templates ──────────────────────────────────────────────

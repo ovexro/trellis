@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Zap, Plus, Trash2, Play, Loader2, Pencil } from "lucide-react";
+import { Zap, Plus, Trash2, Play, Loader2, Pencil, Copy } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface SceneAction {
@@ -26,6 +26,7 @@ export default function Scenes() {
   const [newName, setNewName] = useState("");
   const [newActions, setNewActions] = useState<SceneAction[]>([]);
   const [running, setRunning] = useState<number | null>(null);
+  const [duplicating, setDuplicating] = useState<number | null>(null);
 
   const onlineDevices = devices.filter((d) => d.online);
 
@@ -112,6 +113,18 @@ export default function Scenes() {
       console.error("Failed to run scene:", err);
     }
     setRunning(null);
+  };
+
+  const duplicateScene = async (scene: Scene) => {
+    setDuplicating(scene.id);
+    try {
+      await invoke("duplicate_scene", { id: scene.id });
+      await loadScenes();
+    } catch (err) {
+      console.error("Failed to duplicate scene:", err);
+      alert(`Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setDuplicating(null);
   };
 
   if (loading) {
@@ -260,6 +273,15 @@ export default function Scenes() {
                 >
                   <Pencil size={12} />
                   Edit
+                </button>
+                <button
+                  onClick={() => duplicateScene(scene)}
+                  disabled={duplicating === scene.id}
+                  title="Duplicate scene"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 rounded-lg text-xs transition-colors disabled:opacity-50"
+                >
+                  {duplicating === scene.id ? <Loader2 size={12} className="animate-spin" /> : <Copy size={12} />}
+                  Copy
                 </button>
                 <button
                   onClick={() => runScene(scene)}

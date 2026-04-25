@@ -884,6 +884,11 @@ pub fn run_schedule(
     crate::scheduler::fire_schedule(&app_handle, state.connection_manager.as_ref(), &schedule)
 }
 
+#[tauri::command]
+pub fn duplicate_schedule(db: State<'_, Database>, id: i64) -> Result<i64, String> {
+    db.duplicate_schedule(id)
+}
+
 // ─── Conditional rules ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -925,6 +930,11 @@ pub fn run_rule(
     crate::scheduler::fire_rule(&app_handle, state.connection_manager.as_ref(), &rule)
 }
 
+#[tauri::command]
+pub fn duplicate_rule(db: State<'_, Database>, id: i64) -> Result<i64, String> {
+    db.duplicate_rule(id)
+}
+
 // ─── Webhooks ───────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -948,6 +958,11 @@ pub fn delete_webhook(db: State<'_, Database>, id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn toggle_webhook(db: State<'_, Database>, id: i64, enabled: bool) -> Result<(), String> {
     db.toggle_webhook(id, enabled)
+}
+
+#[tauri::command]
+pub fn duplicate_webhook(db: State<'_, Database>, id: i64) -> Result<i64, String> {
+    db.duplicate_webhook(id)
 }
 
 // ─── Webhook delivery history ────────────────────────────────────────────────
@@ -1742,4 +1757,9 @@ pub fn run_scene(
     let scene = db.get_scene(id)?
         .ok_or_else(|| format!("Scene {} not found", id))?;
     crate::scheduler::fire_scene(&app_handle, state.connection_manager.as_ref(), &scene)
+}
+
+#[tauri::command]
+pub fn duplicate_scene(db: State<'_, Database>, id: i64) -> Result<i64, String> {
+    db.duplicate_scene(id)
 }

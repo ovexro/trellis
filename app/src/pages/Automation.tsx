@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap, Send, Play, ChevronDown, ChevronRight, CheckCircle, XCircle } from "lucide-react";
+import { Clock, GitBranch, Plus, Trash2, ToggleLeft, ToggleRight, Webhook, Loader2, Zap, Send, Play, ChevronDown, ChevronRight, CheckCircle, XCircle, Copy } from "lucide-react";
 import { useDeviceStore } from "@/stores/deviceStore";
 
 interface Schedule {
@@ -317,6 +317,19 @@ export default function Automation() {
     }
   };
 
+  const handleDuplicate = async (type: string, id: number) => {
+    setActionLoading(`duplicate-${type}-${id}`);
+    try {
+      await invoke(`duplicate_${type}`, { id });
+      await loadAll();
+    } catch (err) {
+      console.error(`Failed to duplicate ${type}:`, err);
+      alert(`Duplicate failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const runSchedule = async (id: number, label: string) => {
     setActionLoading(`run-schedule-${id}`);
     try {
@@ -517,6 +530,14 @@ export default function Automation() {
                         ? <Loader2 size={14} className="animate-spin" />
                         : <Play size={14} />}
                     </button>
+                    <button onClick={() => handleDuplicate("schedule", s.id)}
+                      disabled={actionLoading === `duplicate-schedule-${s.id}`}
+                      title="Duplicate schedule"
+                      className="text-zinc-500 hover:text-trellis-400 disabled:opacity-50">
+                      {actionLoading === `duplicate-schedule-${s.id}`
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Copy size={14} />}
+                    </button>
                     <button onClick={() => handleToggle("schedule", s.id, s.enabled)}
                       disabled={actionLoading === `toggle-schedule-${s.id}`}
                       className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
@@ -681,6 +702,14 @@ export default function Automation() {
                         ? <Loader2 size={14} className="animate-spin" />
                         : <Play size={14} />}
                     </button>
+                    <button onClick={() => handleDuplicate("rule", r.id)}
+                      disabled={actionLoading === `duplicate-rule-${r.id}`}
+                      title="Duplicate rule"
+                      className="text-zinc-500 hover:text-trellis-400 disabled:opacity-50">
+                      {actionLoading === `duplicate-rule-${r.id}`
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Copy size={14} />}
+                    </button>
                     <button onClick={() => handleToggle("rule", r.id, r.enabled)}
                       disabled={actionLoading === `toggle-rule-${r.id}`}
                       className="text-zinc-500 hover:text-zinc-300 disabled:opacity-50">
@@ -772,6 +801,14 @@ export default function Automation() {
                       <button onClick={() => toggleDeliveryLog(w.id)} title="Delivery log"
                         className="text-zinc-500 hover:text-zinc-300 p-0.5">
                         {expandedWebhook === w.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <button onClick={() => handleDuplicate("webhook", w.id)}
+                        disabled={actionLoading === `duplicate-webhook-${w.id}`}
+                        title="Duplicate webhook"
+                        className="text-zinc-500 hover:text-trellis-400 disabled:opacity-50 p-0.5">
+                        {actionLoading === `duplicate-webhook-${w.id}`
+                          ? <Loader2 size={14} className="animate-spin" />
+                          : <Copy size={14} />}
                       </button>
                       <button onClick={() => handleToggle("webhook", w.id, w.enabled)}
                         disabled={actionLoading === `toggle-webhook-${w.id}`}

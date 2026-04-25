@@ -4410,6 +4410,54 @@
       }
     }
 
+    async function duplicateSchedule(id, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/schedules/' + id + '/duplicate', { method: 'POST' });
+        toast('Schedule duplicated', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Duplicate failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function duplicateRule(id, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/rules/' + id + '/duplicate', { method: 'POST' });
+        toast('Rule duplicated', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Duplicate failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function duplicateWebhook(id, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/webhooks/' + id + '/duplicate', { method: 'POST' });
+        toast('Webhook duplicated', 'success');
+        loadAutomation();
+      } catch (e) {
+        toast('Duplicate failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
+    async function duplicateScene(id, btn) {
+      if (btn) { btn.disabled = true; }
+      try {
+        await api('/api/scenes/' + id + '/duplicate', { method: 'POST' });
+        toast('Scene duplicated', 'success');
+        loadScenes();
+      } catch (e) {
+        toast('Duplicate failed: ' + (e.message || e), 'error');
+        if (btn) { btn.disabled = false; }
+      }
+    }
+
     async function loadAutomation() {
       const container = document.getElementById('automationContent');
       try {
@@ -4444,6 +4492,7 @@
             const runBtn = (isViewer || s.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runSchedule(${s.id}, this)" title="Run now">Run now</button>`;
             const sToggleLabel = s.enabled !== false ? 'Disable' : 'Enable';
             const sToggleNext = s.enabled !== false ? 'false' : 'true';
+            const sCopyBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="duplicateSchedule(${s.id}, this)" title="Duplicate schedule">Copy</button>`;
             const sToggleBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="toggleSchedule(${s.id}, ${sToggleNext}, this)" title="${sToggleLabel} schedule">${sToggleLabel}</button>`;
             const sDeleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteScheduleFromDashboard(${s.id})" title="Delete schedule">&times;</button>`;
             return `<div class="auto-card">
@@ -4457,6 +4506,7 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
                   <span class="auto-card-badge ${s.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${s.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                   ${runBtn}
+                  ${sCopyBtn}
                   ${sToggleBtn}
                   ${sDeleteBtn}
                 </div>
@@ -4479,6 +4529,7 @@
             const runBtn = (isViewer || r.enabled === false) ? '' : `<button class="btn btn-sm" style="margin-left:0.5rem;" onclick="runRule(${r.id}, this)" title="Run now (bypass conditions)">Run now</button>`;
             const toggleLabel = r.enabled !== false ? 'Disable' : 'Enable';
             const toggleNext = r.enabled !== false ? 'false' : 'true';
+            const rCopyBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="duplicateRule(${r.id}, this)" title="Duplicate rule">Copy</button>`;
             const toggleBtn = isViewer ? '' : `<button class="btn btn-sm" style="margin-left:0.25rem;" onclick="toggleRule(${r.id}, ${toggleNext}, this)" title="${toggleLabel} rule">${toggleLabel}</button>`;
             const deleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteRuleFromDashboard(${r.id})" title="Delete rule">&times;</button>`;
             return `<div class="auto-card">
@@ -4491,6 +4542,7 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
                   <span class="auto-card-badge ${r.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${r.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                   ${runBtn}
+                  ${rCopyBtn}
                   ${toggleBtn}
                   ${deleteBtn}
                 </div>
@@ -4510,6 +4562,7 @@
             var testBtn = isViewer ? '' : `<button onclick="testWebhookFromDash(${w.id}, '${esc(w.url)}')" style="font-size:0.7rem;padding:0.2rem 0.5rem;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;white-space:nowrap;">Test</button>`;
             const wToggleLabel = w.enabled !== false ? 'Disable' : 'Enable';
             const wToggleNext = w.enabled !== false ? 'false' : 'true';
+            const wCopyBtn = isViewer ? '' : `<button class="btn btn-sm" onclick="duplicateWebhook(${w.id}, this)" title="Duplicate webhook">Copy</button>`;
             const wToggleBtn = isViewer ? '' : `<button class="btn btn-sm" onclick="toggleWebhook(${w.id}, ${wToggleNext}, this)" title="${wToggleLabel} webhook">${wToggleLabel}</button>`;
             const wDeleteBtn = isViewer ? '' : `<button style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;padding:0.2rem 0.4rem;" onclick="deleteWebhookFromDashboard(${w.id})" title="Delete webhook">&times;</button>`;
             const wSuccess = Number(w.success_count || 0);
@@ -4533,6 +4586,7 @@
                 <div style="display:flex;align-items:center;gap:0.5rem;">
                   ${testBtn}
                   <span class="auto-card-badge ${w.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${w.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+                  ${wCopyBtn}
                   ${wToggleBtn}
                   ${wDeleteBtn}
                 </div>
@@ -4618,6 +4672,7 @@
             return `${esc(devName)}.${esc(a.capability_id)} = ${esc(String(a.value))}`;
           }).join(', ');
           const editBtn = isViewer ? '' : `<button onclick="openEditScene(${s.id})" class="auto-card-badge" style="cursor:pointer;border:none;font-size:0.75rem;background:var(--surface-alt);color:var(--text-dim);">&#9998; Edit</button>`;
+          const copyBtn = isViewer ? '' : `<button onclick="duplicateScene(${s.id}, this)" class="auto-card-badge" style="cursor:pointer;border:none;font-size:0.75rem;background:var(--surface-alt);color:var(--text-dim);" title="Duplicate scene">&#10063; Copy</button>`;
           const deleteBtn = isViewer ? '' : `<button onclick="deleteSceneFromDashboard(${s.id})" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.8rem;padding:0.2rem 0.4rem;" title="Delete scene">&times;</button>`;
           const lastLine = s.last_run
             ? `<div class="auto-card-detail" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.1rem;">Last run: ${esc(s.last_run)}</div>`
@@ -4631,6 +4686,7 @@
               </div>
               <div style="display:flex;gap:0.4rem;align-items:center;">
                 ${editBtn}
+                ${copyBtn}
                 <button onclick="runSceneFromDashboard(${s.id})" class="auto-card-badge badge-enabled" style="cursor:pointer;border:none;font-size:0.75rem;">&#9654; Run</button>
                 ${deleteBtn}
               </div>
