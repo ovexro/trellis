@@ -1579,7 +1579,10 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 Err(_) => return json_error(400, "Invalid scene ID"),
             };
             match ctx.db.delete_scene(id) {
-                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Ok(()) => {
+                    ctx.mqtt_bridge.forget_scene_discovery(id);
+                    json_ok(&serde_json::json!({"deleted": true}))
+                }
                 Err(e) => json_error(500, &e),
             }
         }
@@ -1602,7 +1605,12 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 Err(_) => return json_error(400, "Invalid scene ID"),
             };
             match ctx.db.duplicate_scene(id) {
-                Ok(new_id) => json_ok(&serde_json::json!({"id": new_id})),
+                Ok(new_id) => {
+                    if let Ok(Some(scene)) = ctx.db.get_scene(new_id) {
+                        ctx.mqtt_bridge.publish_scene_discovery(new_id, &scene.name);
+                    }
+                    json_ok(&serde_json::json!({"id": new_id}))
+                }
                 Err(e) => {
                     let code = if e.contains("not found") { 404 } else { 500 };
                     json_error(code, &e)
@@ -2302,7 +2310,10 @@ fn handle_create_scene(ctx: &ApiContext, body: &str) -> (u16, String) {
         }
     }).collect();
     match ctx.db.create_scene(name, &parsed) {
-        Ok(id) => json_created(&serde_json::json!({"id": id})),
+        Ok(id) => {
+            ctx.mqtt_bridge.publish_scene_discovery(id, name);
+            json_created(&serde_json::json!({"id": id}))
+        }
         Err(e) => json_error(500, &e),
     }
 }
@@ -2328,7 +2339,10 @@ fn handle_update_scene(ctx: &ApiContext, id: i64, body: &str) -> (u16, String) {
         }
     }).collect();
     match ctx.db.update_scene(id, name, &parsed) {
-        Ok(()) => json_ok(&serde_json::json!({"updated": true})),
+        Ok(()) => {
+            ctx.mqtt_bridge.publish_scene_discovery(id, name);
+            json_ok(&serde_json::json!({"updated": true}))
+        }
         Err(e) => json_error(500, &e),
     }
 }

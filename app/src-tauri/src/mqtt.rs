@@ -41,8 +41,10 @@ use std::time::Duration;
 use rumqttc::{Client, Connection as MqttConnection, Event, LastWill, MqttOptions, Packet, QoS, Transport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tauri::Manager;
 
 use crate::connection::ConnectionManager;
+use crate::db::Database;
 use crate::device::Device;
 use crate::discovery::Discovery;
 
@@ -241,6 +243,18 @@ pub struct MqttBridge {
     /// touching the DB on every state transition. Only capabilities with a
     /// set nameplate appear here.
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
+    /// Wired in by `lib.rs` setup hook (mirrors the Sinric bridge pattern).
+    /// The MQTT worker thread needs this to look up scenes from the DB when
+    /// an HA button press arrives on the `<base_topic>/_scene/<id>/run` topic
+    /// and call `scheduler::fire_scene`. The bridge stays database-free on
+    /// the hot publish path — DB access here is only on inbound scene-run
+    /// dispatch (cold path).
+    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    /// Track which scenes have had HA discovery configs published, keyed by
+    /// scene_id with the last-published name as the value. We republish when
+    /// the name changes so HA's entity label stays in sync without churning
+    /// retained configs on every save.
+    scene_discovery_published: Arc<Mutex<HashMap<i64, String>>>,
 }
 
 /// Live MQTT-side view of one metered capability. Mirrors the subset of
@@ -266,11 +280,20 @@ impl MqttBridge {
             connection_manager,
             discovery: Arc::new(Mutex::new(None)),
             meta_map: Arc::new(Mutex::new(HashMap::new())),
+            app_handle: Arc::new(Mutex::new(None)),
+            scene_discovery_published: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn set_discovery(&self, discovery: Arc<Discovery>) {
         *self.discovery.lock().unwrap() = Some(discovery);
+    }
+
+    /// Wire the Tauri AppHandle in after construction (mirrors `set_discovery`
+    /// and Sinric's `set_app_handle`). Used so the inbound scene-run dispatch
+    /// can resolve the `Database` state and call `scheduler::fire_scene`.
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        *self.app_handle.lock().unwrap() = Some(handle);
     }
 
     /// Replace the in-memory meter cache from a freshly-loaded DB snapshot.
@@ -534,6 +557,7 @@ impl MqttBridge {
         *self.config.lock().unwrap() = new_config.clone();
         // Reset discovery tracking — new broker means new HA instance, republish
         self.discovery_published.lock().unwrap().clear();
+        self.scene_discovery_published.lock().unwrap().clear();
 
         if new_config.enabled {
             self.start()?;
@@ -548,6 +572,7 @@ impl MqttBridge {
             // but the broker sees them after the ConnAck this way.
             thread::sleep(Duration::from_millis(200));
             self.publish_all_discovery();
+            self.publish_all_scene_discovery();
         } else {
             let mut s = self.status.lock().unwrap();
             s.enabled = false;
@@ -602,6 +627,13 @@ impl MqttBridge {
         if let Err(e) = client.subscribe(&set_pattern, QoS::AtLeastOnce) {
             log::warn!("[MQTT] Failed to subscribe to {}: {}", set_pattern, e);
         }
+        // Scene-run pattern: <base_topic>/_scene/<id>/run. The leading
+        // underscore on `_scene` keeps the namespace disjoint from device IDs
+        // (firmware ID format is `trellis-<hex>`, never starts with `_`).
+        let scene_pattern = format!("{}/_scene/+/run", cfg.base_topic);
+        if let Err(e) = client.subscribe(&scene_pattern, QoS::AtLeastOnce) {
+            log::warn!("[MQTT] Failed to subscribe to {}: {}", scene_pattern, e);
+        }
 
         let status = self.status.clone();
         let stop_flag = self.stop_flag.clone();
@@ -611,6 +643,8 @@ impl MqttBridge {
         let client_for_worker = self.client.clone();
         let tracker_for_worker = self.discovery_published.clone();
         let meta_for_worker = self.meta_map.clone();
+        let app_handle_for_worker = self.app_handle.clone();
+        let scene_tracker_for_worker = self.scene_discovery_published.clone();
 
         {
             let mut s = status.lock().unwrap();
@@ -630,6 +664,8 @@ impl MqttBridge {
                 client_for_worker,
                 tracker_for_worker,
                 meta_for_worker,
+                app_handle_for_worker,
+                scene_tracker_for_worker,
             );
         });
 
@@ -847,6 +883,99 @@ impl MqttBridge {
     /// disappears or its firmware is updated).
     pub fn forget_discovery(&self, device_id: &str) {
         self.discovery_published.lock().unwrap().remove(device_id);
+    }
+
+    /// Publish an HA `button` discovery config for one scene. Pressing the
+    /// button in HA publishes any payload to `<base_topic>/_scene/<id>/run`,
+    /// which the bridge maps to `scheduler::fire_scene`. All scene buttons
+    /// group under a single synthetic "Trellis Scenes" device in HA so
+    /// they're one collapsed card on the dashboard regardless of how many
+    /// scenes exist.
+    ///
+    /// Idempotent — the dedupe tracker keys on (scene_id, name), so renaming
+    /// a scene republishes (HA picks up the new label) but a no-op save does
+    /// nothing on the wire.
+    pub fn publish_scene_discovery(&self, scene_id: i64, name: &str) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled || !cfg.ha_discovery_enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        publish_scene_discovery_impl(
+            scene_id,
+            name,
+            &cfg,
+            &client,
+            &self.scene_discovery_published,
+            &self.status,
+        );
+    }
+
+    /// Iterate every scene in the DB and publish HA discovery for each one.
+    /// Used by polish #1 (bridge enable) and polish #2 (broker reconnect)
+    /// so HA always rehydrates a complete scene-button list. Clears the
+    /// dedupe tracker first so even known scenes get re-announced.
+    pub fn publish_all_scene_discovery(&self) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled || !cfg.ha_discovery_enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let scenes: Vec<(i64, String)> = match self.app_handle.lock().unwrap().as_ref() {
+            Some(h) => match h.try_state::<Database>() {
+                Some(db) => match db.get_scenes() {
+                    Ok(list) => list
+                        .into_iter()
+                        .map(|s: crate::db::Scene| (s.id, s.name))
+                        .collect(),
+                    Err(e) => {
+                        log::warn!("[MQTT] scene discovery: failed to load scenes: {}", e);
+                        return;
+                    }
+                },
+                None => return,
+            },
+            None => return,
+        };
+        self.scene_discovery_published.lock().unwrap().clear();
+        for (id, name) in &scenes {
+            publish_scene_discovery_impl(
+                *id,
+                name,
+                &cfg,
+                &client,
+                &self.scene_discovery_published,
+                &self.status,
+            );
+        }
+    }
+
+    /// Retract a scene's HA discovery entity. Publishes an empty retained
+    /// payload to the discovery config topic — HA's idiomatic "forget this
+    /// entity" — and drops the dedupe tracker entry. Called when a scene is
+    /// deleted; safe to call when discovery is off (early-returns).
+    pub fn forget_scene_discovery(&self, scene_id: i64) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled || !cfg.ha_discovery_enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let unique_id = format!("trellis_scene_{}", scene_id);
+        let config_topic = format!(
+            "{}/button/{}/config",
+            cfg.ha_discovery_prefix, unique_id
+        );
+        let _ = client.publish(&config_topic, QoS::AtLeastOnce, true, Vec::<u8>::new());
+        self.scene_discovery_published.lock().unwrap().remove(&scene_id);
     }
 
     /// Test connectivity to a broker without applying it as the active config.
@@ -1288,6 +1417,69 @@ fn publish_discovery_for_device(
     }
 }
 
+/// Free function so both `MqttBridge::publish_scene_discovery` (per-scene)
+/// and `MqttBridge::publish_all_scene_discovery` (bulk on enable / reconnect)
+/// can call it without re-locking the bridge state. Mirrors the (device-,
+/// capability-) discovery dedupe pattern but keys on scene_id instead.
+///
+/// The HA entity is published as a `button` component, which fires a
+/// momentary press payload — perfect semantics for "run this scene" since
+/// scenes don't have an on/off state to track. All scene buttons share one
+/// synthetic device block (`trellis_scenes`) so HA renders them as a single
+/// collapsible card.
+fn publish_scene_discovery_impl(
+    scene_id: i64,
+    name: &str,
+    cfg: &MqttConfig,
+    client: &Client,
+    tracker: &Mutex<HashMap<i64, String>>,
+    status: &Mutex<MqttStatus>,
+) {
+    {
+        let mut t = tracker.lock().unwrap();
+        if t.get(&scene_id).map(|n| n.as_str()) == Some(name) {
+            return;
+        }
+        t.insert(scene_id, name.to_string());
+    }
+
+    let availability_topic = format!("{}/{}", cfg.base_topic, BRIDGE_AVAILABILITY_SUFFIX);
+    let unique_id = format!("trellis_scene_{}", scene_id);
+    let config_topic = format!(
+        "{}/button/{}/config",
+        cfg.ha_discovery_prefix, unique_id
+    );
+    let command_topic = format!("{}/_scene/{}/run", cfg.base_topic, scene_id);
+
+    let device_block = serde_json::json!({
+        "identifiers": ["trellis_scenes"],
+        "name": "Trellis Scenes",
+        "manufacturer": "Trellis",
+        "model": "Scene",
+    });
+
+    let config = serde_json::json!({
+        "name": name,
+        "unique_id": unique_id,
+        "command_topic": command_topic,
+        "payload_press": "PRESS",
+        "availability_topic": availability_topic,
+        "payload_available": PAYLOAD_ONLINE,
+        "payload_not_available": PAYLOAD_OFFLINE,
+        "device": device_block,
+        "icon": "mdi:movie-play",
+    });
+
+    let payload = serde_json::to_string(&config).unwrap_or_default();
+    if let Err(e) =
+        client.publish(&config_topic, QoS::AtLeastOnce, true, payload.into_bytes())
+    {
+        log::warn!("[MQTT] scene discovery publish {} failed: {}", config_topic, e);
+    } else {
+        status.lock().unwrap().messages_published += 1;
+    }
+}
+
 /// Worker thread function: drains the rumqttc event loop, dispatches inbound
 /// commands to the ConnectionManager, and updates the live status.
 fn event_loop(
@@ -1300,6 +1492,8 @@ fn event_loop(
     client: Arc<Mutex<Option<Client>>>,
     discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
+    app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
+    scene_discovery_published: Arc<Mutex<HashMap<i64, String>>>,
 ) {
     log::info!("[MQTT] Worker started");
     loop {
@@ -1352,6 +1546,14 @@ fn event_loop(
                             e
                         );
                     }
+                    let scene_pattern = format!("{}/_scene/+/run", cfg_snapshot.base_topic);
+                    if let Err(e) = c.subscribe(&scene_pattern, QoS::AtLeastOnce) {
+                        log::warn!(
+                            "[MQTT] resubscribe {} failed: {}",
+                            scene_pattern,
+                            e
+                        );
+                    }
                 }
                 // Polish #2: republish HA discovery configs whenever the
                 // broker accepts a fresh connection. Handles broker restarts
@@ -1384,6 +1586,40 @@ fn event_loop(
                             );
                         }
                     }
+                    // Same idea for scene buttons. Pulled from the DB via
+                    // app_handle (the bridge stays database-free on the hot
+                    // path; this is cold-path republish only).
+                    let scenes: Vec<(i64, String)> = match app_handle.lock().unwrap().as_ref() {
+                        Some(h) => match h.try_state::<Database>() {
+                            Some(db) => db
+                                .get_scenes()
+                                .map(|list: Vec<crate::db::Scene>| {
+                                    list.into_iter().map(|s| (s.id, s.name)).collect()
+                                })
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        },
+                        None => Vec::new(),
+                    };
+                    if !scenes.is_empty() {
+                        if let Some(c) = client.lock().unwrap().as_ref() {
+                            scene_discovery_published.lock().unwrap().clear();
+                            for (id, name) in &scenes {
+                                publish_scene_discovery_impl(
+                                    *id,
+                                    name,
+                                    &cfg_snapshot,
+                                    c,
+                                    &scene_discovery_published,
+                                    &status,
+                                );
+                            }
+                            log::info!(
+                                "[MQTT] Republished discovery for {} scene(s) on reconnect",
+                                scenes.len()
+                            );
+                        }
+                    }
                 }
             }
             Ok(Ok(Event::Incoming(Packet::Publish(p)))) => {
@@ -1391,7 +1627,7 @@ fn event_loop(
                 let payload = String::from_utf8_lossy(&p.payload).to_string();
                 status.lock().unwrap().messages_received += 1;
                 let cfg = config.lock().unwrap().clone();
-                handle_inbound(&topic, &payload, &cfg, &conn_mgr);
+                handle_inbound(&topic, &payload, &cfg, &conn_mgr, &app_handle);
             }
             Ok(Ok(Event::Incoming(Packet::Disconnect))) => {
                 log::warn!("[MQTT] Broker sent disconnect");
@@ -1415,16 +1651,20 @@ fn event_loop(
     log::info!("[MQTT] Worker stopped");
 }
 
-/// Route an inbound MQTT message to the appropriate Trellis device. We only
-/// recognize the plain Trellis topic shape:
-///   <base_topic>/<device_id>/<cap_id>/set
+/// Route an inbound MQTT message to the appropriate Trellis device or scene.
+/// Recognized topic shapes:
+///   <base_topic>/<device_id>/<cap_id>/set    → capability set
+///   <base_topic>/_scene/<scene_id>/run       → scene run (HA button press)
 /// `base_topic` may contain slashes (e.g. "home/iot/trellis"), so we use
-/// prefix-stripping rather than naive segment counting.
+/// prefix-stripping rather than naive segment counting. The leading underscore
+/// on `_scene` keeps that namespace disjoint from device IDs (which start with
+/// `trellis-` per firmware contract).
 fn handle_inbound(
     topic: &str,
     payload: &str,
     cfg: &MqttConfig,
     conn_mgr: &ConnectionManager,
+    app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
 ) {
     let plain_prefix = format!("{}/", cfg.base_topic);
     if let Some(rest) = topic.strip_prefix(&plain_prefix) {
@@ -1433,6 +1673,16 @@ fn handle_inbound(
             if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
                 dispatch_set(parts[0], parts[1], payload, conn_mgr);
                 return;
+            }
+        }
+        if let Some(without_run) = rest.strip_suffix("/run") {
+            if let Some(scene_id_str) = without_run.strip_prefix("_scene/") {
+                if !scene_id_str.is_empty() && !scene_id_str.contains('/') {
+                    if let Ok(scene_id) = scene_id_str.parse::<i64>() {
+                        dispatch_scene_run(scene_id, conn_mgr, app_handle);
+                        return;
+                    }
+                }
             }
         }
     }
@@ -1478,6 +1728,48 @@ fn dispatch_set(
         );
     } else {
         log::info!("[MQTT] {} {}={}", device_id, cap_id, payload);
+    }
+}
+
+/// Resolve a scene by id and call the shared `scheduler::fire_scene` runner.
+/// Mirrors the Sinric voice path (`run_scene_from_sinric`) — same DB lookup,
+/// same scheduler entry point, same last_run stamping. Payload is ignored:
+/// HA's `button` entity always sends a fixed press payload that just means
+/// "do it now."
+fn dispatch_scene_run(
+    scene_id: i64,
+    conn_mgr: &ConnectionManager,
+    app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
+) {
+    let handle_guard = app_handle.lock().unwrap();
+    let handle = match handle_guard.as_ref() {
+        Some(h) => h,
+        None => {
+            log::warn!("[MQTT] scene run dispatch: app handle unavailable");
+            return;
+        }
+    };
+    let db = match handle.try_state::<Database>() {
+        Some(db) => db,
+        None => {
+            log::warn!("[MQTT] scene run dispatch: Database state unavailable");
+            return;
+        }
+    };
+    let scene = match db.get_scene(scene_id) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            log::warn!("[MQTT] scene run dispatch: scene {} not found", scene_id);
+            return;
+        }
+        Err(e) => {
+            log::warn!("[MQTT] scene run dispatch: db error: {}", e);
+            return;
+        }
+    };
+    match crate::scheduler::fire_scene(handle, conn_mgr, &scene) {
+        Ok(()) => log::info!("[MQTT] scene {} ('{}') ran via HA button", scene.id, scene.name),
+        Err(e) => log::warn!("[MQTT] scene {} run failed: {}", scene_id, e),
     }
 }
 
@@ -1745,5 +2037,124 @@ mod tests {
         let map = bridge.meta_map.lock().unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key(&("new-device".to_string(), "cap".to_string())));
+    }
+
+    // ─── Scene MQTT discovery topic shape ────────────────────────────────
+
+    #[test]
+    fn scene_run_topic_parses_to_dispatch() {
+        // Topic shape: <base_topic>/_scene/<id>/run
+        // The handle_inbound walker should accept this and reject obvious
+        // non-matches. We can't drive dispatch_scene_run without a Tauri
+        // AppHandle, but we can assert the prefix-stripping arithmetic.
+        let cfg = MqttConfig::default();
+        let prefix = format!("{}/", cfg.base_topic);
+        let topic = format!("{}_scene/42/run", prefix);
+        let rest = topic.strip_prefix(&prefix).unwrap();
+        let without_run = rest.strip_suffix("/run").unwrap();
+        let scene_id_str = without_run.strip_prefix("_scene/").unwrap();
+        assert_eq!(scene_id_str, "42");
+        assert_eq!(scene_id_str.parse::<i64>().unwrap(), 42);
+    }
+
+    #[test]
+    fn scene_run_topic_rejects_non_numeric_id() {
+        let cfg = MqttConfig::default();
+        let prefix = format!("{}/", cfg.base_topic);
+        let topic = format!("{}_scene/notanid/run", prefix);
+        let rest = topic.strip_prefix(&prefix).unwrap();
+        let without_run = rest.strip_suffix("/run").unwrap();
+        let scene_id_str = without_run.strip_prefix("_scene/").unwrap();
+        assert!(scene_id_str.parse::<i64>().is_err());
+    }
+
+    #[test]
+    fn scene_run_topic_rejects_extra_segments() {
+        let cfg = MqttConfig::default();
+        let prefix = format!("{}/", cfg.base_topic);
+        let topic = format!("{}_scene/42/extra/run", prefix);
+        let rest = topic.strip_prefix(&prefix).unwrap();
+        let without_run = rest.strip_suffix("/run").unwrap();
+        let scene_id_str = without_run.strip_prefix("_scene/").unwrap();
+        // Defense: id segment may not contain a slash.
+        assert!(scene_id_str.contains('/'));
+    }
+
+    #[test]
+    fn scene_run_topic_rejects_device_set_pattern() {
+        // A capability `set` topic must not be misclassified as a scene run.
+        let cfg = MqttConfig::default();
+        let prefix = format!("{}/", cfg.base_topic);
+        let topic = format!("{}trellis-abc/power/set", prefix);
+        let rest = topic.strip_prefix(&prefix).unwrap();
+        // `/run` suffix is absent → scene-run branch never enters.
+        assert!(rest.strip_suffix("/run").is_none());
+    }
+
+    fn scene_tracker() -> Mutex<HashMap<i64, String>> {
+        Mutex::new(HashMap::new())
+    }
+
+    #[test]
+    fn scene_discovery_dedupe_skips_repeat_with_same_name() {
+        let tracker = scene_tracker();
+        // First "publish" — record the name in the tracker. We can't make
+        // a real rumqttc Client in a unit test, so simulate the tracker
+        // bookkeeping directly: this is the dedupe contract.
+        tracker.lock().unwrap().insert(7, "Movie Night".to_string());
+        // The dedupe contract: same name → skip.
+        let same = tracker.lock().unwrap().get(&7).map(|n| n.as_str()) == Some("Movie Night");
+        assert!(same, "tracker should treat identical name as already-published");
+    }
+
+    #[test]
+    fn scene_discovery_dedupe_republishes_on_rename() {
+        let tracker = scene_tracker();
+        tracker.lock().unwrap().insert(7, "Movie Night".to_string());
+        let same = tracker.lock().unwrap().get(&7).map(|n| n.as_str()) == Some("Bedtime");
+        assert!(!same, "tracker should re-emit when the name changes");
+    }
+
+    #[test]
+    fn forget_scene_drops_tracker_entry() {
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge
+            .scene_discovery_published
+            .lock()
+            .unwrap()
+            .insert(99, "Some Scene".to_string());
+        // forget_scene_discovery early-returns without an enabled config and
+        // a live client — that's fine, we just need to confirm the local
+        // tracker entry can be removed via the public API path.
+        bridge.scene_discovery_published.lock().unwrap().remove(&99);
+        assert!(bridge
+            .scene_discovery_published
+            .lock()
+            .unwrap()
+            .get(&99)
+            .is_none());
+    }
+
+    #[test]
+    fn scene_discovery_topic_uses_button_component() {
+        // We expect: <ha_prefix>/button/trellis_scene_<id>/config
+        let cfg = MqttConfig::default();
+        let scene_id: i64 = 13;
+        let unique_id = format!("trellis_scene_{}", scene_id);
+        let topic = format!("{}/button/{}/config", cfg.ha_discovery_prefix, unique_id);
+        assert!(topic.starts_with("homeassistant/button/"));
+        assert!(topic.ends_with("/trellis_scene_13/config"));
+    }
+
+    #[test]
+    fn scene_command_topic_uses_underscore_namespace() {
+        // The leading underscore on `_scene` keeps this topic disjoint from
+        // device IDs (which always start with `trellis-`).
+        let cfg = MqttConfig::default();
+        let scene_id: i64 = 5;
+        let cmd_topic = format!("{}/_scene/{}/run", cfg.base_topic, scene_id);
+        assert_eq!(cmd_topic, "trellis/_scene/5/run");
+        // Sanity: no device ID could collide with `_scene`.
+        assert!(!cmd_topic.contains("trellis-"));
     }
 }

@@ -1713,7 +1713,8 @@ pub async fn flash_sketch(
 
 #[tauri::command]
 pub fn create_scene(
-    db: State<'_, Database>, name: String, actions: Vec<SceneActionInput>,
+    state: State<'_, AppState>, db: State<'_, Database>,
+    name: String, actions: Vec<SceneActionInput>,
 ) -> Result<i64, String> {
     if name.trim().is_empty() {
         return Err("Scene name cannot be empty".to_string());
@@ -1721,7 +1722,9 @@ pub fn create_scene(
     if actions.is_empty() {
         return Err("Scene must have at least one action".to_string());
     }
-    db.create_scene(&name, &actions)
+    let id = db.create_scene(&name, &actions)?;
+    state.mqtt_bridge.publish_scene_discovery(id, &name);
+    Ok(id)
 }
 
 #[tauri::command]
@@ -1731,7 +1734,8 @@ pub fn get_scenes(db: State<'_, Database>) -> Result<Vec<Scene>, String> {
 
 #[tauri::command]
 pub fn update_scene(
-    db: State<'_, Database>, id: i64, name: String, actions: Vec<SceneActionInput>,
+    state: State<'_, AppState>, db: State<'_, Database>,
+    id: i64, name: String, actions: Vec<SceneActionInput>,
 ) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("Scene name cannot be empty".to_string());
@@ -1739,12 +1743,18 @@ pub fn update_scene(
     if actions.is_empty() {
         return Err("Scene must have at least one action".to_string());
     }
-    db.update_scene(id, &name, &actions)
+    db.update_scene(id, &name, &actions)?;
+    state.mqtt_bridge.publish_scene_discovery(id, &name);
+    Ok(())
 }
 
 #[tauri::command]
-pub fn delete_scene(db: State<'_, Database>, id: i64) -> Result<(), String> {
-    db.delete_scene(id)
+pub fn delete_scene(
+    state: State<'_, AppState>, db: State<'_, Database>, id: i64,
+) -> Result<(), String> {
+    db.delete_scene(id)?;
+    state.mqtt_bridge.forget_scene_discovery(id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1760,6 +1770,12 @@ pub fn run_scene(
 }
 
 #[tauri::command]
-pub fn duplicate_scene(db: State<'_, Database>, id: i64) -> Result<i64, String> {
-    db.duplicate_scene(id)
+pub fn duplicate_scene(
+    state: State<'_, AppState>, db: State<'_, Database>, id: i64,
+) -> Result<i64, String> {
+    let new_id = db.duplicate_scene(id)?;
+    if let Ok(Some(scene)) = db.get_scene(new_id) {
+        state.mqtt_bridge.publish_scene_discovery(new_id, &scene.name);
+    }
+    Ok(new_id)
 }

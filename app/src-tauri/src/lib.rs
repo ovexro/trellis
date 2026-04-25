@@ -277,6 +277,7 @@ pub fn run() {
             // Set app handle for connection manager and Sinric bridge
             connection_manager.set_app_handle(app.handle().clone());
             sinric_bridge.set_app_handle(app.handle().clone());
+            mqtt_bridge.set_app_handle(app.handle().clone());
 
             // Hydrate saved devices from SQLite into the in-memory map BEFORE
             // starting background discovery. This makes saved devices visible
