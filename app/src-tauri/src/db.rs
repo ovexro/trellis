@@ -1098,6 +1098,22 @@ impl Database {
         Ok(deleted)
     }
 
+    // `capability_state_log` is intentionally NOT swept — `get_capability_lifetime_wh`
+    // integrates from `MIN(timestamp)` so HA's `total_increasing` Wh sensor stays
+    // monotonic. Deleting old rows would shift the floor and HA would treat it as
+    // a counter reset.
+    pub fn cleanup_old_webhook_deliveries(&self, days: u32) -> Result<usize, String> {
+        let conn = self.conn.lock().unwrap();
+        let offset = format!("-{} days", days);
+        let deleted = conn
+            .execute(
+                "DELETE FROM webhook_deliveries WHERE timestamp < datetime('now', ?1)",
+                rusqlite::params![offset],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(deleted)
+    }
+
     // ─── Alert rules ─────────────────────────────────────────────────────
 
     pub fn create_alert(
@@ -3892,6 +3908,62 @@ mod tests {
         db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
         let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
         assert_eq!(w.last_success, Some(true), "last delivery was successful");
+    }
+
+    fn insert_webhook_delivery_at(db: &Database, webhook_id: i64, days_ago: i64) {
+        let c = db.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
+             VALUES (?1, 'device.offline', 200, 1, NULL, 1, datetime('now', ?2))",
+            rusqlite::params![webhook_id, format!("-{} days", days_ago)],
+        ).unwrap();
+    }
+
+    #[test]
+    fn cleanup_old_webhook_deliveries_removes_rows_older_than_window() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        insert_webhook_delivery_at(&db, id, 100);
+        insert_webhook_delivery_at(&db, id, 60);
+        insert_webhook_delivery_at(&db, id, 5);
+        insert_webhook_delivery_at(&db, id, 0);
+
+        let deleted = db.cleanup_old_webhook_deliveries(30).unwrap();
+        assert_eq!(deleted, 2, "rows at 100d + 60d should be deleted, 5d + 0d kept");
+
+        let remaining = db.get_webhook_deliveries(id, 100).unwrap();
+        assert_eq!(remaining.len(), 2, "two recent rows should remain");
+    }
+
+    #[test]
+    fn cleanup_old_webhook_deliveries_keeps_all_when_window_exceeds_oldest() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        insert_webhook_delivery_at(&db, id, 5);
+        insert_webhook_delivery_at(&db, id, 10);
+
+        let deleted = db.cleanup_old_webhook_deliveries(365).unwrap();
+        assert_eq!(deleted, 0, "no rows older than 365d");
+
+        let remaining = db.get_webhook_deliveries(id, 100).unwrap();
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn cleanup_old_webhook_deliveries_isolates_per_table() {
+        // Sanity: cleanup of webhook_deliveries must not touch the parent webhook row.
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        insert_webhook_delivery_at(&db, id, 100);
+        db.cleanup_old_webhook_deliveries(30).unwrap();
+        let still_there = db.get_webhooks().unwrap().into_iter().any(|w| w.id == id);
+        assert!(still_there, "parent webhook row must survive delivery cleanup");
     }
 
     fn new_scenes_test_db() -> Database {

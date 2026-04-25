@@ -306,6 +306,15 @@ pub fn run() {
                             let _ = db.cleanup_old_metrics(days);
                             let _ = db.cleanup_old_logs(days);
                         }
+                        let webhook_days = db
+                            .get_setting("webhook_delivery_retention_days")
+                            .ok()
+                            .flatten()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .unwrap_or(30);
+                        if webhook_days > 0 {
+                            let _ = db.cleanup_old_webhook_deliveries(webhook_days);
+                        }
                     }
                 }
             });

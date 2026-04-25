@@ -5866,6 +5866,8 @@
         // Data Retention
         const retRes = await api('/api/settings/data_retention_days').catch(() => ({ value: '' }));
         const retVal = retRes && retRes.value ? retRes.value : '30';
+        const whRetRes = await api('/api/settings/webhook_delivery_retention_days').catch(() => ({ value: '' }));
+        const whRetVal = whRetRes && whRetRes.value ? whRetRes.value : '30';
         html += `<div class="settings-section">
           <div class="settings-title">Data Management</div>
           <div class="setting-row">
@@ -5886,6 +5888,22 @@
           </div>
           <div class="setting-row" style="padding-top:0.25rem;">
             <div class="setting-desc">Choosing &ldquo;Forever&rdquo; disables cleanup but the database will grow over time.</div>
+          </div>
+          <div class="setting-row" style="padding-top:0.75rem;">
+            <div class="setting-label-block">
+              <div class="setting-label">Webhook delivery retention</div>
+              <div class="setting-desc">Webhook delivery rows (success/failure history shown on Automation cards) older than this are deleted hourly</div>
+            </div>
+          </div>
+          <div class="input-row">
+            <select id="webhookRetentionSelect" class="input-text" style="max-width:200px;${isViewer ? 'opacity:0.5;' : ''}"
+              ${isViewer ? 'disabled' : ''} onchange="saveWebhookRetention(this.value)">
+              <option value="7" ${whRetVal==='7'?'selected':''}>7 days</option>
+              <option value="30" ${whRetVal==='30'?'selected':''}>30 days (default)</option>
+              <option value="90" ${whRetVal==='90'?'selected':''}>90 days</option>
+              <option value="365" ${whRetVal==='365'?'selected':''}>1 year</option>
+              <option value="0" ${whRetVal==='0'?'selected':''}>Forever</option>
+            </select>
           </div>
         </div>`;
 
@@ -6035,6 +6053,15 @@
       try {
         await api('/api/settings/data_retention_days', { method: 'PUT', body: { value: val } });
         toast('Data retention updated');
+      } catch (e) {
+        toast('Failed to save', 'error');
+      }
+    }
+
+    async function saveWebhookRetention(val) {
+      try {
+        await api('/api/settings/webhook_delivery_retention_days', { method: 'PUT', body: { value: val } });
+        toast('Webhook retention updated');
       } catch (e) {
         toast('Failed to save', 'error');
       }
