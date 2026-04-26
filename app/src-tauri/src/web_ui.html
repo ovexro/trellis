@@ -1269,6 +1269,9 @@
     // HA binary_sensor opt-in for sensor caps in the open detail panel.
     // Map capId → { enabled: bool, deviceClass: string|null }.
     var detailBinarySensor = {};
+    // HA cover-routing opt-in for slider caps in the open detail panel.
+    // Map capId → bool (true == published as HA cover).
+    var detailCover = {};
     var detailEnergyRange = 24;
     var detailEnergyReport = null;
     var energyTariff = null; // { costPerKwh: number|null, currency: string } once loaded
@@ -2312,7 +2315,8 @@
               </div>
             </div>
           </div>
-          <div class="cap-watts-row" id="capWatts-${esc(deviceId)}-${esc(cap.id)}" data-slider-max="${max}"></div>`;
+          <div class="cap-watts-row" id="capWatts-${esc(deviceId)}-${esc(cap.id)}" data-slider-max="${max}"></div>
+          <div class="cap-binsensor-row" id="capCover-${esc(deviceId)}-${esc(cap.id)}"></div>`;
         }
 
         case 'sensor': {
@@ -3851,6 +3855,9 @@
               deviceClass: m.binary_sensor_device_class || null,
             };
           }
+          if (m.cover_position) {
+            detailCover[m.capability_id] = true;
+          }
         }
       }
       if (dev.capabilities) {
@@ -3858,6 +3865,9 @@
           var sc = dev.capabilities[sci];
           if (sc.type === 'switch' || sc.type === 'slider') {
             renderCapWatts(id, sc.id);
+          }
+          if (sc.type === 'slider') {
+            renderCapCover(id, sc.id);
           } else if (sc.type === 'sensor') {
             renderCapBinSensor(id, sc.id);
           }
@@ -4096,6 +4106,64 @@
               + '</span>'
             : '<span class="cap-binsensor-text dim">HA binary sensor</span>')
         + '</button>';
+    }
+
+    /* HA cover routing opt-in row under each slider cap. Mirrors
+       renderCapBinSensor: readout/edit toggle, viewer-hidden, persists to
+       capability_meta via the same PUT endpoint. Reuses .cap-binsensor-*
+       styles so the dashboard stays visually consistent. */
+    function renderCapCover(deviceId, capId, opts) {
+      var el = document.getElementById('capCover-' + deviceId + '-' + capId);
+      if (!el) return;
+      var enabled = !!detailCover[capId];
+      var editing = !!(opts && opts.editing);
+      if (isViewer) {
+        el.innerHTML = enabled
+          ? '<span class="cap-binsensor-readout">⌁ cover</span>'
+          : '';
+        return;
+      }
+      if (editing) {
+        el.innerHTML = '<div class="cap-binsensor-edit">'
+          + '<label class="cap-binsensor-label">'
+          + '<input type="checkbox" class="cap-cover-input"'
+          + (enabled ? ' checked' : '') + '>'
+          + '<span>HA cover (position 0..max)</span></label>'
+          + '<button class="watts-mini-btn ok" title="Save"'
+          + ' onclick="saveCapCover(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">✓</button>'
+          + '<button class="watts-mini-btn cancel" title="Cancel"'
+          + ' onclick="renderCapCover(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">×</button>'
+          + '<p class="cap-binsensor-hint">Publishes as Home Assistant cover with position 0..slider-max. Useful for blinds, shades, garage doors.</p>'
+          + '</div>';
+        return;
+      }
+      el.innerHTML = '<button class="cap-binsensor-btn" type="button"'
+        + ' title="' + (enabled ? 'Edit HA cover settings' : 'Advertise as Home Assistant cover') + '"'
+        + ' onclick="renderCapCover(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',{editing:true})">'
+        + '<span class="cap-binsensor-icon' + (enabled ? ' on' : '') + '">⌁</span>'
+        + (enabled
+            ? '<span class="cap-binsensor-text">cover</span>'
+            : '<span class="cap-binsensor-text dim">HA cover</span>')
+        + '</button>';
+    }
+
+    async function saveCapCover(deviceId, capId) {
+      var el = document.getElementById('capCover-' + deviceId + '-' + capId);
+      if (!el) return;
+      var checkEl = el.querySelector('.cap-cover-input');
+      var enabled = !!(checkEl && checkEl.checked);
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(capId) + '/meta',
+          { method: 'PUT', body: { cover_position: enabled } });
+        if (enabled) {
+          detailCover[capId] = true;
+        } else {
+          delete detailCover[capId];
+        }
+        renderCapCover(deviceId, capId);
+      } catch (e) {
+        toast('Failed to save cover_position: ' + (e.message || e), 'error');
+      }
     }
 
     async function saveCapBinSensor(deviceId, capId) {

@@ -2492,6 +2492,7 @@ mod tests {
             slider_max: None,
             binary_sensor: false,
             binary_sensor_device_class: None,
+            cover_position: false,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_INFO);
@@ -2507,6 +2508,7 @@ mod tests {
             slider_max: None,
             binary_sensor: false,
             binary_sensor_device_class: None,
+            cover_position: false,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_OK);

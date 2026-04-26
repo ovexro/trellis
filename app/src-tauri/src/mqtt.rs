@@ -33,7 +33,7 @@
 // fall back to a Last Will message that marks the bridge offline so HA can
 // flag entities as unavailable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -253,6 +253,14 @@ pub struct MqttBridge {
     /// (theoretically) a binary_sensor; in practice nameplate_watts is
     /// only set on switches/sliders.
     binary_sensor_map: Arc<Mutex<HashMap<(String, String), Option<String>>>>,
+    /// Cover-routing opt-in cache keyed by (device_id, capability_id).
+    /// Hydrated from the `capability_meta` table at startup and kept in
+    /// sync via `set_cover`. When a slider capability is in this set its
+    /// HA discovery config is published under the `cover` component
+    /// (with position_topic / set_position_topic / position_open) instead
+    /// of `number`. Independent of `meta_map` (energy) and
+    /// `binary_sensor_map` (sensor routing).
+    cover_map: Arc<Mutex<HashSet<(String, String)>>>,
     /// Wired in by `lib.rs` setup hook (mirrors the Sinric bridge pattern).
     /// The MQTT worker thread needs this to look up scenes from the DB when
     /// an HA button press arrives on the `<base_topic>/_scene/<id>/run` topic
@@ -291,6 +299,7 @@ impl MqttBridge {
             discovery: Arc::new(Mutex::new(None)),
             meta_map: Arc::new(Mutex::new(HashMap::new())),
             binary_sensor_map: Arc::new(Mutex::new(HashMap::new())),
+            cover_map: Arc::new(Mutex::new(HashSet::new())),
             app_handle: Arc::new(Mutex::new(None)),
             scene_discovery_published: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -445,6 +454,51 @@ impl MqttBridge {
         map.clear();
         for (device_id, cap_id, device_class) in entries {
             map.insert((device_id, cap_id), device_class);
+        }
+    }
+
+    /// Replace the in-memory cover cache from a freshly-loaded DB snapshot.
+    /// Called once at startup so HA sees `cover` entities for every
+    /// already-opted-in slider the moment the broker connects.
+    pub fn hydrate_covers(&self, entries: Vec<(String, String)>) {
+        let mut map = self.cover_map.lock().unwrap();
+        map.clear();
+        for entry in entries {
+            map.insert(entry);
+        }
+    }
+
+    /// Update the cover-routing opt-in for a slider capability. When
+    /// toggled on, the cap's HA discovery config republishes under the
+    /// `cover` component; when toggled off, the cover config topic is
+    /// retracted (empty retained payload) and the regular `number` config
+    /// is republished. Forces a discovery republish so HA sees the change
+    /// immediately.
+    pub fn set_cover(&self, device_id: &str, capability_id: &str, cover_position: bool) {
+        let key = (device_id.to_string(), capability_id.to_string());
+        let was_opted_in: bool;
+        {
+            let mut map = self.cover_map.lock().unwrap();
+            was_opted_in = map.contains(&key);
+            if cover_position {
+                map.insert(key.clone());
+            } else {
+                map.remove(&key);
+            }
+        }
+        // Retract the previously-published config under the *other*
+        // component so HA doesn't see two entities for the same cap.
+        if was_opted_in != cover_position {
+            let alt_component = if cover_position { "number" } else { "cover" };
+            self.remove_alt_component_entity(device_id, capability_id, alt_component);
+        }
+        self.forget_discovery(device_id);
+        let device = match self.discovery.lock().unwrap().as_ref() {
+            Some(d) => d.get_devices().into_iter().find(|d| d.id == device_id),
+            None => None,
+        };
+        if let Some(device) = device {
+            self.publish_discovery(&device);
         }
     }
 
@@ -744,6 +798,7 @@ impl MqttBridge {
         let tracker_for_worker = self.discovery_published.clone();
         let meta_for_worker = self.meta_map.clone();
         let binary_for_worker = self.binary_sensor_map.clone();
+        let cover_for_worker = self.cover_map.clone();
         let app_handle_for_worker = self.app_handle.clone();
         let scene_tracker_for_worker = self.scene_discovery_published.clone();
 
@@ -766,6 +821,7 @@ impl MqttBridge {
                 tracker_for_worker,
                 meta_for_worker,
                 binary_for_worker,
+                cover_for_worker,
                 app_handle_for_worker,
                 scene_tracker_for_worker,
             );
@@ -909,6 +965,7 @@ impl MqttBridge {
             &self.status,
             &self.meta_map,
             &self.binary_sensor_map,
+            &self.cover_map,
         );
     }
 
@@ -942,6 +999,7 @@ impl MqttBridge {
                 &self.status,
                 &self.meta_map,
                 &self.binary_sensor_map,
+                &self.cover_map,
             );
         }
     }
@@ -1237,6 +1295,7 @@ fn publish_discovery_for_device(
     status: &Mutex<MqttStatus>,
     meta_map: &Mutex<HashMap<(String, String), MeteredMeta>>,
     binary_sensor_map: &Mutex<HashMap<(String, String), Option<String>>>,
+    cover_map: &Mutex<HashSet<(String, String)>>,
 ) {
     // De-dupe: only republish if the capability list changed. Callers that
     // want a forced republish (broker reconnect, bridge enable) clear the
@@ -1275,9 +1334,22 @@ fn publish_discovery_for_device(
         } else {
             None
         };
+        // Slider caps with the cover_position opt-in are advertised under
+        // HA's `cover` component instead of `number`.
+        let is_cover = cap.cap_type == "slider"
+            && cover_map
+                .lock()
+                .unwrap()
+                .contains(&(device.id.clone(), cap.id.clone()));
         let component = match cap.cap_type.as_str() {
             "switch" => "switch",
-            "slider" => "number",
+            "slider" => {
+                if is_cover {
+                    "cover"
+                } else {
+                    "number"
+                }
+            }
             "sensor" => {
                 if binary_sensor_class.is_some() {
                     "binary_sensor"
@@ -1322,14 +1394,29 @@ fn publish_discovery_for_device(
                 config["state_off"] = "false".into();
             }
             "slider" => {
-                config["command_topic"] = command_topic.into();
-                if let Some(min) = cap.min {
-                    config["min"] = min.into();
+                if is_cover {
+                    // HA cover with position-only control. The slider's
+                    // numeric state on `<state_topic>` doubles as the
+                    // position payload; `set_position_topic` reuses the
+                    // command topic so HA position writes flow through the
+                    // existing `/set` handler. `position_open` is taken
+                    // from the live slider max (fallback 100 if missing).
+                    config["position_topic"] = state_topic.clone().into();
+                    config["set_position_topic"] = command_topic.clone().into();
+                    config["position_closed"] = 0.into();
+                    config["position_open"] =
+                        cap.max.map(|m| m as i64).unwrap_or(100).into();
+                    config["optimistic"] = false.into();
+                } else {
+                    config["command_topic"] = command_topic.into();
+                    if let Some(min) = cap.min {
+                        config["min"] = min.into();
+                    }
+                    if let Some(max) = cap.max {
+                        config["max"] = max.into();
+                    }
+                    config["mode"] = "slider".into();
                 }
-                if let Some(max) = cap.max {
-                    config["max"] = max.into();
-                }
-                config["mode"] = "slider".into();
             }
             "sensor" => {
                 if let Some(dc_opt) = &binary_sensor_class {
@@ -1623,6 +1710,7 @@ fn event_loop(
     discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
     binary_sensor_map: Arc<Mutex<HashMap<(String, String), Option<String>>>>,
+    cover_map: Arc<Mutex<HashSet<(String, String)>>>,
     app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     scene_discovery_published: Arc<Mutex<HashMap<i64, String>>>,
 ) {
@@ -1710,6 +1798,7 @@ fn event_loop(
                                     &status,
                                     &meta_map,
                                     &binary_sensor_map,
+                                    &cover_map,
                                 );
                             }
                             log::info!(

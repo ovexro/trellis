@@ -64,6 +64,8 @@ pub struct CapabilityMeta {
     pub binary_sensor: bool,
     #[serde(default)]
     pub binary_sensor_device_class: Option<String>,
+    #[serde(default)]
+    pub cover_position: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -815,7 +817,7 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT capability_id, nameplate_watts, linear_power, slider_max,
-                        binary_sensor, binary_sensor_device_class
+                        binary_sensor, binary_sensor_device_class, cover_position
                  FROM capability_meta
                  WHERE device_id = ?1",
             )
@@ -829,6 +831,7 @@ impl Database {
                     slider_max: row.get(3)?,
                     binary_sensor: row.get::<_, i64>(4)? != 0,
                     binary_sensor_device_class: row.get(5)?,
+                    cover_position: row.get::<_, i64>(6)? != 0,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -864,6 +867,55 @@ impl Database {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Upsert the HA cover routing flag for a slider capability. When
+    /// `cover_position` is true the MQTT bridge publishes the cap's
+    /// discovery config under HA's `cover` component instead of `number`,
+    /// using the slider's live max as `position_open` and 0 as
+    /// `position_closed`. Independent of energy fields.
+    pub fn set_capability_cover(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        cover_position: bool,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let flag: i64 = if cover_position { 1 } else { 0 };
+        conn.execute(
+            "INSERT INTO capability_meta (device_id, capability_id, cover_position)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_id, capability_id)
+             DO UPDATE SET cover_position = excluded.cover_position",
+            rusqlite::params![device_id, capability_id, flag],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Every (device_id, capability_id) pair where `cover_position` is set.
+    /// Used at startup to hydrate the MQTT bridge's cover cache so HA
+    /// discovery emits the cover component on first publish without a DB
+    /// round-trip per device.
+    pub fn get_all_covers(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, capability_id
+                 FROM capability_meta
+                 WHERE cover_position = 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
     }
 
     /// Upsert the HA binary_sensor flag + optional device_class for a
@@ -3308,6 +3360,13 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN binary_sensor INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN binary_sensor_device_class TEXT", []);
 
+    // HA cover routing opt-in (v0.27.0): when set on a slider capability,
+    // its HA discovery config is published under the `cover` component
+    // (with position_topic/set_position_topic) instead of `number`. The
+    // cover's `position_open` is taken from the slider's max at publish
+    // time; `position_closed` is 0. Independent of energy fields.
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN cover_position INTEGER NOT NULL DEFAULT 0", []);
+
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS favorite_capabilities (
@@ -3469,6 +3528,7 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             slider_max REAL,
             binary_sensor INTEGER NOT NULL DEFAULT 0,
             binary_sensor_device_class TEXT,
+            cover_position INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (device_id, capability_id)
         );
         CREATE TABLE IF NOT EXISTS capability_state_log (
@@ -3653,6 +3713,7 @@ mod tests {
                 slider_max REAL,
                 binary_sensor INTEGER NOT NULL DEFAULT 0,
                 binary_sensor_device_class TEXT,
+                cover_position INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (device_id, capability_id)
              );
              CREATE TABLE capability_state_log (
@@ -4779,5 +4840,68 @@ mod tests {
         assert_eq!(rows[0].0, "dev1");
         assert_eq!(rows[0].1, "motion");
         assert_eq!(rows[0].2.as_deref(), Some("motion"));
+    }
+
+    #[test]
+    fn cover_position_default_off_for_new_meta_row() {
+        // A meta row created by any other setter must leave cover_position
+        // at default 0 — opt-in is explicit only.
+        let db = new_test_db();
+        db.set_capability_watts("dev1", "blind", Some(0.0)).unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "blind").unwrap();
+        assert!(!row.cover_position);
+    }
+
+    #[test]
+    fn set_capability_cover_persists_and_round_trips() {
+        let db = new_test_db();
+        db.set_capability_cover("dev1", "blind", true).unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "blind").unwrap();
+        assert!(row.cover_position);
+    }
+
+    #[test]
+    fn set_capability_cover_opt_out_clears_flag() {
+        // Opt-in then opt-out — flag flips back to false. Mirrors the
+        // binary_sensor opt-out test so future setters can't drift apart.
+        let db = new_test_db();
+        db.set_capability_cover("dev1", "blind", true).unwrap();
+        db.set_capability_cover("dev1", "blind", false).unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "blind").unwrap();
+        assert!(!row.cover_position);
+    }
+
+    #[test]
+    fn cover_position_independent_of_energy_fields() {
+        // cover_position must be independently settable from
+        // nameplate_watts / linear_power / slider_max — toggling one must
+        // not clobber the other on the same (device, capability) row.
+        let db = new_test_db();
+        db.set_capability_watts("dev1", "blind", Some(40.0)).unwrap();
+        db.set_capability_linear_power("dev1", "blind", true, Some(100.0))
+            .unwrap();
+        db.set_capability_cover("dev1", "blind", true).unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "blind").unwrap();
+        assert_eq!(row.nameplate_watts, Some(40.0));
+        assert!(row.linear_power);
+        assert_eq!(row.slider_max, Some(100.0));
+        assert!(row.cover_position);
+    }
+
+    #[test]
+    fn get_all_covers_returns_only_opted_in() {
+        let db = new_test_db();
+        db.set_capability_cover("dev1", "blind", true).unwrap();
+        db.set_capability_cover("dev1", "shade", false).unwrap();
+        // A row that never had cover_position toggled — get_all shouldn't see it.
+        db.set_capability_watts("dev2", "led", Some(15.0)).unwrap();
+        let rows = db.get_all_covers().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "dev1");
+        assert_eq!(rows[0].1, "blind");
     }
 }

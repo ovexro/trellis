@@ -2250,6 +2250,11 @@ fn handle_set_capability_meta(
         Some(Value::String(s)) => Some(s.clone()),
         Some(_) => return json_error(400, "binary_sensor_device_class must be a string or null"),
     };
+    let cover_position = match v.get("cover_position") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return json_error(400, "cover_position must be a boolean"),
+    };
 
     if has_watts {
         if let Err(e) = ctx.db.set_capability_watts(device_id, capability_id, watts) {
@@ -2280,6 +2285,12 @@ fn handle_set_capability_meta(
         }
         ctx.mqtt_bridge
             .set_binary_sensor(device_id, capability_id, bs, binary_sensor_device_class);
+    }
+    if let Some(cp) = cover_position {
+        if let Err(e) = ctx.db.set_capability_cover(device_id, capability_id, cp) {
+            return json_error(500, &e);
+        }
+        ctx.mqtt_bridge.set_cover(device_id, capability_id, cp);
     }
     json_ok(&serde_json::json!({"updated": true}))
 }

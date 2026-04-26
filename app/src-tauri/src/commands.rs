@@ -148,6 +148,21 @@ pub fn set_capability_linear_power(
 }
 
 #[tauri::command]
+pub fn set_capability_cover(
+    db: State<'_, Database>,
+    state: State<'_, AppState>,
+    device_id: String,
+    capability_id: String,
+    cover_position: bool,
+) -> Result<(), String> {
+    db.set_capability_cover(&device_id, &capability_id, cover_position)?;
+    state
+        .mqtt_bridge
+        .set_cover(&device_id, &capability_id, cover_position);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn set_capability_binary_sensor(
     db: State<'_, Database>,
     state: State<'_, AppState>,

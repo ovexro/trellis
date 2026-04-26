@@ -17,6 +17,7 @@ import DeviceAlerts from "@/components/DeviceAlerts";
 import DeviceDiagnostics from "@/components/DeviceDiagnostics";
 import CapabilityWatts from "@/components/CapabilityWatts";
 import CapabilityBinarySensor from "@/components/CapabilityBinarySensor";
+import CapabilityCover from "@/components/CapabilityCover";
 import DeviceEnergy from "@/components/DeviceEnergy";
 import type { Capability } from "@/lib/types";
 
@@ -27,6 +28,7 @@ interface CapabilityMetaRow {
   slider_max: number | null;
   binary_sensor: boolean;
   binary_sensor_device_class: string | null;
+  cover_position: boolean;
 }
 
 function SectionHeader({ title }: { title: string }) {
@@ -53,6 +55,7 @@ export default function DeviceDetail() {
   const [binarySensorMeta, setBinarySensorMeta] = useState<
     Record<string, { enabled: boolean; deviceClass: string | null }>
   >({});
+  const [coverMeta, setCoverMeta] = useState<Record<string, boolean>>({});
   const [costPerKwh, setCostPerKwh] = useState<number | null>(null);
   const [currency, setCurrency] = useState<string>("USD");
 
@@ -68,6 +71,7 @@ export default function DeviceDetail() {
           string,
           { enabled: boolean; deviceClass: string | null }
         > = {};
+        const cover: Record<string, boolean> = {};
         for (const r of rows) {
           watts[r.capability_id] = r.nameplate_watts;
           linear[r.capability_id] = r.linear_power;
@@ -75,10 +79,12 @@ export default function DeviceDetail() {
             enabled: r.binary_sensor,
             deviceClass: r.binary_sensor_device_class,
           };
+          cover[r.capability_id] = r.cover_position;
         }
         setCapMeta(watts);
         setLinearPowerMeta(linear);
         setBinarySensorMeta(binary);
+        setCoverMeta(cover);
       })
       .catch((err) => console.error("Failed to load capability meta:", err));
     return () => {
@@ -207,6 +213,16 @@ export default function DeviceDetail() {
                 }
                 onLinearPowerChange={(lp) =>
                   setLinearPowerMeta((prev) => ({ ...prev, [cap.id]: lp }))
+                }
+              />
+            )}
+            {device && (
+              <CapabilityCover
+                deviceId={device.id}
+                capabilityId={cap.id}
+                coverPosition={coverMeta[cap.id] ?? false}
+                onChange={(cp) =>
+                  setCoverMeta((prev) => ({ ...prev, [cap.id]: cp }))
                 }
               />
             )}
