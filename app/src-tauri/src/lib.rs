@@ -148,6 +148,7 @@ pub fn run() {
             set_device_install_date,
             set_capability_watts,
             set_capability_linear_power,
+            set_capability_binary_sensor,
             get_device_capability_meta,
             get_device_energy,
             get_device_lifetime_energy,
@@ -473,6 +474,9 @@ pub fn run() {
             if let Some(db_state) = app.try_state::<db::Database>() {
                 if let Ok(entries) = db_state.get_all_capability_meters() {
                     mqtt_bridge.hydrate_meters(entries);
+                }
+                if let Ok(entries) = db_state.get_all_binary_sensors() {
+                    mqtt_bridge.hydrate_binary_sensors(entries);
                 }
             }
 

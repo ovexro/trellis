@@ -243,6 +243,16 @@ pub struct MqttBridge {
     /// touching the DB on every state transition. Only capabilities with a
     /// set nameplate appear here.
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
+    /// Binary-sensor opt-in cache keyed by (device_id, capability_id).
+    /// Hydrated from the `capability_meta` table at startup and kept in
+    /// sync via `set_binary_sensor`. When a sensor capability is in this
+    /// map its HA discovery config is published under the `binary_sensor`
+    /// component instead of `sensor`. The optional value is the HA
+    /// `device_class` (motion, door, occupancy, ...). Independent of the
+    /// energy-tracking `meta_map` — a capability can be both metered and
+    /// (theoretically) a binary_sensor; in practice nameplate_watts is
+    /// only set on switches/sliders.
+    binary_sensor_map: Arc<Mutex<HashMap<(String, String), Option<String>>>>,
     /// Wired in by `lib.rs` setup hook (mirrors the Sinric bridge pattern).
     /// The MQTT worker thread needs this to look up scenes from the DB when
     /// an HA button press arrives on the `<base_topic>/_scene/<id>/run` topic
@@ -280,6 +290,7 @@ impl MqttBridge {
             connection_manager,
             discovery: Arc::new(Mutex::new(None)),
             meta_map: Arc::new(Mutex::new(HashMap::new())),
+            binary_sensor_map: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
             scene_discovery_published: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -421,6 +432,95 @@ impl MqttBridge {
         if let Some(device) = device {
             self.publish_discovery(&device);
         }
+    }
+
+    /// Replace the in-memory binary_sensor cache from a freshly-loaded DB
+    /// snapshot. Called once at startup so HA sees binary_sensor entities
+    /// for every opted-in cap the moment the broker connects.
+    pub fn hydrate_binary_sensors(
+        &self,
+        entries: Vec<(String, String, Option<String>)>,
+    ) {
+        let mut map = self.binary_sensor_map.lock().unwrap();
+        map.clear();
+        for (device_id, cap_id, device_class) in entries {
+            map.insert((device_id, cap_id), device_class);
+        }
+    }
+
+    /// Update the binary_sensor opt-in (+ optional device_class) for a
+    /// sensor capability. When toggled on, the cap's HA discovery config
+    /// republishes under the `binary_sensor` component; when toggled off,
+    /// the binary_sensor config topic is retracted (empty retained payload)
+    /// and the regular `sensor` config is republished. Forces a discovery
+    /// republish so HA sees the change immediately.
+    pub fn set_binary_sensor(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        binary_sensor: bool,
+        device_class: Option<String>,
+    ) {
+        let key = (device_id.to_string(), capability_id.to_string());
+        let was_opted_in: bool;
+        {
+            let mut map = self.binary_sensor_map.lock().unwrap();
+            was_opted_in = map.contains_key(&key);
+            if binary_sensor {
+                map.insert(key.clone(), device_class);
+            } else {
+                map.remove(&key);
+            }
+        }
+        // Retract the previously-published config under the *other*
+        // component so HA doesn't see two entities for the same cap. The
+        // alternate-component retained payload would otherwise linger on
+        // the broker after we republish under the new component.
+        if was_opted_in != binary_sensor {
+            let alt_component = if binary_sensor { "sensor" } else { "binary_sensor" };
+            self.remove_alt_component_entity(device_id, capability_id, alt_component);
+        }
+        // Force a discovery republish so the entity component reflects the
+        // new opt-in state immediately.
+        self.forget_discovery(device_id);
+        let device = match self.discovery.lock().unwrap().as_ref() {
+            Some(d) => d.get_devices().into_iter().find(|d| d.id == device_id),
+            None => None,
+        };
+        if let Some(device) = device {
+            self.publish_discovery(&device);
+        }
+    }
+
+    /// Publish an empty retained payload on the discovery config topic for
+    /// the given cap under the given HA component. Used by
+    /// `set_binary_sensor` to retract the alternate-component config when
+    /// the cap migrates between `sensor` and `binary_sensor`.
+    fn remove_alt_component_entity(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        component: &str,
+    ) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled || !cfg.ha_discovery_enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let unique_id = format!("trellis_{}_{}", device_id, capability_id);
+        let config_topic = format!(
+            "{}/{}/{}/config",
+            cfg.ha_discovery_prefix, component, unique_id
+        );
+        let _ = client.publish(
+            &config_topic,
+            QoS::AtLeastOnce,
+            true,
+            Vec::<u8>::new(),
+        );
     }
 
     /// Publish empty retained payloads on the `_power` and `_energy`
@@ -643,6 +743,7 @@ impl MqttBridge {
         let client_for_worker = self.client.clone();
         let tracker_for_worker = self.discovery_published.clone();
         let meta_for_worker = self.meta_map.clone();
+        let binary_for_worker = self.binary_sensor_map.clone();
         let app_handle_for_worker = self.app_handle.clone();
         let scene_tracker_for_worker = self.scene_discovery_published.clone();
 
@@ -664,6 +765,7 @@ impl MqttBridge {
                 client_for_worker,
                 tracker_for_worker,
                 meta_for_worker,
+                binary_for_worker,
                 app_handle_for_worker,
                 scene_tracker_for_worker,
             );
@@ -806,6 +908,7 @@ impl MqttBridge {
             &self.discovery_published,
             &self.status,
             &self.meta_map,
+            &self.binary_sensor_map,
         );
     }
 
@@ -838,6 +941,7 @@ impl MqttBridge {
                 &self.discovery_published,
                 &self.status,
                 &self.meta_map,
+                &self.binary_sensor_map,
             );
         }
     }
@@ -1132,6 +1236,7 @@ fn publish_discovery_for_device(
     discovery_published: &Mutex<HashMap<String, Vec<String>>>,
     status: &Mutex<MqttStatus>,
     meta_map: &Mutex<HashMap<(String, String), MeteredMeta>>,
+    binary_sensor_map: &Mutex<HashMap<(String, String), Option<String>>>,
 ) {
     // De-dupe: only republish if the capability list changed. Callers that
     // want a forced republish (broker reconnect, bridge enable) clear the
@@ -1158,10 +1263,28 @@ fn publish_discovery_for_device(
     let mut published_count = 0u64;
 
     for cap in &device.capabilities {
+        // Sensor caps with the binary_sensor opt-in (set via capability_meta)
+        // are advertised under HA's `binary_sensor` component instead of
+        // `sensor`. Pull the optional device_class while we hold the lock.
+        let binary_sensor_class: Option<Option<String>> = if cap.cap_type == "sensor" {
+            binary_sensor_map
+                .lock()
+                .unwrap()
+                .get(&(device.id.clone(), cap.id.clone()))
+                .cloned()
+        } else {
+            None
+        };
         let component = match cap.cap_type.as_str() {
             "switch" => "switch",
             "slider" => "number",
-            "sensor" => "sensor",
+            "sensor" => {
+                if binary_sensor_class.is_some() {
+                    "binary_sensor"
+                } else {
+                    "sensor"
+                }
+            }
             "color" => "light",
             "text" => "text",
             _ => continue,
@@ -1209,7 +1332,14 @@ fn publish_discovery_for_device(
                 config["mode"] = "slider".into();
             }
             "sensor" => {
-                if let Some(unit) = &cap.unit {
+                if let Some(dc_opt) = &binary_sensor_class {
+                    // binary_sensor: HA needs payload_on/off (no unit).
+                    config["payload_on"] = "true".into();
+                    config["payload_off"] = "false".into();
+                    if let Some(dc) = dc_opt {
+                        config["device_class"] = dc.clone().into();
+                    }
+                } else if let Some(unit) = &cap.unit {
                     config["unit_of_measurement"] = unit.clone().into();
                 }
             }
@@ -1492,6 +1622,7 @@ fn event_loop(
     client: Arc<Mutex<Option<Client>>>,
     discovery_published: Arc<Mutex<HashMap<String, Vec<String>>>>,
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
+    binary_sensor_map: Arc<Mutex<HashMap<(String, String), Option<String>>>>,
     app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     scene_discovery_published: Arc<Mutex<HashMap<i64, String>>>,
 ) {
@@ -1578,6 +1709,7 @@ fn event_loop(
                                     &discovery_published,
                                     &status,
                                     &meta_map,
+                                    &binary_sensor_map,
                                 );
                             }
                             log::info!(

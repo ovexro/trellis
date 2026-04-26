@@ -60,6 +60,10 @@ pub struct CapabilityMeta {
     pub linear_power: bool,
     #[serde(default)]
     pub slider_max: Option<f64>,
+    #[serde(default)]
+    pub binary_sensor: bool,
+    #[serde(default)]
+    pub binary_sensor_device_class: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -665,6 +669,37 @@ impl Database {
         })
     }
 
+    /// Every (device_id, capability_id, device_class) tuple where
+    /// `binary_sensor` is set. Used at startup to hydrate the MQTT bridge's
+    /// binary_sensor cache so HA discovery emits the binary_sensor
+    /// component on first publish without a DB round-trip per device.
+    pub fn get_all_binary_sensors(
+        &self,
+    ) -> Result<Vec<(String, String, Option<String>)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, capability_id, binary_sensor_device_class
+                 FROM capability_meta
+                 WHERE binary_sensor = 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
     /// Every (device_id, capability_id, nameplate_watts, linear_power,
     /// slider_max) tuple where `nameplate_watts` is set. Used at startup to
     /// hydrate the MQTT bridge's meta cache so HA discovery emits the
@@ -779,7 +814,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT capability_id, nameplate_watts, linear_power, slider_max
+                "SELECT capability_id, nameplate_watts, linear_power, slider_max,
+                        binary_sensor, binary_sensor_device_class
                  FROM capability_meta
                  WHERE device_id = ?1",
             )
@@ -791,6 +827,8 @@ impl Database {
                     nameplate_watts: row.get(1)?,
                     linear_power: row.get::<_, i64>(2)? != 0,
                     slider_max: row.get(3)?,
+                    binary_sensor: row.get::<_, i64>(4)? != 0,
+                    binary_sensor_device_class: row.get(5)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -823,6 +861,34 @@ impl Database {
              DO UPDATE SET linear_power = excluded.linear_power,
                            slider_max   = excluded.slider_max",
             rusqlite::params![device_id, capability_id, flag, slider_max],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Upsert the HA binary_sensor flag + optional device_class for a
+    /// sensor capability. When `binary_sensor` is true the MQTT bridge
+    /// publishes the cap's discovery config under HA's `binary_sensor`
+    /// component instead of `sensor`. `device_class` (motion, door,
+    /// occupancy, etc.) is forwarded verbatim — None for a generic
+    /// binary_sensor with no specific class. Independent of energy fields.
+    pub fn set_capability_binary_sensor(
+        &self,
+        device_id: &str,
+        capability_id: &str,
+        binary_sensor: bool,
+        device_class: Option<String>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let flag: i64 = if binary_sensor { 1 } else { 0 };
+        let dc = if binary_sensor { device_class } else { None };
+        conn.execute(
+            "INSERT INTO capability_meta (device_id, capability_id, binary_sensor, binary_sensor_device_class)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(device_id, capability_id)
+             DO UPDATE SET binary_sensor              = excluded.binary_sensor,
+                           binary_sensor_device_class = excluded.binary_sensor_device_class",
+            rusqlite::params![device_id, capability_id, flag, dc],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -3234,6 +3300,14 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN linear_power INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN slider_max REAL", []);
 
+    // HA binary_sensor opt-in (v0.27.0): when set on a sensor capability,
+    // its HA discovery config is published under the `binary_sensor`
+    // component instead of `sensor`. Optional `binary_sensor_device_class`
+    // (motion/door/occupancy/etc.) carries through to HA so the entity
+    // gets the right icon and translation.
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN binary_sensor INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN binary_sensor_device_class TEXT", []);
+
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS favorite_capabilities (
@@ -3393,6 +3467,8 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             nameplate_watts REAL,
             linear_power INTEGER NOT NULL DEFAULT 0,
             slider_max REAL,
+            binary_sensor INTEGER NOT NULL DEFAULT 0,
+            binary_sensor_device_class TEXT,
             PRIMARY KEY (device_id, capability_id)
         );
         CREATE TABLE IF NOT EXISTS capability_state_log (
@@ -3575,6 +3651,8 @@ mod tests {
                 nameplate_watts REAL,
                 linear_power INTEGER NOT NULL DEFAULT 0,
                 slider_max REAL,
+                binary_sensor INTEGER NOT NULL DEFAULT 0,
+                binary_sensor_device_class TEXT,
                 PRIMARY KEY (device_id, capability_id)
              );
              CREATE TABLE capability_state_log (
@@ -4611,5 +4689,95 @@ mod tests {
         let db = new_scenes_test_db();
         let err = db.duplicate_scene(999).unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn binary_sensor_default_off_for_new_meta_row() {
+        let db = new_test_db();
+        // Setting only nameplate_watts must leave binary_sensor at default 0.
+        db.set_capability_watts("dev1", "motion", Some(0.0)).unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "motion").unwrap();
+        assert!(!row.binary_sensor);
+        assert!(row.binary_sensor_device_class.is_none());
+    }
+
+    #[test]
+    fn set_capability_binary_sensor_persists_flag_and_class() {
+        let db = new_test_db();
+        db.set_capability_binary_sensor(
+            "dev1",
+            "motion",
+            true,
+            Some("motion".to_string()),
+        )
+        .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "motion").unwrap();
+        assert!(row.binary_sensor);
+        assert_eq!(row.binary_sensor_device_class.as_deref(), Some("motion"));
+    }
+
+    #[test]
+    fn set_capability_binary_sensor_clears_class_when_disabled() {
+        let db = new_test_db();
+        // Opt in with a device_class first.
+        db.set_capability_binary_sensor(
+            "dev1",
+            "motion",
+            true,
+            Some("motion".to_string()),
+        )
+        .unwrap();
+        // Then opt out — device_class must be cleared so it doesn't linger
+        // and resurrect when the flag is re-enabled later without an arg.
+        db.set_capability_binary_sensor("dev1", "motion", false, None)
+            .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "motion").unwrap();
+        assert!(!row.binary_sensor);
+        assert!(row.binary_sensor_device_class.is_none());
+    }
+
+    #[test]
+    fn binary_sensor_independent_of_nameplate_watts() {
+        // Both fields must be independently settable on the same row —
+        // setting one must not clobber the other (slot 1 must not regress
+        // slot v0.22.0's energy work).
+        let db = new_test_db();
+        db.set_capability_watts("dev1", "led", Some(60.0)).unwrap();
+        db.set_capability_binary_sensor(
+            "dev1",
+            "led",
+            true,
+            Some("light".to_string()),
+        )
+        .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows.iter().find(|r| r.capability_id == "led").unwrap();
+        assert_eq!(row.nameplate_watts, Some(60.0));
+        assert!(row.binary_sensor);
+        assert_eq!(row.binary_sensor_device_class.as_deref(), Some("light"));
+    }
+
+    #[test]
+    fn get_all_binary_sensors_returns_only_opted_in() {
+        let db = new_test_db();
+        db.set_capability_binary_sensor(
+            "dev1",
+            "motion",
+            true,
+            Some("motion".to_string()),
+        )
+        .unwrap();
+        db.set_capability_binary_sensor("dev1", "ambient", false, None)
+            .unwrap();
+        // A row that never had binary_sensor toggled — get_all shouldn't see it.
+        db.set_capability_watts("dev2", "led", Some(15.0)).unwrap();
+        let rows = db.get_all_binary_sensors().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "dev1");
+        assert_eq!(rows[0].1, "motion");
+        assert_eq!(rows[0].2.as_deref(), Some("motion"));
     }
 }

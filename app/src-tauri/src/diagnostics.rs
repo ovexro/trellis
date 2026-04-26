@@ -2490,6 +2490,8 @@ mod tests {
             nameplate_watts: None,
             linear_power: false,
             slider_max: None,
+            binary_sensor: false,
+            binary_sensor_device_class: None,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_INFO);
@@ -2503,6 +2505,8 @@ mod tests {
             nameplate_watts: Some(60.0),
             linear_power: false,
             slider_max: None,
+            binary_sensor: false,
+            binary_sensor_device_class: None,
         }];
         let f = check_energy_coverage(&meta, Some(&caps));
         assert_eq!(f.level, LEVEL_OK);

@@ -283,6 +283,54 @@
       margin-left: 0.35rem; color: var(--text-faint); opacity: 0.65;
     }
 
+    /* ── Inline binary_sensor row under a sensor cap ── */
+    .cap-binsensor-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;
+      padding: 0 0 0.35rem 0.1rem;
+      font-size: 0.7rem; color: var(--text-faint);
+      min-height: 1rem;
+    }
+    .cap-binsensor-btn {
+      background: none; border: none; padding: 0; cursor: pointer;
+      color: var(--text-faint); font-size: 0.7rem;
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-family: inherit;
+    }
+    .cap-binsensor-btn:hover { color: var(--accent); }
+    .cap-binsensor-btn .cap-binsensor-icon { opacity: 0.55; }
+    .cap-binsensor-btn .cap-binsensor-icon.on { color: var(--accent); opacity: 0.8; }
+    .cap-binsensor-btn .cap-binsensor-text { font-variant-numeric: tabular-nums; }
+    .cap-binsensor-btn .cap-binsensor-text.dim { opacity: 0.85; }
+    .cap-binsensor-readout { color: var(--text-faint); }
+    .cap-binsensor-edit {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem;
+      width: 100%;
+    }
+    .cap-binsensor-label {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-size: 0.65rem; color: var(--text-faint);
+      cursor: pointer; user-select: none;
+    }
+    .cap-binsensor-input {
+      accent-color: var(--accent); height: 0.7rem; width: 0.7rem; cursor: pointer;
+    }
+    .cap-binsensor-class {
+      background: #18181b; border: 1px solid #3f3f46; border-radius: 3px;
+      color: var(--text); font-size: 0.7rem; font-family: inherit;
+      padding: 0.1rem 0.25rem;
+    }
+    .cap-binsensor-row .watts-mini-btn {
+      background: none; border: none; padding: 0.1rem; cursor: pointer;
+      color: var(--text-faint); display: inline-flex; align-items: center;
+    }
+    .cap-binsensor-row .watts-mini-btn.ok:hover { color: var(--accent); }
+    .cap-binsensor-row .watts-mini-btn.cancel:hover { color: var(--text); }
+    .cap-binsensor-hint {
+      flex-basis: 100%; margin: 0.15rem 0 0 1.1rem; max-width: 26rem;
+      font-size: 0.62rem; line-height: 1.3; color: var(--text-faint);
+      opacity: 0.75;
+    }
+
     /* ── Device Energy card ── */
     .energy-total {
       display: flex; align-items: baseline; gap: 0.5rem;
@@ -1218,6 +1266,9 @@
     var detailCapMeta = {};
     var detailLinearPower = {};
     var detailSliderMax = {};
+    // HA binary_sensor opt-in for sensor caps in the open detail panel.
+    // Map capId → { enabled: bool, deviceClass: string|null }.
+    var detailBinarySensor = {};
     var detailEnergyRange = 24;
     var detailEnergyReport = null;
     var energyTariff = null; // { costPerKwh: number|null, currency: string } once loaded
@@ -2272,7 +2323,8 @@
             <div class="control-value">
               <span class="sensor-value">${esc(String(val))}<span class="sensor-unit"> ${esc(unit)}</span></span>
             </div>
-          </div>`;
+          </div>
+          <div class="cap-binsensor-row" id="capBinSensor-${esc(deviceId)}-${esc(cap.id)}"></div>`;
         }
 
         case 'color':
@@ -3727,6 +3779,7 @@
       detailCapMeta = {};
       detailLinearPower = {};
       detailSliderMax = {};
+      detailBinarySensor = {};
       detailEnergyReport = null;
       detailEnergyRange = 24;
 
@@ -3792,6 +3845,12 @@
           if (m.nameplate_watts != null) detailCapMeta[m.capability_id] = m.nameplate_watts;
           detailLinearPower[m.capability_id] = !!m.linear_power;
           if (m.slider_max != null) detailSliderMax[m.capability_id] = m.slider_max;
+          if (m.binary_sensor) {
+            detailBinarySensor[m.capability_id] = {
+              enabled: true,
+              deviceClass: m.binary_sensor_device_class || null,
+            };
+          }
         }
       }
       if (dev.capabilities) {
@@ -3799,6 +3858,8 @@
           var sc = dev.capabilities[sci];
           if (sc.type === 'switch' || sc.type === 'slider') {
             renderCapWatts(id, sc.id);
+          } else if (sc.type === 'sensor') {
+            renderCapBinSensor(id, sc.id);
           }
         }
       }
@@ -3966,6 +4027,95 @@
       } catch (e) {
         toast('Failed to save watts: ' + (e.message || e), 'error');
         inputEl.disabled = false;
+      }
+    }
+
+    /* HA binary_sensor opt-in row under each sensor cap. Mirrors
+       renderCapWatts: readout/edit toggle, viewer-hidden, persists to
+       capability_meta via the same PUT endpoint. */
+    var BINSENSOR_CLASSES = [
+      { v: '', l: '(none)' },
+      { v: 'motion', l: 'Motion' },
+      { v: 'occupancy', l: 'Occupancy' },
+      { v: 'presence', l: 'Presence' },
+      { v: 'door', l: 'Door' },
+      { v: 'window', l: 'Window' },
+      { v: 'opening', l: 'Opening' },
+      { v: 'smoke', l: 'Smoke' },
+      { v: 'gas', l: 'Gas' },
+      { v: 'moisture', l: 'Moisture' },
+      { v: 'sound', l: 'Sound' },
+      { v: 'vibration', l: 'Vibration' },
+      { v: 'tamper', l: 'Tamper' },
+      { v: 'safety', l: 'Safety' },
+      { v: 'problem', l: 'Problem' },
+      { v: 'connectivity', l: 'Connectivity' }
+    ];
+
+    function renderCapBinSensor(deviceId, capId, opts) {
+      var el = document.getElementById('capBinSensor-' + deviceId + '-' + capId);
+      if (!el) return;
+      var meta = detailBinarySensor[capId] || { enabled: false, deviceClass: null };
+      var editing = !!(opts && opts.editing);
+      if (isViewer) {
+        el.innerHTML = meta.enabled
+          ? '<span class="cap-binsensor-readout">⌁ binary_sensor'
+            + (meta.deviceClass ? ' · ' + esc(meta.deviceClass) : '')
+            + '</span>'
+          : '';
+        return;
+      }
+      if (editing) {
+        var optsHtml = '';
+        for (var i = 0; i < BINSENSOR_CLASSES.length; i++) {
+          var c = BINSENSOR_CLASSES[i];
+          var sel = (meta.deviceClass || '') === c.v ? ' selected' : '';
+          optsHtml += '<option value="' + esc(c.v) + '"' + sel + '>' + esc(c.l) + '</option>';
+        }
+        el.innerHTML = '<div class="cap-binsensor-edit">'
+          + '<label class="cap-binsensor-label">'
+          + '<input type="checkbox" class="cap-binsensor-input"'
+          + (meta.enabled ? ' checked' : '') + '>'
+          + '<span>HA binary sensor</span></label>'
+          + '<select class="cap-binsensor-class">' + optsHtml + '</select>'
+          + '<button class="watts-mini-btn ok" title="Save"'
+          + ' onclick="saveCapBinSensor(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">✓</button>'
+          + '<button class="watts-mini-btn cancel" title="Cancel"'
+          + ' onclick="renderCapBinSensor(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\')">×</button>'
+          + '<p class="cap-binsensor-hint">Sensor must publish "true"/"false". Device class adds a typed icon in HA.</p>'
+          + '</div>';
+        return;
+      }
+      el.innerHTML = '<button class="cap-binsensor-btn" type="button"'
+        + ' title="' + (meta.enabled ? 'Edit binary_sensor settings' : 'Advertise as Home Assistant binary_sensor') + '"'
+        + ' onclick="renderCapBinSensor(\'' + esc(deviceId) + '\',\'' + esc(capId) + '\',{editing:true})">'
+        + '<span class="cap-binsensor-icon' + (meta.enabled ? ' on' : '') + '">⌁</span>'
+        + (meta.enabled
+            ? '<span class="cap-binsensor-text">binary_sensor'
+              + (meta.deviceClass ? ' · ' + esc(meta.deviceClass) : '')
+              + '</span>'
+            : '<span class="cap-binsensor-text dim">HA binary sensor</span>')
+        + '</button>';
+    }
+
+    async function saveCapBinSensor(deviceId, capId) {
+      var el = document.getElementById('capBinSensor-' + deviceId + '-' + capId);
+      if (!el) return;
+      var checkEl = el.querySelector('.cap-binsensor-input');
+      var classEl = el.querySelector('.cap-binsensor-class');
+      var enabled = !!(checkEl && checkEl.checked);
+      var dc = enabled && classEl && classEl.value ? classEl.value : null;
+      try {
+        await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(capId) + '/meta',
+          { method: 'PUT', body: { binary_sensor: enabled, binary_sensor_device_class: dc } });
+        if (enabled) {
+          detailBinarySensor[capId] = { enabled: true, deviceClass: dc };
+        } else {
+          delete detailBinarySensor[capId];
+        }
+        renderCapBinSensor(deviceId, capId);
+      } catch (e) {
+        toast('Failed to save binary_sensor: ' + (e.message || e), 'error');
       }
     }
 

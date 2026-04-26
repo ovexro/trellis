@@ -16,6 +16,7 @@ import DeviceLogs, { type DeviceLogsHandle } from "@/components/DeviceLogs";
 import DeviceAlerts from "@/components/DeviceAlerts";
 import DeviceDiagnostics from "@/components/DeviceDiagnostics";
 import CapabilityWatts from "@/components/CapabilityWatts";
+import CapabilityBinarySensor from "@/components/CapabilityBinarySensor";
 import DeviceEnergy from "@/components/DeviceEnergy";
 import type { Capability } from "@/lib/types";
 
@@ -24,6 +25,8 @@ interface CapabilityMetaRow {
   nameplate_watts: number | null;
   linear_power: boolean;
   slider_max: number | null;
+  binary_sensor: boolean;
+  binary_sensor_device_class: string | null;
 }
 
 function SectionHeader({ title }: { title: string }) {
@@ -47,6 +50,9 @@ export default function DeviceDetail() {
   const [linearPowerMeta, setLinearPowerMeta] = useState<
     Record<string, boolean>
   >({});
+  const [binarySensorMeta, setBinarySensorMeta] = useState<
+    Record<string, { enabled: boolean; deviceClass: string | null }>
+  >({});
   const [costPerKwh, setCostPerKwh] = useState<number | null>(null);
   const [currency, setCurrency] = useState<string>("USD");
 
@@ -58,12 +64,21 @@ export default function DeviceDetail() {
         if (cancelled) return;
         const watts: Record<string, number | null> = {};
         const linear: Record<string, boolean> = {};
+        const binary: Record<
+          string,
+          { enabled: boolean; deviceClass: string | null }
+        > = {};
         for (const r of rows) {
           watts[r.capability_id] = r.nameplate_watts;
           linear[r.capability_id] = r.linear_power;
+          binary[r.capability_id] = {
+            enabled: r.binary_sensor,
+            deviceClass: r.binary_sensor_device_class,
+          };
         }
         setCapMeta(watts);
         setLinearPowerMeta(linear);
+        setBinarySensorMeta(binary);
       })
       .catch((err) => console.error("Failed to load capability meta:", err));
     return () => {
@@ -199,12 +214,27 @@ export default function DeviceDetail() {
         );
       case "sensor":
         return (
-          <Sensor
-            key={cap.id}
-            label={cap.label}
-            value={cap.value as number}
-            unit={cap.unit}
-          />
+          <div key={cap.id}>
+            <Sensor
+              label={cap.label}
+              value={cap.value as number}
+              unit={cap.unit}
+            />
+            {device && (
+              <CapabilityBinarySensor
+                deviceId={device.id}
+                capabilityId={cap.id}
+                binarySensor={binarySensorMeta[cap.id]?.enabled ?? false}
+                deviceClass={binarySensorMeta[cap.id]?.deviceClass ?? null}
+                onChange={(enabled, deviceClass) =>
+                  setBinarySensorMeta((prev) => ({
+                    ...prev,
+                    [cap.id]: { enabled, deviceClass },
+                  }))
+                }
+              />
+            )}
+          </div>
         );
       case "color":
         return (

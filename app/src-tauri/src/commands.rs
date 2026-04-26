@@ -148,6 +148,27 @@ pub fn set_capability_linear_power(
 }
 
 #[tauri::command]
+pub fn set_capability_binary_sensor(
+    db: State<'_, Database>,
+    state: State<'_, AppState>,
+    device_id: String,
+    capability_id: String,
+    binary_sensor: bool,
+    device_class: Option<String>,
+) -> Result<(), String> {
+    db.set_capability_binary_sensor(
+        &device_id,
+        &capability_id,
+        binary_sensor,
+        device_class.clone(),
+    )?;
+    state
+        .mqtt_bridge
+        .set_binary_sensor(&device_id, &capability_id, binary_sensor, device_class);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_device_energy(
     db: State<'_, Database>,
     device_id: String,

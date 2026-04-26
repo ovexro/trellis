@@ -2239,6 +2239,17 @@ fn handle_set_capability_meta(
             return json_error(400, "slider_max must be a positive finite number");
         }
     }
+    let binary_sensor = match v.get("binary_sensor") {
+        None => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return json_error(400, "binary_sensor must be a boolean"),
+    };
+    let binary_sensor_device_class = match v.get("binary_sensor_device_class") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => return json_error(400, "binary_sensor_device_class must be a string or null"),
+    };
 
     if has_watts {
         if let Err(e) = ctx.db.set_capability_watts(device_id, capability_id, watts) {
@@ -2257,6 +2268,18 @@ fn handle_set_capability_meta(
         }
         ctx.mqtt_bridge
             .set_linear_power(device_id, capability_id, lp, slider_max);
+    }
+    if let Some(bs) = binary_sensor {
+        if let Err(e) = ctx.db.set_capability_binary_sensor(
+            device_id,
+            capability_id,
+            bs,
+            binary_sensor_device_class.clone(),
+        ) {
+            return json_error(500, &e);
+        }
+        ctx.mqtt_bridge
+            .set_binary_sensor(device_id, capability_id, bs, binary_sensor_device_class);
     }
     json_ok(&serde_json::json!({"updated": true}))
 }
