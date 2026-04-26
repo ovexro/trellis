@@ -154,10 +154,14 @@ pub fn fire_schedule(
     }
 }
 
-/// Execute a rule's action once and stamp last_triggered on success.
+/// Execute a rule's action(s) once and stamp last_triggered on success.
 /// Shared by the frontend evaluator (after conditions match) and the
 /// manual "Run now" path (which deliberately bypasses the conditions).
-/// Returns Err on: target device offline / action send failure / DB error.
+/// Branches on `scene_id`: when set, loads the scene and delegates to
+/// `fire_scene` (which also stamps `scene.last_run`); otherwise the legacy
+/// single-action path. Mirrors `fire_schedule`'s scene-vs-action split.
+/// Returns Err on: scene not found / target device offline / action send
+/// failure / DB error.
 pub fn fire_rule(
     app_handle: &AppHandle,
     conn_mgr: &ConnectionManager,
@@ -167,21 +171,39 @@ pub fn fire_rule(
         .try_state::<Database>()
         .ok_or_else(|| "Database state unavailable".to_string())?;
 
-    log::info!(
-        "[Scheduler] Firing rule '{}': {}.{} = {}",
-        rule.label, rule.target_device_id, rule.target_capability_id, rule.target_value
-    );
+    if let Some(scene_id) = rule.scene_id {
+        log::info!(
+            "[Scheduler] Firing scene rule '{}': scene_id={}",
+            rule.label, scene_id
+        );
+        let scene = db
+            .get_scene(scene_id)
+            .map_err(|e| format!("Failed to load scene {}: {}", scene_id, e))?
+            .ok_or_else(|| format!("Scene {} not found", scene_id))?;
 
-    send_action(
-        app_handle, conn_mgr,
-        &rule.target_device_id, &rule.target_capability_id, &rule.target_value,
-    )?;
+        let fire_result = fire_scene(app_handle, conn_mgr, &scene);
 
-    db.update_rule_last_triggered(rule.id)
-        .map_err(|e| format!("Failed to stamp last_triggered: {}", e))?;
+        db.update_rule_last_triggered(rule.id)
+            .map_err(|e| format!("Failed to stamp last_triggered: {}", e))?;
 
-    log::info!("[Scheduler] Rule action sent successfully");
-    Ok(())
+        fire_result
+    } else {
+        log::info!(
+            "[Scheduler] Firing rule '{}': {}.{} = {}",
+            rule.label, rule.target_device_id, rule.target_capability_id, rule.target_value
+        );
+
+        send_action(
+            app_handle, conn_mgr,
+            &rule.target_device_id, &rule.target_capability_id, &rule.target_value,
+        )?;
+
+        db.update_rule_last_triggered(rule.id)
+            .map_err(|e| format!("Failed to stamp last_triggered: {}", e))?;
+
+        log::info!("[Scheduler] Rule action sent successfully");
+        Ok(())
+    }
 }
 
 /// Execute every action on a scene once and stamp last_run on success.

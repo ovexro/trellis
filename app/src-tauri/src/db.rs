@@ -1380,14 +1380,15 @@ impl Database {
         condition: &str, threshold: f64,
         target_device_id: &str, target_capability_id: &str, target_value: &str,
         label: &str, logic: &str, conditions: Option<&str>,
+        scene_id: Option<i64>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
-             target_device_id, target_capability_id, target_value, label, enabled, logic, conditions)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+             target_device_id, target_capability_id, target_value, label, enabled, logic, conditions, scene_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11)",
             rusqlite::params![source_device_id, source_metric_id, condition, threshold,
-                target_device_id, target_capability_id, target_value, label, logic, conditions],
+                target_device_id, target_capability_id, target_value, label, logic, conditions, scene_id],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -1397,7 +1398,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, source_device_id, source_metric_id, condition, threshold,
              target_device_id, target_capability_id, target_value, label, enabled,
-             logic, conditions, last_triggered FROM rules"
+             logic, conditions, last_triggered, scene_id FROM rules"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(Rule {
@@ -1408,6 +1409,7 @@ impl Database {
                 logic: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "and".to_string()),
                 conditions: row.get(11)?,
                 last_triggered: row.get(12)?,
+                scene_id: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -1418,7 +1420,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, source_device_id, source_metric_id, condition, threshold,
              target_device_id, target_capability_id, target_value, label, enabled,
-             logic, conditions, last_triggered FROM rules WHERE id = ?1"
+             logic, conditions, last_triggered, scene_id FROM rules WHERE id = ?1"
         ).map_err(|e| e.to_string())?;
         let mut rows = stmt.query_map(rusqlite::params![id], |row| {
             Ok(Rule {
@@ -1429,6 +1431,7 @@ impl Database {
                 logic: row.get::<_, Option<String>>(10)?.unwrap_or_else(|| "and".to_string()),
                 conditions: row.get(11)?,
                 last_triggered: row.get(12)?,
+                scene_id: row.get(13)?,
             })
         }).map_err(|e| e.to_string())?;
         match rows.next() {
@@ -1468,6 +1471,7 @@ impl Database {
             &src.condition, src.threshold,
             &src.target_device_id, &src.target_capability_id, &src.target_value,
             &copy_label(&src.label), &src.logic, src.conditions.as_deref(),
+            src.scene_id,
         )
     }
 
@@ -2720,6 +2724,8 @@ pub struct Rule {
     pub conditions: Option<String>,
     #[serde(default)]
     pub last_triggered: Option<String>,
+    #[serde(default)]
+    pub scene_id: Option<i64>,
 }
 
 fn default_logic() -> String {
@@ -2854,6 +2860,94 @@ pub struct ApiToken {
     pub last_used_at: Option<String>,
     pub expires_at: Option<String>,
     pub role: String,
+}
+
+/// Rebuild `rules` and `schedules` to drop the FKs on the target/device columns
+/// that block scene-targeted rows. Idempotent — gated on `pragma_foreign_key_list`
+/// reporting the FK still in place. Wraps each table rebuild in a transaction
+/// and toggles `PRAGMA foreign_keys=OFF` for the duration to satisfy SQLite's
+/// rebuild contract (per https://sqlite.org/lang_altertable.html).
+fn rebuild_drop_target_device_fks(conn: &Connection) -> Result<(), String> {
+    fn fk_from_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+        let sql = format!("SELECT \"from\" FROM pragma_foreign_key_list('{}')", table);
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    let rules_needs = fk_from_columns(conn, "rules")?
+        .iter()
+        .any(|c| c == "target_device_id");
+    let schedules_needs = fk_from_columns(conn, "schedules")?
+        .iter()
+        .any(|c| c == "device_id");
+
+    if !rules_needs && !schedules_needs {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys = OFF;").map_err(|e| e.to_string())?;
+
+    if rules_needs {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE rules_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_device_id TEXT NOT NULL,
+                source_metric_id TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                target_device_id TEXT NOT NULL,
+                target_capability_id TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                logic TEXT NOT NULL DEFAULT 'and',
+                conditions TEXT,
+                last_triggered TEXT,
+                scene_id INTEGER REFERENCES scenes(id),
+                FOREIGN KEY (source_device_id) REFERENCES devices(id)
+            );
+            INSERT INTO rules_new (id, source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label, enabled,
+                logic, conditions, last_triggered, scene_id)
+                SELECT id, source_device_id, source_metric_id, condition, threshold,
+                    target_device_id, target_capability_id, target_value, label, enabled,
+                    logic, conditions, last_triggered, scene_id FROM rules;
+            DROP TABLE rules;
+            ALTER TABLE rules_new RENAME TO rules;
+            COMMIT;
+        ").map_err(|e| e.to_string())?;
+    }
+
+    if schedules_needs {
+        conn.execute_batch("
+            BEGIN;
+            CREATE TABLE schedules_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                scene_id INTEGER REFERENCES scenes(id)
+            );
+            INSERT INTO schedules_new (id, device_id, capability_id, value, cron, label,
+                enabled, last_run, scene_id)
+                SELECT id, device_id, capability_id, value, cron, label,
+                    enabled, last_run, scene_id FROM schedules;
+            DROP TABLE schedules;
+            ALTER TABLE schedules_new RENAME TO schedules;
+            COMMIT;
+        ").map_err(|e| e.to_string())?;
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys = ON;").map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -3222,7 +3316,16 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN logic TEXT NOT NULL DEFAULT 'and'", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN conditions TEXT", []);
     let _ = conn.execute("ALTER TABLE rules ADD COLUMN last_triggered TEXT", []);
+    let _ = conn.execute("ALTER TABLE rules ADD COLUMN scene_id INTEGER REFERENCES scenes(id)", []);
     let _ = conn.execute("ALTER TABLE scenes ADD COLUMN last_run TEXT", []);
+
+    // Drop FKs on the target/device columns that block scene-targeted rows.
+    // Pre-v0.26.0, scene-targeted schedules (v0.7.0) and scene-targeted rules
+    // sent empty target/device strings, which violate the FK to devices(id) and
+    // get rejected — the path has never actually worked end-to-end despite
+    // shipping. SQLite has no ALTER COLUMN, so this is a CREATE/COPY/RENAME
+    // rebuild gated by introspecting the current FK list (idempotent).
+    rebuild_drop_target_device_fks(&conn).map_err(|e| e.to_string())?;
 
     // Webhook delivery history (post-v0.9.0 — retry + delivery log)
     conn.execute_batch("
@@ -3709,7 +3812,8 @@ mod tests {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 logic TEXT NOT NULL DEFAULT 'and',
                 conditions TEXT,
-                last_triggered TEXT
+                last_triggered TEXT,
+                scene_id INTEGER
             );",
         )
         .unwrap();
@@ -3726,7 +3830,7 @@ mod tests {
     fn new_rule_has_null_last_triggered() {
         let db = new_rules_test_db();
         let id = db
-            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None, None)
             .unwrap();
         let rule = db.get_rule(id).unwrap().unwrap();
         assert_eq!(rule.last_triggered, None);
@@ -3736,7 +3840,7 @@ mod tests {
     fn update_rule_last_triggered_stamps_timestamp() {
         let db = new_rules_test_db();
         let id = db
-            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None, None)
             .unwrap();
         db.update_rule_last_triggered(id).unwrap();
         let rule = db.get_rule(id).unwrap().unwrap();
@@ -3750,7 +3854,7 @@ mod tests {
     fn toggle_rule_flips_enabled_state() {
         let db = new_rules_test_db();
         let id = db
-            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None, None)
             .unwrap();
         assert!(db.get_rule(id).unwrap().unwrap().enabled, "new rule defaults to enabled");
         db.toggle_rule(id, false).unwrap();
@@ -3763,7 +3867,7 @@ mod tests {
     fn delete_rule_removes_row() {
         let db = new_rules_test_db();
         let id = db
-            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None)
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None, None)
             .unwrap();
         assert!(db.get_rule(id).unwrap().is_some());
         db.delete_rule(id).unwrap();
@@ -4091,7 +4195,7 @@ mod tests {
             .create_rule(
                 "dev1", "temp", "above", 30.0,
                 "dev2", "fan", "true", "Cool it",
-                "or", Some(conditions_json),
+                "or", Some(conditions_json), None,
             )
             .unwrap();
         db.toggle_rule(src_id, false).unwrap();
@@ -4114,6 +4218,175 @@ mod tests {
         let db = new_rules_test_db();
         let err = db.duplicate_rule(999).unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn new_rule_has_null_scene_id() {
+        let db = new_rules_test_db();
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "dev2", "fan", "true", "Cool it", "and", None, None)
+            .unwrap();
+        let rule = db.get_rule(id).unwrap().unwrap();
+        assert_eq!(rule.scene_id, None);
+    }
+
+    #[test]
+    fn create_rule_with_scene_id_persists() {
+        let db = new_rules_test_db();
+        // Scene-targeted rules carry empty target_* fields — fire_rule branches on scene_id
+        // and ignores them, mirroring the schedule scene-fire path.
+        let id = db
+            .create_rule("dev1", "temp", "above", 30.0, "", "", "", "Cooldown scene", "and", None, Some(7))
+            .unwrap();
+        let rule = db.get_rule(id).unwrap().unwrap();
+        assert_eq!(rule.scene_id, Some(7));
+        assert_eq!(rule.target_device_id, "");
+        assert_eq!(rule.target_capability_id, "");
+    }
+
+    #[test]
+    fn migration_drops_target_device_fk_on_rules_and_schedules() {
+        // Seed a connection with the pre-v0.26.0 schema (FK on target_device_id /
+        // device_id) plus a tiny devices+scenes universe, insert a row, and verify
+        // the migration rebuilds the table so empty target_device_id no longer
+        // violates FK while existing rows are preserved.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch("
+            CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT);
+            CREATE TABLE scenes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, last_run TEXT);
+            CREATE TABLE rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_device_id TEXT NOT NULL,
+                source_metric_id TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                target_device_id TEXT NOT NULL,
+                target_capability_id TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                logic TEXT NOT NULL DEFAULT 'and',
+                conditions TEXT,
+                last_triggered TEXT,
+                scene_id INTEGER REFERENCES scenes(id),
+                FOREIGN KEY (source_device_id) REFERENCES devices(id),
+                FOREIGN KEY (target_device_id) REFERENCES devices(id)
+            );
+            CREATE TABLE schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                scene_id INTEGER REFERENCES scenes(id),
+                FOREIGN KEY (device_id) REFERENCES devices(id)
+            );
+            INSERT INTO devices (id, name) VALUES ('dev1', 'D1');
+            INSERT INTO scenes (id, name) VALUES (7, 'S');
+            INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label, enabled,
+                logic, conditions, last_triggered, scene_id)
+                VALUES ('dev1', 'temp', 'above', 30.0, 'dev1', 'fan', 'true', 'pre', 1, 'and', NULL, NULL, NULL);
+            INSERT INTO schedules (device_id, capability_id, value, cron, label, enabled, last_run, scene_id)
+                VALUES ('dev1', 'led', 'true', '0 6 * * *', 'pre', 1, NULL, NULL);
+        ").unwrap();
+
+        // Pre-condition: empty target_device_id rejected by FK.
+        let pre_err = conn.execute(
+            "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label, enabled, logic, conditions, last_triggered, scene_id)
+                VALUES ('dev1', 'temp', 'above', 30.0, '', '', '', 'should fail', 1, 'and', NULL, NULL, 7)",
+            [],
+        );
+        assert!(pre_err.is_err(), "pre-migration: empty target_device_id should hit FK");
+
+        rebuild_drop_target_device_fks(&conn).unwrap();
+
+        // Post-condition: empty target_device_id accepted, scene-targeted rule lands.
+        conn.execute(
+            "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label, enabled, logic, conditions, last_triggered, scene_id)
+                VALUES ('dev1', 'temp', 'above', 30.0, '', '', '', 'scene-rule', 1, 'and', NULL, NULL, 7)",
+            [],
+        ).expect("post-migration: empty target_device_id should be accepted");
+        conn.execute(
+            "INSERT INTO schedules (device_id, capability_id, value, cron, label, enabled, last_run, scene_id)
+                VALUES ('', '', '', '0 6 * * *', 'scene-sched', 1, NULL, 7)",
+            [],
+        ).expect("post-migration: empty schedule device_id should be accepted");
+
+        // Existing rows preserved.
+        let rules_count: i64 = conn.query_row("SELECT COUNT(*) FROM rules WHERE label='pre'", [], |r| r.get(0)).unwrap();
+        let scheds_count: i64 = conn.query_row("SELECT COUNT(*) FROM schedules WHERE label='pre'", [], |r| r.get(0)).unwrap();
+        assert_eq!(rules_count, 1, "pre-existing rule must survive migration");
+        assert_eq!(scheds_count, 1, "pre-existing schedule must survive migration");
+
+        // Source FK on rules.source_device_id is preserved (still rejects bogus source).
+        let bogus = conn.execute(
+            "INSERT INTO rules (source_device_id, source_metric_id, condition, threshold,
+                target_device_id, target_capability_id, target_value, label, enabled, logic, conditions, last_triggered, scene_id)
+                VALUES ('ghost', 'temp', 'above', 30.0, '', '', '', 'bogus', 1, 'and', NULL, NULL, 7)",
+            [],
+        );
+        assert!(bogus.is_err(), "post-migration: source_device_id FK still in force");
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        // Already-migrated shape: no FK on target_device_id / device_id.
+        conn.execute_batch("
+            CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT);
+            CREATE TABLE scenes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, last_run TEXT);
+            CREATE TABLE rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_device_id TEXT NOT NULL,
+                source_metric_id TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                threshold REAL NOT NULL,
+                target_device_id TEXT NOT NULL,
+                target_capability_id TEXT NOT NULL,
+                target_value TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                logic TEXT NOT NULL DEFAULT 'and',
+                conditions TEXT,
+                last_triggered TEXT,
+                scene_id INTEGER REFERENCES scenes(id),
+                FOREIGN KEY (source_device_id) REFERENCES devices(id)
+            );
+            CREATE TABLE schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                capability_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                label TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_run TEXT,
+                scene_id INTEGER REFERENCES scenes(id)
+            );
+        ").unwrap();
+        // Second run is a no-op.
+        rebuild_drop_target_device_fks(&conn).unwrap();
+        rebuild_drop_target_device_fks(&conn).unwrap();
+    }
+
+    #[test]
+    fn duplicate_rule_preserves_scene_link() {
+        let db = new_rules_test_db();
+        let src_id = db
+            .create_rule("dev1", "temp", "above", 30.0, "", "", "", "Cooldown scene", "and", None, Some(42))
+            .unwrap();
+        let new_id = db.duplicate_rule(src_id).unwrap();
+        let dup = db.get_rule(new_id).unwrap().unwrap();
+        assert_eq!(dup.scene_id, Some(42));
+        assert_eq!(dup.label, "Cooldown scene (copy)");
     }
 
     #[test]

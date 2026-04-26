@@ -238,16 +238,18 @@ export default function ConfigSection() {
           imported.push(`${config.schedules.length} schedules`);
         }
 
-        // Restore rules
+        // Restore rules (after scenes so scene_id remapping works)
         if (config.rules && Array.isArray(config.rules)) {
           for (const r of config.rules) {
             try {
+              const sceneId = r.scene_id != null ? (sceneIdMap.get(r.scene_id) ?? r.scene_id) : null;
               await invoke("create_rule", {
                 sourceDeviceId: r.source_device_id, sourceMetricId: r.source_metric_id,
                 condition: r.condition, threshold: r.threshold,
                 targetDeviceId: r.target_device_id, targetCapabilityId: r.target_capability_id,
                 targetValue: r.target_value, label: r.label,
                 logic: r.logic || null, conditions: r.conditions || null,
+                sceneId,
               });
             } catch (err) {
               console.error("Failed to import rule:", err);

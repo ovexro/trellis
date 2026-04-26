@@ -896,11 +896,11 @@ pub fn create_rule(
     db: State<'_, Database>, source_device_id: String, source_metric_id: String,
     condition: String, threshold: f64, target_device_id: String,
     target_capability_id: String, target_value: String, label: String,
-    logic: Option<String>, conditions: Option<String>,
+    logic: Option<String>, conditions: Option<String>, scene_id: Option<i64>,
 ) -> Result<i64, String> {
     db.create_rule(&source_device_id, &source_metric_id, &condition, threshold,
         &target_device_id, &target_capability_id, &target_value, &label,
-        logic.as_deref().unwrap_or("and"), conditions.as_deref())
+        logic.as_deref().unwrap_or("and"), conditions.as_deref(), scene_id)
 }
 
 #[tauri::command]

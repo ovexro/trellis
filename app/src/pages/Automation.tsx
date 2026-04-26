@@ -44,6 +44,7 @@ interface Rule {
   logic: string;
   conditions: string | null;
   last_triggered: string | null;
+  scene_id: number | null;
 }
 
 interface WebhookDef {
@@ -95,6 +96,7 @@ export default function Automation() {
 
   // Rule form
   const [showRuleForm, setShowRuleForm] = useState(false);
+  const [rType, setRType] = useState<"action" | "scene">("action");
   const [rConditions, setRConditions] = useState<RuleCondition[]>([
     { device_id: "", metric_id: "", operator: "above", threshold: "" },
   ]);
@@ -102,6 +104,7 @@ export default function Automation() {
   const [rTgtDevice, setRTgtDevice] = useState("");
   const [rTgtCap, setRTgtCap] = useState("");
   const [rTgtValue, setRTgtValue] = useState("");
+  const [rSceneId, setRSceneId] = useState<number | null>(null);
   const [rLabel, setRLabel] = useState("");
 
   // Webhook form
@@ -172,7 +175,9 @@ export default function Automation() {
 
   const createRule = async () => {
     const validConditions = rConditions.filter((c) => c.device_id && c.metric_id && c.threshold);
-    if (validConditions.length === 0 || !rTgtDevice || !rTgtCap || !rLabel) return;
+    if (validConditions.length === 0 || !rLabel) return;
+    if (rType === "action" && (!rTgtDevice || !rTgtCap)) return;
+    if (rType === "scene" && !rSceneId) return;
     setActionLoading("create-rule");
     try {
       const conditionsJson = JSON.stringify(
@@ -188,15 +193,20 @@ export default function Automation() {
       await invoke("create_rule", {
         sourceDeviceId: first.device_id, sourceMetricId: first.metric_id,
         condition: first.operator, threshold: parseFloat(first.threshold),
-        targetDeviceId: rTgtDevice, targetCapabilityId: rTgtCap,
-        targetValue: rTgtValue, label: rLabel,
+        targetDeviceId: rType === "action" ? rTgtDevice : "",
+        targetCapabilityId: rType === "action" ? rTgtCap : "",
+        targetValue: rType === "action" ? rTgtValue : "",
+        label: rLabel,
         logic: validConditions.length > 1 ? rLogic : "and",
         conditions: validConditions.length > 1 ? conditionsJson : null,
+        sceneId: rType === "scene" ? rSceneId : null,
       });
       setShowRuleForm(false);
       setRLabel("");
       setRConditions([{ device_id: "", metric_id: "", operator: "above", threshold: "" }]);
       setRLogic("and");
+      setRType("action");
+      setRSceneId(null);
       await loadAll();
     } catch (err) {
       console.error("Failed to create rule:", err);
@@ -639,22 +649,42 @@ export default function Automation() {
                 <Plus size={12} /> Add condition
               </button>
               <p className="text-[11px] text-zinc-500 uppercase tracking-wider">Then...</p>
-              <div className="flex gap-2">
-                <select value={rTgtDevice} onChange={(e) => setRTgtDevice(e.target.value)}
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Target device...</option>
-                  {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
-                </select>
-                <select value={rTgtCap} onChange={(e) => setRTgtCap(e.target.value)}
-                  className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="">Capability...</option>
-                  {selectedDevice(rTgtDevice)?.capabilities.filter((c) => c.type !== "sensor").map((c) => (
-                    <option key={c.id} value={c.id}>{c.label}</option>
+              <div className="flex gap-1 bg-zinc-800 rounded-lg p-0.5 w-fit">
+                <button onClick={() => setRType("action")}
+                  className={`px-3 py-1 rounded-md text-xs transition-colors ${rType === "action" ? "bg-zinc-700 text-zinc-200" : "text-zinc-500"}`}>
+                  Single Action
+                </button>
+                <button onClick={() => setRType("scene")} disabled={scenes.length === 0}
+                  className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs transition-colors ${rType === "scene" ? "bg-zinc-700 text-zinc-200" : "text-zinc-500"} disabled:opacity-30`}>
+                  <Zap size={10} /> Scene
+                </button>
+              </div>
+              {rType === "action" ? (
+                <div className="flex gap-2">
+                  <select value={rTgtDevice} onChange={(e) => setRTgtDevice(e.target.value)}
+                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                    <option value="">Target device...</option>
+                    {onlineDevices.map((d) => <option key={d.id} value={d.id}>{d.nickname || d.name}</option>)}
+                  </select>
+                  <select value={rTgtCap} onChange={(e) => setRTgtCap(e.target.value)}
+                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                    <option value="">Capability...</option>
+                    {selectedDevice(rTgtDevice)?.capabilities.filter((c) => c.type !== "sensor").map((c) => (
+                      <option key={c.id} value={c.id}>{c.label}</option>
+                    ))}
+                  </select>
+                  <input value={rTgtValue} onChange={(e) => setRTgtValue(e.target.value)} placeholder="Set to..."
+                    className="w-24 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" />
+                </div>
+              ) : (
+                <select value={rSceneId ?? ""} onChange={(e) => setRSceneId(e.target.value ? Number(e.target.value) : null)}
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
+                  <option value="">Select scene...</option>
+                  {scenes.map((sc) => (
+                    <option key={sc.id} value={sc.id}>{sc.name} ({sc.actions.length} actions)</option>
                   ))}
                 </select>
-                <input value={rTgtValue} onChange={(e) => setRTgtValue(e.target.value)} placeholder="Set to..."
-                  className="w-24 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300" />
-              </div>
+              )}
               <div className="flex gap-2">
                 <button onClick={createRule} disabled={actionLoading === "create-rule"}
                   className="px-4 py-1.5 bg-trellis-500 hover:bg-trellis-600 text-white rounded-lg text-xs font-medium disabled:opacity-50">
@@ -681,7 +711,10 @@ export default function Automation() {
                 return (
                 <div key={r.id} className={`flex items-center justify-between p-4 bg-zinc-900 border border-zinc-800 rounded-xl ${!r.enabled ? "opacity-50" : ""}`}>
                   <div>
-                    <p className="text-sm font-medium text-zinc-200">{r.label}</p>
+                    <p className="text-sm font-medium text-zinc-200">
+                      {r.scene_id != null && <Zap size={12} className="inline mr-1 text-trellis-400" />}
+                      {r.label}
+                    </p>
                     <p className="text-xs text-zinc-500 mt-0.5">
                       If {conditions.map((c, i) => (
                         <span key={i}>
@@ -689,7 +722,9 @@ export default function Automation() {
                           {(selectedDevice(c.device_id)?.nickname || selectedDevice(c.device_id)?.name || c.device_id)}.{c.metric_id} {c.operator === "not_equals" ? "≠" : c.operator === "equals" ? "=" : c.operator} {c.threshold}
                         </span>
                       ))}
-                      {" → "}{(selectedDevice(r.target_device_id)?.nickname || selectedDevice(r.target_device_id)?.name || r.target_device_id)}.{r.target_capability_id} = {r.target_value}
+                      {" → "}{r.scene_id != null
+                        ? `Scene: ${scenes.find((sc) => sc.id === r.scene_id)?.name ?? `#${r.scene_id}`}`
+                        : `${selectedDevice(r.target_device_id)?.nickname || selectedDevice(r.target_device_id)?.name || r.target_device_id}.${r.target_capability_id} = ${r.target_value}`}
                     </p>
                     {r.last_triggered && <p className="text-[11px] text-zinc-600 mt-0.5">Last triggered: {r.last_triggered}</p>}
                   </div>

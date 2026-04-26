@@ -4535,8 +4535,8 @@
             return `<div class="auto-card">
               <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
                 <div style="min-width:0;flex:1;">
-                  <div class="auto-card-title">${esc(r.label || 'Rule')}</div>
-                  <div class="auto-card-detail">${formatRuleCondition(r)}</div>
+                  <div class="auto-card-title">${r.scene_id != null ? '&#9889; ' : ''}${esc(r.label || 'Rule')}</div>
+                  <div class="auto-card-detail">${formatRuleCondition(r, sceneMap)}</div>
                   ${lastLine}
                 </div>
                 <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
@@ -4624,7 +4624,7 @@
       return dev ? getNickname(dev) : id;
     }
 
-    function formatRuleCondition(r) {
+    function formatRuleCondition(r, sceneMap) {
       var conditions;
       if (r.conditions) {
         try { conditions = JSON.parse(r.conditions); } catch(e) { conditions = null; }
@@ -4638,7 +4638,13 @@
         var prefix = i > 0 ? ' <span style="color:var(--accent);font-weight:600">' + logic.toUpperCase() + '</span> ' : '';
         return prefix + getDeviceNameById(c.device_id) + '.' + esc(c.metric_id) + ' ' + opLabel(c.operator) + ' ' + c.threshold;
       }).join('');
-      var target = getDeviceNameById(r.target_device_id) + '.' + esc(r.target_capability_id || '') + ' = ' + esc(String(r.target_value != null ? r.target_value : ''));
+      var target;
+      if (r.scene_id != null) {
+        var sceneName = (sceneMap && sceneMap[r.scene_id]) || ('#' + r.scene_id);
+        target = '&#9889; Scene: ' + esc(sceneName);
+      } else {
+        target = getDeviceNameById(r.target_device_id) + '.' + esc(r.target_capability_id || '') + ' = ' + esc(String(r.target_value != null ? r.target_value : ''));
+      }
       return 'If ' + condStr + ' \u2192 ' + target;
     }
 

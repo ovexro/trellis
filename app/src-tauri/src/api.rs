@@ -2393,11 +2393,12 @@ fn handle_create_rule(ctx: &ApiContext, body: &str) -> (u16, String) {
     let label = v["label"].as_str().unwrap_or("Rule");
     let logic = v["logic"].as_str().unwrap_or("and");
     let conditions = v["conditions"].as_str();
+    let scene_id = v["scene_id"].as_i64();
 
     match ctx.db.create_rule(
         source_device_id, source_metric_id, condition, threshold,
         target_device_id, target_capability_id, target_value, label,
-        logic, conditions,
+        logic, conditions, scene_id,
     ) {
         Ok(id) => json_created(&serde_json::json!({"id": id})),
         Err(e) => json_error(500, &e),
