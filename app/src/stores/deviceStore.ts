@@ -51,21 +51,7 @@ async function checkAlerts(deviceId: string, metricId: string, value: number, de
           body: `${alert.label}: ${metricId} is ${value.toFixed(1)} (${alert.condition} ${alert.threshold})`,
         });
       }
-
-      // Send push notification via ntfy.sh if configured
-      try {
-        const ntfyTopic = await invoke<string | null>("get_setting", { key: "ntfy_topic" });
-        if (ntfyTopic) {
-          invoke("send_ntfy", {
-            topic: ntfyTopic,
-            title: `Trellis: ${deviceName}`,
-            message: `${alert.label}: ${metricId} is ${value.toFixed(1)} (${alert.condition} ${alert.threshold})`,
-            priority: 4,
-          }).catch((err: unknown) => console.error("ntfy send failed:", err));
-        }
-      } catch (err) {
-        console.error("Failed to check ntfy setting:", err);
-      }
+      // Backend dispatches alert.triggered webhook + ntfy push (slot 3).
     }
   } catch (err) {
     console.error("Failed to check alerts:", err);
@@ -161,67 +147,6 @@ async function checkRules(deviceId: string, metricId: string, _value: number, de
     }
   } catch (err) {
     console.error("Failed to check rules:", err);
-  }
-}
-
-// Fire webhooks for events with retry and delivery logging
-const MAX_RETRIES = 3;
-const BASE_DELAY_MS = 2000;
-
-async function attemptWebhook(
-  webhookId: number, url: string, eventType: string, payload: string, attempt: number,
-): Promise<void> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
-  try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: payload,
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const success = resp.ok;
-    invoke("log_webhook_delivery", {
-      webhookId, eventType, statusCode: resp.status, success, error: null, attempt,
-    }).catch(() => {});
-    if (!success && attempt < MAX_RETRIES) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      setTimeout(() => attemptWebhook(webhookId, url, eventType, payload, attempt + 1), delay);
-    }
-  } catch (err) {
-    clearTimeout(timeout);
-    const errMsg = err instanceof Error ? err.message : String(err);
-    invoke("log_webhook_delivery", {
-      webhookId, eventType, statusCode: null, success: false, error: errMsg, attempt,
-    }).catch(() => {});
-    if (attempt < MAX_RETRIES) {
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
-      setTimeout(() => attemptWebhook(webhookId, url, eventType, payload, attempt + 1), delay);
-    }
-  }
-}
-
-async function fireWebhooks(eventType: string, deviceId: string, data: Record<string, unknown>) {
-  try {
-    const webhooks = await invoke<Array<{ id: number; url: string; event_type: string; device_id: string | null; enabled: boolean }>>("get_webhooks");
-    for (const wh of webhooks) {
-      if (!wh.enabled) continue;
-      if (wh.event_type !== eventType) continue;
-      if (wh.device_id && wh.device_id !== deviceId) continue;
-
-      try {
-        const u = new URL(wh.url);
-        if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      } catch {
-        continue;
-      }
-
-      const payload = JSON.stringify({ event: eventType, device_id: deviceId, ...data, timestamp: new Date().toISOString() });
-      attemptWebhook(wh.id, wh.url, eventType, payload, 1);
-    }
-  } catch (err) {
-    console.error("Failed to fire webhooks:", err);
   }
 }
 
@@ -339,11 +264,9 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         console.error("Failed to load saved device:", err);
       }
 
-      // Fire webhooks for device state changes
+      // Backend dispatches device.online / device.offline webhooks (slot 2).
+      // Send push notification for device offline (desktop-side ntfy).
       if (event === "lost") {
-        fireWebhooks("device_offline", device.id, { name: device.name });
-
-        // Send push notification for device offline
         invoke<string | null>("get_setting", { key: "ntfy_topic" }).then((topic) => {
           if (topic) {
             invoke("send_ntfy", {
@@ -354,8 +277,6 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
             }).catch((err: unknown) => console.error("ntfy offline failed:", err));
           }
         }).catch(() => {});
-      } else if (event === "found") {
-        fireWebhooks("device_online", device.id, { name: device.name });
       }
 
       set((state) => {
@@ -401,7 +322,7 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
                 }).catch((err: unknown) => console.error("Failed to store metric:", err));
                 checkAlerts(device_id, payload.id, payload.value, d.name);
                 checkRules(device_id, payload.id, payload.value, get().devices);
-                fireWebhooks("sensor_update", device_id, { metric: payload.id, value: payload.value });
+                // Backend dispatches sensor.update webhook (slot 3).
               }
 
               return {

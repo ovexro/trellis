@@ -1,3 +1,4 @@
+mod alerts;
 mod api;
 mod auth;
 mod commands;

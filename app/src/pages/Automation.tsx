@@ -782,8 +782,8 @@ export default function Automation() {
                   <option value="device.offline">Device goes offline</option>
                   <option value="device.online">Device comes online</option>
                   <option value="ota_applied">OTA firmware applied</option>
-                  <option value="alert.triggered">Alert triggered (planned)</option>
-                  <option value="sensor.update">Sensor update (planned)</option>
+                  <option value="alert.triggered">Alert triggered</option>
+                  <option value="sensor.update">Sensor update</option>
                 </select>
                 <select value={wDevice} onChange={(e) => setWDevice(e.target.value)}
                   className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">

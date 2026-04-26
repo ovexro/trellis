@@ -232,6 +232,29 @@ fn ws_reader_loop(
                                         json.get("id").and_then(|v| v.as_str()),
                                         json.get("value"),
                                     ) {
+                                        // sensor.update webhook + alert evaluation
+                                        // for numeric capability transitions. Both
+                                        // surfaces filter naturally — webhooks need
+                                        // a row matching event_type=sensor.update,
+                                        // alerts need a row matching (device, metric).
+                                        if let Some(n) = value.as_f64() {
+                                            if let Some(handle) =
+                                                app_handle.lock().unwrap().as_ref()
+                                            {
+                                                crate::webhooks::dispatch_event(
+                                                    handle,
+                                                    "sensor.update",
+                                                    Some(device_id),
+                                                    serde_json::json!({
+                                                        "metric": cap_id,
+                                                        "value": n,
+                                                    }),
+                                                );
+                                                crate::alerts::evaluate(
+                                                    handle, device_id, cap_id, n,
+                                                );
+                                            }
+                                        }
                                         if let Some(bridge) =
                                             mqtt_bridge.lock().unwrap().as_ref()
                                         {
