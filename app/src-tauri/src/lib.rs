@@ -12,6 +12,7 @@ mod scheduler;
 mod secret_store;
 mod serial;
 mod sinric;
+mod webhooks;
 
 use commands::*;
 use connection::ConnectionManager;

@@ -407,6 +407,10 @@ fn mdns_browse_loop(
                     if let Some(bridge) = mqtt_bridge.lock().unwrap().as_ref() {
                         bridge.forget_discovery(&id);
                     }
+                    crate::webhooks::dispatch_event(
+                        &app_handle, "device.offline", Some(&id),
+                        serde_json::json!({"source": "mdns"}),
+                    );
                     log::info!("[Discovery] Device lost: {}", id);
                 }
             }
@@ -485,6 +489,10 @@ fn health_check_loop(
                             if let Some(db) = app_handle.try_state::<Database>() {
                                 let _ = db.store_log(&id, "state", "online");
                             }
+                            crate::webhooks::dispatch_event(
+                                &app_handle, "device.online", Some(&id),
+                                serde_json::json!({"source": "health-check"}),
+                            );
                             log::info!("[Health] Device {} came back online", id);
                         }
 
@@ -516,6 +524,10 @@ fn health_check_loop(
                             if let Some(db) = app_handle.try_state::<Database>() {
                                 let _ = db.store_log(&id, "state", "offline");
                             }
+                            crate::webhooks::dispatch_event(
+                                &app_handle, "device.offline", Some(&id),
+                                serde_json::json!({"source": "health-check"}),
+                            );
                             log::info!("[Health] Device {} went offline", id);
                         }
                     }

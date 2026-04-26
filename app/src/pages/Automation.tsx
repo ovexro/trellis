@@ -109,7 +109,7 @@ export default function Automation() {
 
   // Webhook form
   const [showWebhookForm, setShowWebhookForm] = useState(false);
-  const [wEvent, setWEvent] = useState("device_offline");
+  const [wEvent, setWEvent] = useState("device.offline");
   const [wDevice, setWDevice] = useState("");
   const [wUrl, setWUrl] = useState("");
   const [wLabel, setWLabel] = useState("");
@@ -779,10 +779,11 @@ export default function Automation() {
               <div className="grid grid-cols-2 gap-2">
                 <select value={wEvent} onChange={(e) => setWEvent(e.target.value)}
                   className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">
-                  <option value="device_offline">Device goes offline</option>
-                  <option value="device_online">Device comes online</option>
-                  <option value="alert_triggered">Alert triggered</option>
-                  <option value="sensor_update">Sensor update</option>
+                  <option value="device.offline">Device goes offline</option>
+                  <option value="device.online">Device comes online</option>
+                  <option value="ota_applied">OTA firmware applied</option>
+                  <option value="alert.triggered">Alert triggered (planned)</option>
+                  <option value="sensor.update">Sensor update (planned)</option>
                 </select>
                 <select value={wDevice} onChange={(e) => setWDevice(e.target.value)}
                   className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300">

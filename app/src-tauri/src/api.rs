@@ -2564,11 +2564,14 @@ fn handle_ota_ack(ctx: &ApiContext, nonce: &str, body: &str) -> (u16, String) {
                 );
                 let ws_msg = serde_json::json!({
                     "type": "device_event",
-                    "device_id": device_id,
+                    "device_id": &device_id,
                     "event_type": "ota_applied",
-                    "payload": payload,
+                    "payload": payload.clone(),
                 });
                 ctx.ws_broadcaster.broadcast(ws_msg.to_string());
+                crate::webhooks::dispatch_event(
+                    &ctx.app_handle, "ota_applied", Some(&device_id), payload,
+                );
             }
             json_ok(&serde_json::json!({ "status": "applied", "row_id": row_id }))
         }

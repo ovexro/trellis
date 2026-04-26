@@ -1555,6 +1555,47 @@ impl Database {
         )
     }
 
+    /// Fetch webhooks the event dispatcher should fire for `(event_type,
+    /// device_id)`. Returns rows where `enabled = 1` AND the event type
+    /// matches AND the device filter is satisfied.
+    ///
+    /// Event-type matching accepts both dot form (`device.online`) and
+    /// underscore form (`device_online`) so webhooks created by older UI
+    /// revisions still fire after the v0.26.0 dispatcher lands. Callers
+    /// pass either form; both equivalents are queried.
+    ///
+    /// Device-filter semantics:
+    ///   * Webhook `device_id` IS NULL → fires for any device on this event.
+    ///   * Webhook `device_id` set → fires only when the event's `device_id`
+    ///     matches exactly.
+    ///   * When the event has no device (`device_id` parameter is `None`),
+    ///     `device_id = NULL` evaluates to NULL → only NULL-device webhooks
+    ///     match. This is the correct semantics for system events like
+    ///     `ota_applied` issued outside a per-device context.
+    pub fn get_webhooks_for_event(
+        &self, event_type: &str, device_id: Option<&str>,
+    ) -> Result<Vec<Webhook>, String> {
+        let conn = self.conn.lock().unwrap();
+        let dot = event_type.replace('_', ".");
+        let underscore = event_type.replace('.', "_");
+        let mut stmt = conn.prepare(
+            "SELECT id, event_type, device_id, url, label, enabled
+             FROM webhooks
+             WHERE enabled = 1
+               AND (event_type = ?1 OR event_type = ?2)
+               AND (device_id IS NULL OR device_id = ?3)"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(rusqlite::params![dot, underscore, device_id], |row| {
+            Ok(Webhook {
+                id: row.get(0)?, event_type: row.get(1)?, device_id: row.get(2)?,
+                url: row.get(3)?, label: row.get(4)?, enabled: row.get(5)?,
+                last_delivery: None, last_success: None,
+                success_count: 0, failure_count: 0,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     // ─── Webhook delivery history ───────────────────────────────────────
 
     pub fn log_webhook_delivery(
@@ -4068,6 +4109,94 @@ mod tests {
         db.cleanup_old_webhook_deliveries(30).unwrap();
         let still_there = db.get_webhooks().unwrap().into_iter().any(|w| w.id == id);
         assert!(still_there, "parent webhook row must survive delivery cleanup");
+    }
+
+    #[test]
+    fn webhooks_for_event_matches_dot_form() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "All devices")
+            .unwrap();
+        let m = db.get_webhooks_for_event("device.offline", Some("dev1")).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].id, id);
+    }
+
+    #[test]
+    fn webhooks_for_event_back_compat_underscore_form() {
+        // Pre-v0.26.0 UI saved underscore-form rows. The dispatcher receives
+        // dot form. Both must match each other so users don't have to recreate
+        // webhooks across the upgrade.
+        let db = new_webhooks_test_db();
+        let id_underscore = db
+            .create_webhook("device_offline", None, "https://example.com/hook", "Legacy row")
+            .unwrap();
+        let m1 = db.get_webhooks_for_event("device.offline", Some("dev1")).unwrap();
+        assert!(m1.iter().any(|w| w.id == id_underscore), "dot form lookup must hit underscore row");
+
+        let id_dot = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Modern row")
+            .unwrap();
+        let m2 = db.get_webhooks_for_event("device_offline", Some("dev1")).unwrap();
+        assert!(m2.iter().any(|w| w.id == id_dot), "underscore form lookup must hit dot row");
+    }
+
+    #[test]
+    fn webhooks_for_event_filters_by_device() {
+        let db = new_webhooks_test_db();
+        let any = db
+            .create_webhook("device.offline", None, "https://example.com/any", "Any device")
+            .unwrap();
+        let dev1 = db
+            .create_webhook("device.offline", Some("dev1"), "https://example.com/dev1", "Only dev1")
+            .unwrap();
+        let dev2 = db
+            .create_webhook("device.offline", Some("dev2"), "https://example.com/dev2", "Only dev2")
+            .unwrap();
+
+        let m = db.get_webhooks_for_event("device.offline", Some("dev1")).unwrap();
+        let ids: Vec<i64> = m.iter().map(|w| w.id).collect();
+        assert!(ids.contains(&any), "all-devices webhook fires for dev1");
+        assert!(ids.contains(&dev1), "dev1-scoped webhook fires for dev1");
+        assert!(!ids.contains(&dev2), "dev2-scoped webhook must NOT fire for dev1");
+    }
+
+    #[test]
+    fn webhooks_for_event_skips_disabled() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Off")
+            .unwrap();
+        db.toggle_webhook(id, false).unwrap();
+        let m = db.get_webhooks_for_event("device.offline", Some("dev1")).unwrap();
+        assert!(m.is_empty(), "disabled webhook must not match");
+    }
+
+    #[test]
+    fn webhooks_for_event_no_event_device_only_matches_null_device_webhooks() {
+        // System-level events (caller passes None) must NOT fire webhooks
+        // scoped to a specific device — the device id literally does not exist
+        // in this event.
+        let db = new_webhooks_test_db();
+        let any = db
+            .create_webhook("ota_applied", None, "https://example.com/any", "Any")
+            .unwrap();
+        let scoped = db
+            .create_webhook("ota_applied", Some("dev1"), "https://example.com/dev1", "Scoped")
+            .unwrap();
+        let m = db.get_webhooks_for_event("ota_applied", None).unwrap();
+        let ids: Vec<i64> = m.iter().map(|w| w.id).collect();
+        assert!(ids.contains(&any), "NULL-device webhook fires for system event");
+        assert!(!ids.contains(&scoped), "device-scoped webhook must NOT fire for system event");
+    }
+
+    #[test]
+    fn webhooks_for_event_skips_other_event_types() {
+        let db = new_webhooks_test_db();
+        db.create_webhook("device.online", None, "https://example.com/online", "Online")
+            .unwrap();
+        let m = db.get_webhooks_for_event("device.offline", Some("dev1")).unwrap();
+        assert!(m.is_empty(), "device.offline lookup must not match device.online webhook");
     }
 
     fn new_scenes_test_db() -> Database {
