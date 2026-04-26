@@ -184,6 +184,27 @@ pub fn set_capability_binary_sensor(
 }
 
 #[tauri::command]
+pub fn set_capability_brightness_link(
+    db: State<'_, Database>,
+    state: State<'_, AppState>,
+    device_id: String,
+    capability_id: String,
+    color_capability_id: Option<String>,
+) -> Result<(), String> {
+    db.set_capability_brightness_link(
+        &device_id,
+        &capability_id,
+        color_capability_id.clone(),
+    )?;
+    state.mqtt_bridge.set_brightness_link(
+        &device_id,
+        &capability_id,
+        color_capability_id,
+    );
+    Ok(())
+}
+
+#[tauri::command]
 pub fn get_device_energy(
     db: State<'_, Database>,
     device_id: String,

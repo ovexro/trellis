@@ -18,6 +18,7 @@ import DeviceDiagnostics from "@/components/DeviceDiagnostics";
 import CapabilityWatts from "@/components/CapabilityWatts";
 import CapabilityBinarySensor from "@/components/CapabilityBinarySensor";
 import CapabilityCover from "@/components/CapabilityCover";
+import CapabilityBrightnessLink from "@/components/CapabilityBrightnessLink";
 import DeviceEnergy from "@/components/DeviceEnergy";
 import type { Capability } from "@/lib/types";
 
@@ -29,6 +30,7 @@ interface CapabilityMetaRow {
   binary_sensor: boolean;
   binary_sensor_device_class: string | null;
   cover_position: boolean;
+  brightness_for_cap_id: string | null;
 }
 
 function SectionHeader({ title }: { title: string }) {
@@ -56,6 +58,12 @@ export default function DeviceDetail() {
     Record<string, { enabled: boolean; deviceClass: string | null }>
   >({});
   const [coverMeta, setCoverMeta] = useState<Record<string, boolean>>({});
+  // Map slider cap_id -> linked color cap_id (or null when standalone).
+  // Mirrors the DB column shape; the color cap looks itself up via reverse
+  // when rendering its dropdown.
+  const [brightnessLinkMeta, setBrightnessLinkMeta] = useState<
+    Record<string, string | null>
+  >({});
   const [costPerKwh, setCostPerKwh] = useState<number | null>(null);
   const [currency, setCurrency] = useState<string>("USD");
 
@@ -72,6 +80,7 @@ export default function DeviceDetail() {
           { enabled: boolean; deviceClass: string | null }
         > = {};
         const cover: Record<string, boolean> = {};
+        const brightnessLink: Record<string, string | null> = {};
         for (const r of rows) {
           watts[r.capability_id] = r.nameplate_watts;
           linear[r.capability_id] = r.linear_power;
@@ -80,11 +89,13 @@ export default function DeviceDetail() {
             deviceClass: r.binary_sensor_device_class,
           };
           cover[r.capability_id] = r.cover_position;
+          brightnessLink[r.capability_id] = r.brightness_for_cap_id;
         }
         setCapMeta(watts);
         setLinearPowerMeta(linear);
         setBinarySensorMeta(binary);
         setCoverMeta(cover);
+        setBrightnessLinkMeta(brightnessLink);
       })
       .catch((err) => console.error("Failed to load capability meta:", err));
     return () => {
@@ -189,7 +200,13 @@ export default function DeviceDetail() {
             )}
           </div>
         );
-      case "slider":
+      case "slider": {
+        const linkedColorCap =
+          brightnessLinkMeta[cap.id]
+            ? device?.capabilities.find(
+                (c) => c.id === brightnessLinkMeta[cap.id]
+              )
+            : undefined;
         return (
           <div key={cap.id}>
             <Slider
@@ -226,8 +243,18 @@ export default function DeviceDetail() {
                 }
               />
             )}
+            {linkedColorCap && (
+              <p className="mt-1 ml-1 text-[11px] text-zinc-600">
+                Brightness for{" "}
+                <span className="text-trellis-400/70 font-mono">
+                  {linkedColorCap.label}
+                </span>{" "}
+                — no separate Home Assistant entity.
+              </p>
+            )}
           </div>
         );
+      }
       case "sensor":
         return (
           <div key={cap.id}>
@@ -252,15 +279,45 @@ export default function DeviceDetail() {
             )}
           </div>
         );
-      case "color":
+      case "color": {
+        const sliderOptions =
+          device?.capabilities
+            .filter((c) => c.type === "slider")
+            .map((c) => ({ id: c.id, label: c.label })) ?? [];
+        const linkedSliderCapId =
+          Object.entries(brightnessLinkMeta).find(
+            ([, target]) => target === cap.id
+          )?.[0] ?? null;
         return (
-          <ColorPicker
-            key={cap.id}
-            label={cap.label}
-            value={cap.value as string}
-            onChange={(v) => handleChange(cap.id, v)}
-          />
+          <div key={cap.id}>
+            <ColorPicker
+              label={cap.label}
+              value={cap.value as string}
+              onChange={(v) => handleChange(cap.id, v)}
+            />
+            {device && (
+              <CapabilityBrightnessLink
+                deviceId={device.id}
+                colorCapabilityId={cap.id}
+                linkedSliderCapId={linkedSliderCapId}
+                sliderOptions={sliderOptions}
+                onChange={(newSliderCapId) => {
+                  setBrightnessLinkMeta((prev) => {
+                    const next: Record<string, string | null> = { ...prev };
+                    if (linkedSliderCapId) {
+                      next[linkedSliderCapId] = null;
+                    }
+                    if (newSliderCapId) {
+                      next[newSliderCapId] = cap.id;
+                    }
+                    return next;
+                  });
+                }}
+              />
+            )}
+          </div>
         );
+      }
       case "text":
         return (
           <div key={cap.id} className="p-3 bg-zinc-800/50 rounded-lg">

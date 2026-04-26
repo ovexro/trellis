@@ -2255,6 +2255,22 @@ fn handle_set_capability_meta(
         Some(Value::Bool(b)) => Some(*b),
         Some(_) => return json_error(400, "cover_position must be a boolean"),
     };
+    // brightness_for_cap_id: explicit null clears the link, missing field
+    // leaves it untouched, string sets it. Use a tri-state to distinguish
+    // "absent" from "explicitly null."
+    enum BrightnessFieldChange {
+        Absent,
+        Set(Option<String>),
+    }
+    let brightness_change = match v.get("brightness_for_cap_id") {
+        None => BrightnessFieldChange::Absent,
+        Some(Value::Null) => BrightnessFieldChange::Set(None),
+        Some(Value::String(s)) if s.is_empty() => BrightnessFieldChange::Set(None),
+        Some(Value::String(s)) => BrightnessFieldChange::Set(Some(s.clone())),
+        Some(_) => {
+            return json_error(400, "brightness_for_cap_id must be a string or null")
+        }
+    };
 
     if has_watts {
         if let Err(e) = ctx.db.set_capability_watts(device_id, capability_id, watts) {
@@ -2291,6 +2307,34 @@ fn handle_set_capability_meta(
             return json_error(500, &e);
         }
         ctx.mqtt_bridge.set_cover(device_id, capability_id, cp);
+    }
+    if let BrightnessFieldChange::Set(target) = brightness_change {
+        // Validate the linked color cap exists on the same device. Devices
+        // may have stale meta rows whose capabilities were renamed/removed
+        // — refusing to link to one of those is friendlier than letting
+        // discovery silently render a half-broken HA light entity.
+        if let Some(target_cap) = &target {
+            let device = ctx.discovery.get_devices().into_iter().find(|d| d.id == device_id);
+            let cap_ok = device
+                .as_ref()
+                .map(|d| d.capabilities.iter().any(|c| c.id == *target_cap && c.cap_type == "color"))
+                .unwrap_or(false);
+            if !cap_ok {
+                return json_error(
+                    400,
+                    "brightness_for_cap_id must reference an existing color capability on the same device",
+                );
+            }
+        }
+        if let Err(e) = ctx.db.set_capability_brightness_link(
+            device_id,
+            capability_id,
+            target.clone(),
+        ) {
+            return json_error(500, &e);
+        }
+        ctx.mqtt_bridge
+            .set_brightness_link(device_id, capability_id, target);
     }
     json_ok(&serde_json::json!({"updated": true}))
 }

@@ -45,7 +45,7 @@ use tauri::Manager;
 
 use crate::connection::ConnectionManager;
 use crate::db::Database;
-use crate::device::Device;
+use crate::device::{Capability, Device};
 use crate::discovery::Discovery;
 
 const DEFAULT_BASE_TOPIC: &str = "trellis";
@@ -261,6 +261,29 @@ pub struct MqttBridge {
     /// of `number`. Independent of `meta_map` (energy) and
     /// `binary_sensor_map` (sensor routing).
     cover_map: Arc<Mutex<HashSet<(String, String)>>>,
+    /// HA `light` brightness-link cache (v0.27.0). Keyed by
+    /// `(device_id, color_capability_id)`, value is the slider capability_id
+    /// linked as the brightness channel. When an entry exists the bridge:
+    ///   1. publishes the color cap's discovery as a `light` with
+    ///      `brightness: true` + `brightness_scale: <slider.max>`,
+    ///   2. routes the light's state/command topics to the synthetic
+    ///      `_light` namespace,
+    ///   3. skips publishing the slider's separate `number`/`cover` entity
+    ///      and retracts whatever was there.
+    /// Hydrated from `capability_meta` at startup.
+    brightness_link_map: Arc<Mutex<HashMap<(String, String), String>>>,
+    /// Reverse of `brightness_link_map` for the `publish_state` hot path:
+    /// when a slider that's part of a brightness link fires we need to know
+    /// which color cap to merge with. Keyed by `(device_id, slider_cap_id)`,
+    /// value is the color cap_id. Maintained in lockstep with
+    /// `brightness_link_map`.
+    slider_to_color_link: Arc<Mutex<HashMap<(String, String), String>>>,
+    /// Latest known (color_value, brightness_value) per linked color cap.
+    /// Filled lazily as state arrives. Republishing the merged `_light/state`
+    /// before both halves are seen is harmless — HA tolerates partial
+    /// payloads (missing brightness keeps the prior value).
+    light_state_cache:
+        Arc<Mutex<HashMap<(String, String), (Option<Value>, Option<i64>)>>>,
     /// Wired in by `lib.rs` setup hook (mirrors the Sinric bridge pattern).
     /// The MQTT worker thread needs this to look up scenes from the DB when
     /// an HA button press arrives on the `<base_topic>/_scene/<id>/run` topic
@@ -300,6 +323,9 @@ impl MqttBridge {
             meta_map: Arc::new(Mutex::new(HashMap::new())),
             binary_sensor_map: Arc::new(Mutex::new(HashMap::new())),
             cover_map: Arc::new(Mutex::new(HashSet::new())),
+            brightness_link_map: Arc::new(Mutex::new(HashMap::new())),
+            slider_to_color_link: Arc::new(Mutex::new(HashMap::new())),
+            light_state_cache: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
             scene_discovery_published: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -466,6 +492,119 @@ impl MqttBridge {
         for entry in entries {
             map.insert(entry);
         }
+    }
+
+    /// Replace the in-memory brightness-link cache from a freshly-loaded DB
+    /// snapshot. Entries are `(device_id, color_cap_id, slider_cap_id)`.
+    /// Maintains the reverse `slider_to_color_link` map in lockstep.
+    pub fn hydrate_brightness_links(
+        &self,
+        entries: Vec<(String, String, String)>,
+    ) {
+        let mut fwd = self.brightness_link_map.lock().unwrap();
+        let mut rev = self.slider_to_color_link.lock().unwrap();
+        let mut cache = self.light_state_cache.lock().unwrap();
+        fwd.clear();
+        rev.clear();
+        cache.clear();
+        for (device_id, color_cap_id, slider_cap_id) in entries {
+            fwd.insert(
+                (device_id.clone(), color_cap_id.clone()),
+                slider_cap_id.clone(),
+            );
+            rev.insert((device_id.clone(), slider_cap_id), color_cap_id);
+        }
+    }
+
+    /// Update the brightness-link for a slider capability. `color_cap_opt =
+    /// Some(color_cap_id)` links the slider as the brightness channel for
+    /// that color cap (color cap must live on the same device); `None`
+    /// removes any existing link the slider participates in.
+    ///
+    /// On link: retracts the slider's separate `number` + `cover` discovery
+    /// (whichever was present) so HA only sees the unified `light` entity,
+    /// and forces a discovery republish for the device. On unlink: retracts
+    /// the synthetic `_light/state` retained payload, clears the merged
+    /// state cache, and forces a discovery republish (the color cap reverts
+    /// to a plain rgb light, the slider republishes as `number`/`cover`).
+    pub fn set_brightness_link(
+        &self,
+        device_id: &str,
+        slider_cap_id: &str,
+        color_cap_opt: Option<String>,
+    ) {
+        // Resolve previous link (if any) before mutating so we can retract
+        // the right artifacts.
+        let prev_color: Option<String> = self
+            .slider_to_color_link
+            .lock()
+            .unwrap()
+            .get(&(device_id.to_string(), slider_cap_id.to_string()))
+            .cloned();
+
+        // Drop the prior link's forward + cache entries.
+        if let Some(prev) = &prev_color {
+            self.brightness_link_map
+                .lock()
+                .unwrap()
+                .remove(&(device_id.to_string(), prev.clone()));
+            self.light_state_cache
+                .lock()
+                .unwrap()
+                .remove(&(device_id.to_string(), prev.clone()));
+            self.retract_synthetic_light_state(device_id, prev);
+        }
+
+        // Apply the new link state.
+        match &color_cap_opt {
+            Some(color_cap) => {
+                self.brightness_link_map.lock().unwrap().insert(
+                    (device_id.to_string(), color_cap.clone()),
+                    slider_cap_id.to_string(),
+                );
+                self.slider_to_color_link.lock().unwrap().insert(
+                    (device_id.to_string(), slider_cap_id.to_string()),
+                    color_cap.clone(),
+                );
+                // Retract the slider's separate number + cover entities;
+                // its HA entity is now the unified light. Empty retained
+                // payloads on either topic are harmless if HA never saw one.
+                self.remove_alt_component_entity(device_id, slider_cap_id, "number");
+                self.remove_alt_component_entity(device_id, slider_cap_id, "cover");
+            }
+            None => {
+                self.slider_to_color_link
+                    .lock()
+                    .unwrap()
+                    .remove(&(device_id.to_string(), slider_cap_id.to_string()));
+            }
+        }
+
+        self.forget_discovery(device_id);
+        let device = match self.discovery.lock().unwrap().as_ref() {
+            Some(d) => d.get_devices().into_iter().find(|d| d.id == device_id),
+            None => None,
+        };
+        if let Some(device) = device {
+            self.publish_discovery(&device);
+        }
+    }
+
+    /// Empty retained payload to the synthetic `_light/state` topic for a
+    /// linked color cap. Called when the link is removed so the broker
+    /// doesn't keep a stale merged payload around for HA to ignore.
+    fn retract_synthetic_light_state(&self, device_id: &str, color_cap_id: &str) {
+        let cfg = self.config.lock().unwrap().clone();
+        if !cfg.enabled {
+            return;
+        }
+        let client = match self.client.lock().unwrap().as_ref() {
+            Some(c) => c.clone(),
+            None => return,
+        };
+        let topic =
+            format!("{}/{}/{}/_light/state", cfg.base_topic, device_id, color_cap_id);
+        let _ = client.publish(&topic, QoS::AtLeastOnce, true, Vec::<u8>::new());
     }
 
     /// Update the cover-routing opt-in for a slider capability. When
@@ -788,6 +927,14 @@ impl MqttBridge {
         if let Err(e) = client.subscribe(&scene_pattern, QoS::AtLeastOnce) {
             log::warn!("[MQTT] Failed to subscribe to {}: {}", scene_pattern, e);
         }
+        // HA `light` brightness-link command pattern:
+        // <base_topic>/<device>/<color_cap>/_light/set carries the merged
+        // {state, color, brightness} payload that we fan out to two WS
+        // commands (color cap rgb + linked slider brightness).
+        let light_pattern = format!("{}/+/+/_light/set", cfg.base_topic);
+        if let Err(e) = client.subscribe(&light_pattern, QoS::AtLeastOnce) {
+            log::warn!("[MQTT] Failed to subscribe to {}: {}", light_pattern, e);
+        }
 
         let status = self.status.clone();
         let stop_flag = self.stop_flag.clone();
@@ -799,6 +946,8 @@ impl MqttBridge {
         let meta_for_worker = self.meta_map.clone();
         let binary_for_worker = self.binary_sensor_map.clone();
         let cover_for_worker = self.cover_map.clone();
+        let brightness_for_worker = self.brightness_link_map.clone();
+        let slider_to_color_for_worker = self.slider_to_color_link.clone();
         let app_handle_for_worker = self.app_handle.clone();
         let scene_tracker_for_worker = self.scene_discovery_published.clone();
 
@@ -822,6 +971,8 @@ impl MqttBridge {
                 meta_for_worker,
                 binary_for_worker,
                 cover_for_worker,
+                brightness_for_worker,
+                slider_to_color_for_worker,
                 app_handle_for_worker,
                 scene_tracker_for_worker,
             );
@@ -904,6 +1055,71 @@ impl MqttBridge {
                 }
             }
         }
+
+        // HA `light` brightness linkage: when this cap participates in a
+        // brightness link (either as the color side or as the slider side),
+        // refresh the merged `_light/state` topic so the linked HA `light`
+        // entity reflects the change. The merged payload combines the most
+        // recent color and brightness values seen for the pair; the missing
+        // half is omitted (HA preserves its prior value).
+        let key = (device_id.to_string(), capability_id.to_string());
+        let color_cap_for_merge: Option<String> = {
+            let fwd = self.brightness_link_map.lock().unwrap();
+            if fwd.contains_key(&key) {
+                // This cap is the color side of a link.
+                Some(capability_id.to_string())
+            } else {
+                // Otherwise, check whether it's the slider side.
+                self.slider_to_color_link.lock().unwrap().get(&key).cloned()
+            }
+        };
+        if let Some(color_cap_id) = color_cap_for_merge {
+            self.update_merged_light_state(
+                &cfg,
+                &client,
+                device_id,
+                &color_cap_id,
+                capability_id,
+                value,
+            );
+        }
+    }
+
+    /// Update the in-memory `(color, brightness)` cache for a linked color
+    /// cap with one freshly-arrived value, then publish the merged JSON to
+    /// the synthetic `_light/state` topic. `source_cap_id` is the cap whose
+    /// state just changed — equal to `color_cap_id` when the color side
+    /// fired, equal to the linked slider cap_id when the brightness side
+    /// fired.
+    fn update_merged_light_state(
+        &self,
+        cfg: &MqttConfig,
+        client: &Client,
+        device_id: &str,
+        color_cap_id: &str,
+        source_cap_id: &str,
+        value: &Value,
+    ) {
+        let key = (device_id.to_string(), color_cap_id.to_string());
+        let mut cache = self.light_state_cache.lock().unwrap();
+        let entry = cache.entry(key.clone()).or_insert((None, None));
+        if source_cap_id == color_cap_id {
+            entry.0 = Some(value.clone());
+        } else if let Some(n) = value.as_f64() {
+            entry.1 = Some(n.round() as i64);
+        }
+        let merged = build_merged_light_payload(&entry.0, &entry.1);
+        drop(cache);
+
+        let topic =
+            format!("{}/{}/{}/_light/state", cfg.base_topic, device_id, color_cap_id);
+        if let Err(e) =
+            client.publish(&topic, QoS::AtLeastOnce, true, merged.into_bytes())
+        {
+            log::warn!("[MQTT] _light publish {} failed: {}", topic, e);
+        } else {
+            self.status.lock().unwrap().messages_published += 1;
+        }
     }
 
     /// Publish a cumulative Wh value on the `_energy/state` topic (retained).
@@ -966,6 +1182,8 @@ impl MqttBridge {
             &self.meta_map,
             &self.binary_sensor_map,
             &self.cover_map,
+            &self.brightness_link_map,
+            &self.slider_to_color_link,
         );
     }
 
@@ -1000,6 +1218,8 @@ impl MqttBridge {
                 &self.meta_map,
                 &self.binary_sensor_map,
                 &self.cover_map,
+                &self.brightness_link_map,
+                &self.slider_to_color_link,
             );
         }
     }
@@ -1296,6 +1516,8 @@ fn publish_discovery_for_device(
     meta_map: &Mutex<HashMap<(String, String), MeteredMeta>>,
     binary_sensor_map: &Mutex<HashMap<(String, String), Option<String>>>,
     cover_map: &Mutex<HashSet<(String, String)>>,
+    brightness_link_map: &Mutex<HashMap<(String, String), String>>,
+    slider_to_color_link: &Mutex<HashMap<(String, String), String>>,
 ) {
     // De-dupe: only republish if the capability list changed. Callers that
     // want a forced republish (broker reconnect, bridge enable) clear the
@@ -1341,6 +1563,37 @@ fn publish_discovery_for_device(
                 .lock()
                 .unwrap()
                 .contains(&(device.id.clone(), cap.id.clone()));
+        // Slider caps that are subordinate to a brightness link have no
+        // standalone HA entity — the linked color cap publishes a unified
+        // `light` carrying both rgb and brightness. Skip discovery
+        // entirely; `set_brightness_link` already retracted any prior
+        // number/cover config for this slider.
+        if cap.cap_type == "slider"
+            && slider_to_color_link
+                .lock()
+                .unwrap()
+                .contains_key(&(device.id.clone(), cap.id.clone()))
+        {
+            continue;
+        }
+        // Color caps that own a brightness link route their HA `light`
+        // discovery to the synthetic `_light` topics and add brightness
+        // fields. The slider's live max becomes `brightness_scale` so HA
+        // sends correctly-scaled brightness values back on the merged set
+        // topic.
+        let brightness_slider_for_color: Option<&Capability> =
+            if cap.cap_type == "color" {
+                let slider_id = brightness_link_map
+                    .lock()
+                    .unwrap()
+                    .get(&(device.id.clone(), cap.id.clone()))
+                    .cloned();
+                slider_id.and_then(|sid| {
+                    device.capabilities.iter().find(|c| c.id == sid)
+                })
+            } else {
+                None
+            };
         let component = match cap.cap_type.as_str() {
             "switch" => "switch",
             "slider" => {
@@ -1371,8 +1624,31 @@ fn publish_discovery_for_device(
             "{}/{}/{}/config",
             cfg.ha_discovery_prefix, component, unique_id
         );
-        let state_topic = format!("{}/{}/{}/state", cfg.base_topic, device.id, cap.id);
-        let command_topic = format!("{}/{}/{}/set", cfg.base_topic, device.id, cap.id);
+        // Linked color caps speak through the synthetic `_light` namespace
+        // so HA gets one merged `{state, color, brightness}` payload per
+        // update instead of two separate state topics it can't combine
+        // server-side.
+        let topic_suffix = if brightness_slider_for_color.is_some() {
+            "_light"
+        } else {
+            ""
+        };
+        let state_topic: String = if topic_suffix.is_empty() {
+            format!("{}/{}/{}/state", cfg.base_topic, device.id, cap.id)
+        } else {
+            format!(
+                "{}/{}/{}/{}/state",
+                cfg.base_topic, device.id, cap.id, topic_suffix
+            )
+        };
+        let command_topic: String = if topic_suffix.is_empty() {
+            format!("{}/{}/{}/set", cfg.base_topic, device.id, cap.id)
+        } else {
+            format!(
+                "{}/{}/{}/{}/set",
+                cfg.base_topic, device.id, cap.id, topic_suffix
+            )
+        };
 
         let mut config = serde_json::json!({
             "name": cap.label,
@@ -1434,6 +1710,15 @@ fn publish_discovery_for_device(
                 config["command_topic"] = command_topic.into();
                 config["schema"] = "json".into();
                 config["supported_color_modes"] = serde_json::json!(["rgb"]);
+                if let Some(slider) = brightness_slider_for_color {
+                    // HA's json schema accepts brightness alongside rgb when
+                    // `brightness: true` is set. The scale matches the
+                    // slider's live max so HA's outbound `brightness` field
+                    // arrives in the slider's native units.
+                    config["brightness"] = true.into();
+                    config["brightness_scale"] =
+                        slider.max.map(|m| m as i64).unwrap_or(100).into();
+                }
             }
             "text" => {
                 config["command_topic"] = command_topic.into();
@@ -1711,6 +1996,8 @@ fn event_loop(
     meta_map: Arc<Mutex<HashMap<(String, String), MeteredMeta>>>,
     binary_sensor_map: Arc<Mutex<HashMap<(String, String), Option<String>>>>,
     cover_map: Arc<Mutex<HashSet<(String, String)>>>,
+    brightness_link_map: Arc<Mutex<HashMap<(String, String), String>>>,
+    slider_to_color_link: Arc<Mutex<HashMap<(String, String), String>>>,
     app_handle: Arc<Mutex<Option<tauri::AppHandle>>>,
     scene_discovery_published: Arc<Mutex<HashMap<i64, String>>>,
 ) {
@@ -1773,6 +2060,14 @@ fn event_loop(
                             e
                         );
                     }
+                    let light_pattern = format!("{}/+/+/_light/set", cfg_snapshot.base_topic);
+                    if let Err(e) = c.subscribe(&light_pattern, QoS::AtLeastOnce) {
+                        log::warn!(
+                            "[MQTT] resubscribe {} failed: {}",
+                            light_pattern,
+                            e
+                        );
+                    }
                 }
                 // Polish #2: republish HA discovery configs whenever the
                 // broker accepts a fresh connection. Handles broker restarts
@@ -1799,6 +2094,8 @@ fn event_loop(
                                     &meta_map,
                                     &binary_sensor_map,
                                     &cover_map,
+                                    &brightness_link_map,
+                                    &slider_to_color_link,
                                 );
                             }
                             log::info!(
@@ -1848,7 +2145,14 @@ fn event_loop(
                 let payload = String::from_utf8_lossy(&p.payload).to_string();
                 status.lock().unwrap().messages_received += 1;
                 let cfg = config.lock().unwrap().clone();
-                handle_inbound(&topic, &payload, &cfg, &conn_mgr, &app_handle);
+                handle_inbound(
+                    &topic,
+                    &payload,
+                    &cfg,
+                    &conn_mgr,
+                    &app_handle,
+                    &brightness_link_map,
+                );
             }
             Ok(Ok(Event::Incoming(Packet::Disconnect))) => {
                 log::warn!("[MQTT] Broker sent disconnect");
@@ -1874,8 +2178,9 @@ fn event_loop(
 
 /// Route an inbound MQTT message to the appropriate Trellis device or scene.
 /// Recognized topic shapes:
-///   <base_topic>/<device_id>/<cap_id>/set    → capability set
-///   <base_topic>/_scene/<scene_id>/run       → scene run (HA button press)
+///   <base_topic>/<device_id>/<cap_id>/set            → capability set
+///   <base_topic>/<device_id>/<color_cap>/_light/set  → linked-light merged set
+///   <base_topic>/_scene/<scene_id>/run               → scene run (HA button press)
 /// `base_topic` may contain slashes (e.g. "home/iot/trellis"), so we use
 /// prefix-stripping rather than naive segment counting. The leading underscore
 /// on `_scene` keeps that namespace disjoint from device IDs (which start with
@@ -1886,9 +2191,32 @@ fn handle_inbound(
     cfg: &MqttConfig,
     conn_mgr: &ConnectionManager,
     app_handle: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    brightness_link_map: &Mutex<HashMap<(String, String), String>>,
 ) {
     let plain_prefix = format!("{}/", cfg.base_topic);
     if let Some(rest) = topic.strip_prefix(&plain_prefix) {
+        // Linked-light merged set must be checked before the plain `/set`
+        // suffix-strip — `_light/set` ends in `/set` too.
+        if let Some(without_light_set) = rest.strip_suffix("/_light/set") {
+            let parts: Vec<&str> = without_light_set.split('/').collect();
+            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+                let device_id = parts[0];
+                let color_cap_id = parts[1];
+                let slider_cap_id: Option<String> = brightness_link_map
+                    .lock()
+                    .unwrap()
+                    .get(&(device_id.to_string(), color_cap_id.to_string()))
+                    .cloned();
+                dispatch_light_set(
+                    device_id,
+                    color_cap_id,
+                    slider_cap_id.as_deref(),
+                    payload,
+                    conn_mgr,
+                );
+                return;
+            }
+        }
         if let Some(without_set) = rest.strip_suffix("/set") {
             let parts: Vec<&str> = without_set.split('/').collect();
             if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
@@ -1908,6 +2236,98 @@ fn handle_inbound(
         }
     }
     log::debug!("[MQTT] Unhandled topic: {}", topic);
+}
+
+/// Split an HA `light` schema=json payload into separate WS commands for the
+/// color cap (rgb) and the linked brightness slider. `slider_cap_id` may be
+/// `None` if the link was removed between HA's discovery cache and our map
+/// — treat as a color-only payload to avoid losing the rgb update.
+///
+/// Payload shape (per HA's json schema):
+///   {"state":"ON"|"OFF", "color":{"r":N,"g":N,"b":N}, "brightness":N}
+/// `state: OFF` is conveyed to the slider as brightness=0; the color stays
+/// as the user's last setting so HA's color-after-on restore behavior works.
+fn dispatch_light_set(
+    device_id: &str,
+    color_cap_id: &str,
+    slider_cap_id: Option<&str>,
+    payload: &str,
+    conn_mgr: &ConnectionManager,
+) {
+    let parsed: Value = match serde_json::from_str(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[MQTT] _light/set payload parse failed ({} {}): {}",
+                device_id,
+                color_cap_id,
+                e
+            );
+            return;
+        }
+    };
+
+    let state_off = parsed
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.eq_ignore_ascii_case("off"))
+        .unwrap_or(false);
+
+    if let Some(color) = parsed.get("color") {
+        // Firmware color caps speak `#RRGGBB`; HA sends `{r,g,b}`. Convert
+        // here so the WS payload matches the on-device contract.
+        let value_for_device: Value = match rgb_object_to_hex(color) {
+            Some(hex) => Value::String(hex),
+            None => color.clone(),
+        };
+        let cmd = serde_json::json!({
+            "command": "set",
+            "id": color_cap_id,
+            "value": value_for_device,
+        });
+        let msg = serde_json::to_string(&cmd).unwrap_or_default();
+        if let Err(e) = conn_mgr.send_to_device(device_id, "", 0, &msg) {
+            log::warn!(
+                "[MQTT] _light/set color dispatch failed for {} {}: {}",
+                device_id,
+                color_cap_id,
+                e
+            );
+        }
+    }
+
+    if let Some(slider_cap_id) = slider_cap_id {
+        let brightness_value: Option<i64> = if state_off {
+            Some(0)
+        } else {
+            parsed
+                .get("brightness")
+                .and_then(|v| v.as_f64())
+                .map(|n| n.round() as i64)
+        };
+        if let Some(b) = brightness_value {
+            let cmd = serde_json::json!({
+                "command": "set",
+                "id": slider_cap_id,
+                "value": b,
+            });
+            let msg = serde_json::to_string(&cmd).unwrap_or_default();
+            if let Err(e) = conn_mgr.send_to_device(device_id, "", 0, &msg) {
+                log::warn!(
+                    "[MQTT] _light/set brightness dispatch failed for {} {}: {}",
+                    device_id,
+                    slider_cap_id,
+                    e
+                );
+            }
+        }
+    }
+    log::info!(
+        "[MQTT] _light/set {} color={} brightness_link={:?}",
+        device_id,
+        color_cap_id,
+        slider_cap_id
+    );
 }
 
 /// Build a Trellis WS `set` command from an MQTT payload and send it via
@@ -2053,6 +2473,64 @@ fn value_to_mqtt_payload(value: &Value) -> Vec<u8> {
         Value::String(s) => s.clone().into_bytes(),
         other => serde_json::to_string(other).unwrap_or_default().into_bytes(),
     }
+}
+
+/// Build the merged JSON payload published to a linked color cap's
+/// `_light/state` topic. Combines the latest seen color and brightness for
+/// the pair into HA's json-schema light payload. State is `OFF` when
+/// brightness is known to be 0; otherwise `ON` (HA tolerates both as long
+/// as `brightness` and `color` line up). Color comes in as the firmware's
+/// `#RRGGBB` hex string and is converted to `{r,g,b}` here so HA's rgb mode
+/// reads it directly.
+fn build_merged_light_payload(
+    color: &Option<Value>,
+    brightness: &Option<i64>,
+) -> String {
+    let state = match brightness {
+        Some(0) => "OFF",
+        _ => "ON",
+    };
+    let mut obj = serde_json::Map::new();
+    obj.insert("state".into(), Value::String(state.into()));
+    if let Some(c) = color {
+        let rgb = hex_to_rgb_object(c).unwrap_or_else(|| c.clone());
+        obj.insert("color".into(), rgb);
+        obj.insert("color_mode".into(), Value::String("rgb".into()));
+    }
+    if let Some(b) = brightness {
+        obj.insert("brightness".into(), serde_json::json!(b));
+    }
+    serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|_| "{}".into())
+}
+
+/// Parse a `#RRGGBB` hex string into a serde_json `{"r":N,"g":N,"b":N}`
+/// object, or return `None` for inputs that aren't a 7-char hash-prefixed
+/// hex. Already-parsed rgb objects are passed through by the caller (see
+/// `build_merged_light_payload`); only the firmware-side hex string shape
+/// hits this branch.
+fn hex_to_rgb_object(value: &Value) -> Option<Value> {
+    let hex = value.as_str()?;
+    if hex.len() != 7 || !hex.starts_with('#') {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
+    let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
+    let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
+    Some(serde_json::json!({"r": r, "g": g, "b": b}))
+}
+
+/// Format a serde_json `{"r":N,"g":N,"b":N}` object as the `#RRGGBB` hex
+/// string the firmware's color-cap WS handler expects. Returns `None` when
+/// the input doesn't match that shape — caller falls back to passing the
+/// raw value through, which the firmware will reject on its own.
+fn rgb_object_to_hex(value: &Value) -> Option<String> {
+    let r = value.get("r")?.as_u64()?;
+    let g = value.get("g")?.as_u64()?;
+    let b = value.get("b")?.as_u64()?;
+    if r > 255 || g > 255 || b > 255 {
+        return None;
+    }
+    Some(format!("#{:02X}{:02X}{:02X}", r, g, b))
 }
 
 #[cfg(test)]
@@ -2377,5 +2855,123 @@ mod tests {
         assert_eq!(cmd_topic, "trellis/_scene/5/run");
         // Sanity: no device ID could collide with `_scene`.
         assert!(!cmd_topic.contains("trellis-"));
+    }
+
+    #[test]
+    fn merged_light_payload_state_off_when_brightness_zero() {
+        // Brightness 0 → HA expects state OFF so the entity reports off
+        // even though the color value may still be in the payload. Color
+        // arrives as the firmware's `#RRGGBB` string and is rendered as
+        // `{r,g,b}` for HA's rgb mode.
+        let payload = build_merged_light_payload(
+            &Some(serde_json::json!("#FF0000")),
+            &Some(0),
+        );
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["state"], "OFF");
+        assert_eq!(parsed["brightness"], 0);
+        assert_eq!(parsed["color"]["r"], 255);
+        assert_eq!(parsed["color"]["g"], 0);
+        assert_eq!(parsed["color"]["b"], 0);
+    }
+
+    #[test]
+    fn merged_light_payload_state_on_when_brightness_unknown() {
+        // Color side fired before brightness — HA still gets a valid ON
+        // payload (brightness defaults to retained) so the light is at
+        // least visible. Field is omitted; `color_mode` set to rgb.
+        let payload = build_merged_light_payload(
+            &Some(serde_json::json!("#00C864")),
+            &None,
+        );
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["state"], "ON");
+        assert_eq!(parsed["color_mode"], "rgb");
+        assert_eq!(parsed["color"]["g"], 200);
+        assert!(parsed.get("brightness").is_none());
+    }
+
+    #[test]
+    fn rgb_object_to_hex_round_trips_known_values() {
+        let h = rgb_object_to_hex(&serde_json::json!({"r": 255, "g": 0, "b": 128}))
+            .unwrap();
+        assert_eq!(h, "#FF0080");
+        let h2 = rgb_object_to_hex(&serde_json::json!({"r": 0, "g": 0, "b": 0}))
+            .unwrap();
+        assert_eq!(h2, "#000000");
+    }
+
+    #[test]
+    fn rgb_object_to_hex_rejects_malformed_objects() {
+        // Missing channel.
+        assert!(
+            rgb_object_to_hex(&serde_json::json!({"r": 1, "g": 2})).is_none()
+        );
+        // Out-of-range value.
+        assert!(
+            rgb_object_to_hex(&serde_json::json!({"r": 1, "g": 2, "b": 999}))
+                .is_none()
+        );
+        // Wrong type entirely.
+        assert!(rgb_object_to_hex(&serde_json::json!("nope")).is_none());
+    }
+
+    #[test]
+    fn merged_light_payload_brightness_only_omits_color_field() {
+        // Brightness slider fired before color — HA still gets brightness;
+        // missing color is fine, HA preserves its retained value.
+        let payload = build_merged_light_payload(&None, &Some(75));
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["state"], "ON");
+        assert_eq!(parsed["brightness"], 75);
+        assert!(parsed.get("color").is_none());
+        assert!(parsed.get("color_mode").is_none());
+    }
+
+    #[test]
+    fn hydrate_brightness_links_populates_both_directions() {
+        // The forward map keys by (device, color_cap) → slider; the reverse
+        // map keys by (device, slider_cap) → color. Both must be in lockstep
+        // so publish_state's lookup-by-slider works without re-scanning.
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge.hydrate_brightness_links(vec![
+            ("dev1".to_string(), "rgb".to_string(), "brightness".to_string()),
+            ("dev2".to_string(), "color".to_string(), "dim".to_string()),
+        ]);
+        {
+            let fwd = bridge.brightness_link_map.lock().unwrap();
+            assert_eq!(fwd.len(), 2);
+            assert_eq!(
+                fwd.get(&("dev1".to_string(), "rgb".to_string())).map(|s| s.as_str()),
+                Some("brightness")
+            );
+        }
+        {
+            let rev = bridge.slider_to_color_link.lock().unwrap();
+            assert_eq!(rev.len(), 2);
+            assert_eq!(
+                rev.get(&("dev2".to_string(), "dim".to_string())).map(|s| s.as_str()),
+                Some("color")
+            );
+        }
+    }
+
+    #[test]
+    fn set_brightness_link_unlink_clears_both_maps_and_cache() {
+        // Link, prime the merged-state cache, then unlink — both maps and
+        // the cache for that color cap must drop. The reverse map is the
+        // critical one to verify; getting it wrong would silently break
+        // publish_state's lookup-by-slider after an unlink.
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge.set_brightness_link("dev1", "brightness", Some("rgb".to_string()));
+        // Prime the cache like publish_state would.
+        bridge.light_state_cache.lock().unwrap().insert(
+            ("dev1".to_string(), "rgb".to_string()),
+            (Some(serde_json::json!({"r": 1, "g": 2, "b": 3})), Some(50)),
+        );
+        bridge.set_brightness_link("dev1", "brightness", None);
+        assert!(bridge.brightness_link_map.lock().unwrap().is_empty());
+        assert!(bridge.slider_to_color_link.lock().unwrap().is_empty());
+        assert!(bridge.light_state_cache.lock().unwrap().is_empty());
     }
 }

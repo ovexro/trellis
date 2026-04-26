@@ -66,6 +66,13 @@ pub struct CapabilityMeta {
     pub binary_sensor_device_class: Option<String>,
     #[serde(default)]
     pub cover_position: bool,
+    /// HA `light` brightness linkage (v0.27.0). Set on the slider row to
+    /// reference a color cap on the same device — the linked color cap then
+    /// publishes a single HA `light` entity carrying both rgb and brightness
+    /// channels, and this slider's separate `number`/`cover` entity is
+    /// retracted. NULL = standalone slider.
+    #[serde(default)]
+    pub brightness_for_cap_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -817,7 +824,8 @@ impl Database {
         let mut stmt = conn
             .prepare(
                 "SELECT capability_id, nameplate_watts, linear_power, slider_max,
-                        binary_sensor, binary_sensor_device_class, cover_position
+                        binary_sensor, binary_sensor_device_class, cover_position,
+                        brightness_for_cap_id
                  FROM capability_meta
                  WHERE device_id = ?1",
             )
@@ -832,6 +840,7 @@ impl Database {
                     binary_sensor: row.get::<_, i64>(4)? != 0,
                     binary_sensor_device_class: row.get(5)?,
                     cover_position: row.get::<_, i64>(6)? != 0,
+                    brightness_for_cap_id: row.get(7)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -944,6 +953,62 @@ impl Database {
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Upsert the HA `light` brightness linkage for a slider capability.
+    /// `link_target` carries the color cap's `capability_id` (must be on the
+    /// same device); `None` clears the link. The bridge promotes the linked
+    /// color cap's discovery to an HA `light` with brightness fields and
+    /// retracts this slider's separate `number`/`cover` entity. Independent
+    /// of energy / cover / binary_sensor fields.
+    pub fn set_capability_brightness_link(
+        &self,
+        device_id: &str,
+        slider_capability_id: &str,
+        link_target: Option<String>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO capability_meta (device_id, capability_id, brightness_for_cap_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_id, capability_id)
+             DO UPDATE SET brightness_for_cap_id = excluded.brightness_for_cap_id",
+            rusqlite::params![device_id, slider_capability_id, link_target],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Every (device_id, color_capability_id, slider_capability_id) triple
+    /// where a slider's `brightness_for_cap_id` points at a color cap. Used
+    /// at startup to hydrate the MQTT bridge's brightness-link cache so HA
+    /// sees the unified `light` entity on first publish without a DB
+    /// round-trip per device.
+    pub fn get_all_brightness_links(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, brightness_for_cap_id, capability_id
+                 FROM capability_meta
+                 WHERE brightness_for_cap_id IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
     }
 
     /// Dedup-write a slider value transition, but only when the capability
@@ -3367,6 +3432,14 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // time; `position_closed` is 0. Independent of energy fields.
     let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN cover_position INTEGER NOT NULL DEFAULT 0", []);
 
+    // HA `light` brightness linkage (v0.27.0): when set on a slider
+    // capability, points to a color cap on the same device. The MQTT bridge
+    // promotes the color cap's HA discovery to a `light` entity with
+    // `brightness: true` + `brightness_scale = slider.max`, retracts this
+    // slider's separate `number`/`cover` entity, and merges color + slider
+    // state into a synthetic `_light/state` topic that HA subscribes to.
+    let _ = conn.execute("ALTER TABLE capability_meta ADD COLUMN brightness_for_cap_id TEXT", []);
+
     // Capability-level favorites (post-v0.6.0 — replaces device-level favorite for granular pinning)
     conn.execute_batch("
         CREATE TABLE IF NOT EXISTS favorite_capabilities (
@@ -3714,6 +3787,7 @@ mod tests {
                 binary_sensor INTEGER NOT NULL DEFAULT 0,
                 binary_sensor_device_class TEXT,
                 cover_position INTEGER NOT NULL DEFAULT 0,
+                brightness_for_cap_id TEXT,
                 PRIMARY KEY (device_id, capability_id)
              );
              CREATE TABLE capability_state_log (
@@ -4903,5 +4977,114 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, "dev1");
         assert_eq!(rows[0].1, "blind");
+    }
+
+    #[test]
+    fn brightness_link_default_null_for_new_meta_row() {
+        // Any meta row created via another setter must leave
+        // brightness_for_cap_id at NULL — the link is opt-in.
+        let db = new_test_db();
+        db.set_capability_watts("dev1", "brightness", Some(15.0))
+            .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.capability_id == "brightness")
+            .unwrap();
+        assert!(row.brightness_for_cap_id.is_none());
+    }
+
+    #[test]
+    fn set_capability_brightness_link_persists_and_round_trips() {
+        let db = new_test_db();
+        db.set_capability_brightness_link(
+            "dev1",
+            "brightness",
+            Some("rgb".to_string()),
+        )
+        .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.capability_id == "brightness")
+            .unwrap();
+        assert_eq!(row.brightness_for_cap_id.as_deref(), Some("rgb"));
+    }
+
+    #[test]
+    fn set_capability_brightness_link_unlink_clears_field() {
+        // Opt-in then opt-out — column flips back to NULL. Mirrors the
+        // cover/binary_sensor opt-out tests so future setters can't drift.
+        let db = new_test_db();
+        db.set_capability_brightness_link(
+            "dev1",
+            "brightness",
+            Some("rgb".to_string()),
+        )
+        .unwrap();
+        db.set_capability_brightness_link("dev1", "brightness", None)
+            .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.capability_id == "brightness")
+            .unwrap();
+        assert!(row.brightness_for_cap_id.is_none());
+    }
+
+    #[test]
+    fn brightness_link_independent_of_other_meta_fields() {
+        // brightness_for_cap_id must be independently settable from
+        // nameplate_watts / linear_power / slider_max / cover_position so
+        // toggling the link doesn't clobber the energy-tracking setup that
+        // a slider may already participate in.
+        let db = new_test_db();
+        db.set_capability_watts("dev1", "brightness", Some(15.0))
+            .unwrap();
+        db.set_capability_linear_power("dev1", "brightness", true, Some(255.0))
+            .unwrap();
+        db.set_capability_brightness_link(
+            "dev1",
+            "brightness",
+            Some("rgb".to_string()),
+        )
+        .unwrap();
+        let rows = db.get_device_capability_meta("dev1").unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.capability_id == "brightness")
+            .unwrap();
+        assert_eq!(row.nameplate_watts, Some(15.0));
+        assert!(row.linear_power);
+        assert_eq!(row.slider_max, Some(255.0));
+        assert_eq!(row.brightness_for_cap_id.as_deref(), Some("rgb"));
+    }
+
+    #[test]
+    fn get_all_brightness_links_returns_only_linked_rows() {
+        let db = new_test_db();
+        db.set_capability_brightness_link(
+            "dev1",
+            "brightness",
+            Some("rgb".to_string()),
+        )
+        .unwrap();
+        // A slider that was linked then unlinked — get_all must skip it.
+        db.set_capability_brightness_link(
+            "dev1",
+            "scratch_slider",
+            Some("rgb".to_string()),
+        )
+        .unwrap();
+        db.set_capability_brightness_link("dev1", "scratch_slider", None)
+            .unwrap();
+        // A row that only has cover_position — must not appear.
+        db.set_capability_cover("dev2", "blind", true).unwrap();
+        let rows = db.get_all_brightness_links().unwrap();
+        assert_eq!(rows.len(), 1);
+        // Triple shape is (device_id, color_cap_id, slider_cap_id).
+        assert_eq!(rows[0].0, "dev1");
+        assert_eq!(rows[0].1, "rgb");
+        assert_eq!(rows[0].2, "brightness");
     }
 }

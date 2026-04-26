@@ -1272,6 +1272,9 @@
     // HA cover-routing opt-in for slider caps in the open detail panel.
     // Map capId → bool (true == published as HA cover).
     var detailCover = {};
+    // HA `light` brightness link for slider caps in the open detail panel.
+    // Map sliderCapId → colorCapId (string when linked, absent when standalone).
+    var detailBrightnessLink = {};
     var detailEnergyRange = 24;
     var detailEnergyReport = null;
     var energyTariff = null; // { costPerKwh: number|null, currency: string } once loaded
@@ -2316,7 +2319,8 @@
             </div>
           </div>
           <div class="cap-watts-row" id="capWatts-${esc(deviceId)}-${esc(cap.id)}" data-slider-max="${max}"></div>
-          <div class="cap-binsensor-row" id="capCover-${esc(deviceId)}-${esc(cap.id)}"></div>`;
+          <div class="cap-binsensor-row" id="capCover-${esc(deviceId)}-${esc(cap.id)}"></div>
+          <div class="cap-binsensor-row" id="capBrightLinked-${esc(deviceId)}-${esc(cap.id)}"></div>`;
         }
 
         case 'sensor': {
@@ -2338,7 +2342,8 @@
               <input type="color" value="${esc(cap.value || '#000000')}"
                 ${isViewer ? 'disabled style="opacity:0.5;cursor:not-allowed"' : `onchange="sendColor(event, '${esc(deviceId)}', '${esc(cap.id)}', this.value)"`}>
             </div>
-          </div>`;
+          </div>
+          <div class="cap-binsensor-row" id="capBrightLink-${esc(deviceId)}-${esc(cap.id)}"></div>`;
 
         case 'text':
           return `<div class="control-row">
@@ -3858,6 +3863,9 @@
           if (m.cover_position) {
             detailCover[m.capability_id] = true;
           }
+          if (m.brightness_for_cap_id) {
+            detailBrightnessLink[m.capability_id] = m.brightness_for_cap_id;
+          }
         }
       }
       if (dev.capabilities) {
@@ -3868,8 +3876,11 @@
           }
           if (sc.type === 'slider') {
             renderCapCover(id, sc.id);
+            renderCapBrightLinked(id, sc.id, dev);
           } else if (sc.type === 'sensor') {
             renderCapBinSensor(id, sc.id);
+          } else if (sc.type === 'color') {
+            renderCapBrightLink(id, sc.id, dev);
           }
         }
       }
@@ -4163,6 +4174,111 @@
         renderCapCover(deviceId, capId);
       } catch (e) {
         toast('Failed to save cover_position: ' + (e.message || e), 'error');
+      }
+    }
+
+    /* HA `light` brightness link dropdown under each color cap. Lists every
+       slider on the same device; selecting one promotes the color cap +
+       slider into a unified HA light entity. Persists via the same PUT
+       endpoint targeting the SLIDER row's brightness_for_cap_id column. */
+    function renderCapBrightLink(deviceId, colorCapId, dev) {
+      var el = document.getElementById('capBrightLink-' + deviceId + '-' + colorCapId);
+      if (!el) return;
+      var sliderOpts = (dev && dev.capabilities ? dev.capabilities : [])
+        .filter(function(c) { return c.type === 'slider'; });
+      // Reverse lookup: which slider currently points at this color cap?
+      var linkedSliderCapId = null;
+      for (var s in detailBrightnessLink) {
+        if (detailBrightnessLink[s] === colorCapId) {
+          linkedSliderCapId = s;
+          break;
+        }
+      }
+      var linkedLabel = null;
+      if (linkedSliderCapId) {
+        var match = sliderOpts.find(function(c) { return c.id === linkedSliderCapId; });
+        linkedLabel = match ? match.label : linkedSliderCapId;
+      }
+      if (isViewer) {
+        el.innerHTML = linkedLabel
+          ? '<span class="cap-binsensor-readout">⌁ brightness: ' + esc(linkedLabel) + '</span>'
+          : '';
+        return;
+      }
+      if (sliderOpts.length === 0 && !linkedSliderCapId) {
+        // Nothing to link — render disabled hint button.
+        el.innerHTML = '<button class="cap-binsensor-btn" type="button" disabled'
+          + ' title="No sliders on this device to link as brightness">'
+          + '<span class="cap-binsensor-icon">⌁</span>'
+          + '<span class="cap-binsensor-text dim">HA brightness link</span>'
+          + '</button>';
+        return;
+      }
+      var optsHtml = '<option value="">— none —</option>';
+      for (var i = 0; i < sliderOpts.length; i++) {
+        var sel = sliderOpts[i].id === linkedSliderCapId ? ' selected' : '';
+        optsHtml += '<option value="' + esc(sliderOpts[i].id) + '"' + sel + '>'
+          + esc(sliderOpts[i].label) + '</option>';
+      }
+      el.innerHTML = '<div class="cap-binsensor-edit">'
+        + '<label class="cap-binsensor-label">'
+        + '<span>Brightness slider:</span></label>'
+        + '<select class="cap-brightlink-select" data-prev="' + esc(linkedSliderCapId || '') + '">'
+        + optsHtml + '</select>'
+        + '<button class="watts-mini-btn ok" title="Save"'
+        + ' onclick="saveCapBrightLink(\'' + esc(deviceId) + '\',\'' + esc(colorCapId) + '\')">✓</button>'
+        + '<p class="cap-binsensor-hint">Combine this color cap with a slider into one Home Assistant <code>light</code> entity (rgb + brightness).</p>'
+        + '</div>';
+    }
+
+    /* Read-only badge on slider cap rows when the slider is the subordinate
+       half of a brightness link. Hides the slider's standalone HA entity from
+       view since it's been folded into the linked light. */
+    function renderCapBrightLinked(deviceId, sliderCapId, dev) {
+      var el = document.getElementById('capBrightLinked-' + deviceId + '-' + sliderCapId);
+      if (!el) return;
+      var colorCapId = detailBrightnessLink[sliderCapId];
+      if (!colorCapId) {
+        el.innerHTML = '';
+        return;
+      }
+      var match = (dev && dev.capabilities ? dev.capabilities : [])
+        .find(function(c) { return c.id === colorCapId; });
+      var label = match ? match.label : colorCapId;
+      el.innerHTML = '<span class="cap-binsensor-readout">⌁ brightness for '
+        + esc(label) + '</span>';
+    }
+
+    async function saveCapBrightLink(deviceId, colorCapId) {
+      var el = document.getElementById('capBrightLink-' + deviceId + '-' + colorCapId);
+      if (!el) return;
+      var selectEl = el.querySelector('.cap-brightlink-select');
+      if (!selectEl) return;
+      var prev = selectEl.getAttribute('data-prev') || '';
+      var next = selectEl.value || '';
+      try {
+        // Clear prior slider's link first when retargeting in one save.
+        if (prev && prev !== next) {
+          await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(prev) + '/meta',
+            { method: 'PUT', body: { brightness_for_cap_id: null } });
+          delete detailBrightnessLink[prev];
+        }
+        if (next) {
+          await api('/api/devices/' + encodeURIComponent(deviceId) + '/capabilities/' + encodeURIComponent(next) + '/meta',
+            { method: 'PUT', body: { brightness_for_cap_id: colorCapId } });
+          detailBrightnessLink[next] = colorCapId;
+        }
+        var dev = devices.find(function(d) { return d.id === deviceId; });
+        renderCapBrightLink(deviceId, colorCapId, dev);
+        // Re-render the slider rows so their "linked" badges update.
+        if (dev && dev.capabilities) {
+          for (var i = 0; i < dev.capabilities.length; i++) {
+            var c = dev.capabilities[i];
+            if (c.type === 'slider') renderCapBrightLinked(deviceId, c.id, dev);
+          }
+        }
+      } catch (e) {
+        toast('Failed to save brightness link: ' + (e.message || e), 'error');
       }
     }
 

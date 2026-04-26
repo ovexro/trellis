@@ -150,6 +150,7 @@ pub fn run() {
             set_capability_linear_power,
             set_capability_binary_sensor,
             set_capability_cover,
+            set_capability_brightness_link,
             get_device_capability_meta,
             get_device_energy,
             get_device_lifetime_energy,
@@ -481,6 +482,9 @@ pub fn run() {
                 }
                 if let Ok(entries) = db_state.get_all_covers() {
                     mqtt_bridge.hydrate_covers(entries);
+                }
+                if let Ok(entries) = db_state.get_all_brightness_links() {
+                    mqtt_bridge.hydrate_brightness_links(entries);
                 }
             }
 
