@@ -1,6 +1,6 @@
 [package]
 name = "trellis"
-version = "0.26.0"
+version = "0.27.0"
 description = "Desktop control center for ESP32 and Pico W devices"
 authors = ["Joshua-Ovidiu Drobota <nubiraorg@gmail.com>"]
 license = "MIT"
