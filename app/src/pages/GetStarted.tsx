@@ -214,13 +214,13 @@ export default function GetStarted() {
 
   const handleCompileAndFlash = async () => {
     if (!selectedPort) return;
-    const sketch = generateSketch(deviceName, board, capabilities);
     setCompiling(true);
     setBuildOutput("");
     setBuildError(false);
     setFlashSuccess(false);
     startTimer();
     try {
+      const sketch = await generateSketch(deviceName, board, capabilities);
       const compileOutput = await invoke<string>("compile_sketch", {
         sketch,
         board,

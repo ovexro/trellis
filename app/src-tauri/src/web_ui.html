@@ -1073,6 +1073,7 @@
         <button class="tab-btn" data-tab="automation">Automation</button>
         <button class="tab-btn" data-tab="scenes">Scenes</button>
         <button class="tab-btn" data-tab="floor-plan">Floor Plan</button>
+        <button class="tab-btn" data-tab="sketch">Sketch</button>
         <button class="tab-btn" data-tab="settings">Settings</button>
       </nav>
       <span id="viewerBadge" class="hidden" style="font-size:0.7rem;padding:0.2rem 0.6rem;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);border-radius:999px;white-space:nowrap;">Read-only</span>
@@ -1101,6 +1102,9 @@
       </button>
       <button class="tab-btn" data-tab="floor-plan">
         <span class="tab-icon">&#9634;</span>Plan
+      </button>
+      <button class="tab-btn" data-tab="sketch">
+        <span class="tab-icon">&#9881;</span>Sketch
       </button>
       <button class="tab-btn" data-tab="settings">
         <span class="tab-icon">&#9776;</span>Settings
@@ -1189,6 +1193,11 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Sketch Generator Tab -->
+    <div class="tab-panel" id="panel-sketch">
+      <div id="sketchContent"></div>
     </div>
 
     <!-- Settings Tab -->
@@ -1450,6 +1459,7 @@
         if (tab === 'automation') loadAutomation();
         if (tab === 'scenes') loadScenes();
         if (tab === 'floor-plan') loadFloorPlan();
+        if (tab === 'sketch') loadSketchTab();
         if (tab === 'settings') loadSettings();
       });
     });
@@ -6098,6 +6108,231 @@
       try {
         await api('/api/floor-plans/' + fpActiveFloorId, { method: 'PUT', body: { background: '' } });
       } catch (e) { console.error('Failed to clear background:', e); }
+    }
+
+    /* ────────────────────────── Sketch Generator ────────────────────────── */
+    var sketchState = {
+      rendered: false,
+      deviceName: 'My Device',
+      board: 'esp32',
+      firmwareVersion: '',
+      caps: [],
+      sketch: '',
+      error: '',
+    };
+    const SKETCH_CAP_DEFAULTS = {
+      switch: { gpio: '2', unit: '', min: '', max: '' },
+      slider: { gpio: '25', unit: '', min: '0', max: '100' },
+      color: { gpio: '', unit: '', min: '', max: '' },
+      sensor: { gpio: '', unit: 'C', min: '', max: '' },
+      text: { gpio: '', unit: '', min: '', max: '' },
+    };
+
+    async function loadSketchTab() {
+      const container = document.getElementById('sketchContent');
+      if (!container) return;
+      if (isViewer) {
+        container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-faint);font-size:0.85rem;">The Sketch Generator requires an admin token.</div>';
+        return;
+      }
+      if (!sketchState.rendered) {
+        sketchState.rendered = true;
+        renderSketchTabShell(container);
+      }
+      await regenerateSketchPreview();
+    }
+
+    function renderSketchTabShell(container) {
+      const fieldStyle = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.6rem;color:var(--text);font-size:0.8rem;';
+      const btnSecondary = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.7rem;color:var(--text);font-size:0.75rem;cursor:pointer;';
+      const btnPrimary = 'background:var(--accent);border:none;border-radius:6px;padding:0.35rem 0.7rem;color:#fff;font-size:0.75rem;cursor:pointer;';
+      container.innerHTML =
+        '<div style="margin-bottom:1rem;">' +
+          '<h2 style="margin:0 0 0.3rem 0;font-size:1.05rem;">Sketch Generator</h2>' +
+          '<div style="font-size:0.8rem;color:var(--text-dim);">Pick capabilities to get a ready-to-flash Arduino sketch. Output is generated and validated by the Trellis backend.</div>' +
+        '</div>' +
+        '<div class="auto-section">' +
+          '<div class="section-title">Device</div>' +
+          '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">' +
+            '<input id="sketchDeviceName" oninput="onSketchInputChange()" placeholder="Device name" value="' + esc(sketchState.deviceName) + '" style="flex:1 1 12rem;' + fieldStyle + '" />' +
+            '<select id="sketchBoard" onchange="onSketchInputChange()" style="' + fieldStyle + '">' +
+              '<option value="esp32">ESP32</option>' +
+              '<option value="picow">Raspberry Pi Pico W</option>' +
+            '</select>' +
+            '<input id="sketchFwVersion" oninput="onSketchInputChange()" placeholder="Firmware version (optional, e.g. 1.0.0)" value="' + esc(sketchState.firmwareVersion) + '" style="flex:1 1 14rem;' + fieldStyle + '" />' +
+          '</div>' +
+        '</div>' +
+        '<div class="auto-section">' +
+          '<div class="section-title">Capabilities (<span id="sketchCapCount">' + sketchState.caps.length + '</span> / 16)</div>' +
+          '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.6rem;">' +
+            '<button onclick="addSketchCap(\'switch\')" style="' + btnSecondary + '">+ Switch</button>' +
+            '<button onclick="addSketchCap(\'slider\')" style="' + btnSecondary + '">+ Slider</button>' +
+            '<button onclick="addSketchCap(\'color\')" style="' + btnSecondary + '">+ Color</button>' +
+            '<button onclick="addSketchCap(\'sensor\')" style="' + btnSecondary + '">+ Sensor</button>' +
+            '<button onclick="addSketchCap(\'text\')" style="' + btnSecondary + '">+ Text</button>' +
+          '</div>' +
+          '<div id="sketchCapList"></div>' +
+        '</div>' +
+        '<div class="auto-section">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;gap:0.4rem;">' +
+            '<div class="section-title" style="margin:0;">Generated Sketch</div>' +
+            '<div style="display:flex;gap:0.4rem;">' +
+              '<button id="sketchCopyBtn" onclick="copySketchToClipboard()" style="' + btnSecondary + '">Copy</button>' +
+              '<button id="sketchDownloadBtn" onclick="downloadSketchIno()" style="' + btnPrimary + '">Download .ino</button>' +
+            '</div>' +
+          '</div>' +
+          '<pre id="sketchPreview" style="margin:0;padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.75rem;line-height:1.45;white-space:pre-wrap;word-break:break-word;max-height:32rem;overflow:auto;"></pre>' +
+        '</div>';
+      renderSketchCapList();
+      document.getElementById('sketchBoard').value = sketchState.board;
+    }
+
+    function onSketchInputChange() {
+      sketchState.deviceName = document.getElementById('sketchDeviceName').value;
+      sketchState.board = document.getElementById('sketchBoard').value;
+      sketchState.firmwareVersion = document.getElementById('sketchFwVersion').value;
+      regenerateSketchPreview();
+    }
+
+    function addSketchCap(type) {
+      if (sketchState.caps.length >= 16) {
+        toast('Max 16 capabilities', 'error');
+        return;
+      }
+      const count = sketchState.caps.filter(c => c.type === type).length;
+      const defaults = SKETCH_CAP_DEFAULTS[type] || { gpio:'', unit:'', min:'', max:'' };
+      sketchState.caps.push({
+        type: type,
+        id: type + '_' + count,
+        label: type.charAt(0).toUpperCase() + type.slice(1) + ' ' + (count + 1),
+        gpio: defaults.gpio,
+        unit: defaults.unit,
+        min: defaults.min,
+        max: defaults.max,
+      });
+      renderSketchCapList();
+      regenerateSketchPreview();
+    }
+
+    function removeSketchCap(idx) {
+      sketchState.caps.splice(idx, 1);
+      renderSketchCapList();
+      regenerateSketchPreview();
+    }
+
+    function updateSketchCap(idx, field, value) {
+      if (!sketchState.caps[idx]) return;
+      sketchState.caps[idx][field] = value;
+      regenerateSketchPreview();
+    }
+
+    function renderSketchCapList() {
+      const el = document.getElementById('sketchCapList');
+      if (!el) return;
+      const fieldStyle = 'background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0.3rem 0.4rem;color:var(--text);font-size:0.75rem;';
+      el.innerHTML = sketchState.caps.map((cap, i) => {
+        let extras = '';
+        if (cap.type === 'switch' || cap.type === 'slider') {
+          extras += '<input value="' + esc(cap.gpio) + '" placeholder="GPIO" oninput="updateSketchCap(' + i + ',\'gpio\',this.value)" style="width:4rem;' + fieldStyle + '" />';
+        }
+        if (cap.type === 'sensor') {
+          extras += '<input value="' + esc(cap.unit) + '" placeholder="Unit" oninput="updateSketchCap(' + i + ',\'unit\',this.value)" style="width:4.5rem;' + fieldStyle + '" />';
+          extras += '<input value="' + esc(cap.gpio) + '" placeholder="GPIO (opt.)" oninput="updateSketchCap(' + i + ',\'gpio\',this.value)" style="width:6rem;' + fieldStyle + '" />';
+        }
+        if (cap.type === 'slider') {
+          extras += '<input value="' + esc(cap.min) + '" placeholder="Min" oninput="updateSketchCap(' + i + ',\'min\',this.value)" style="width:3.5rem;' + fieldStyle + '" />';
+          extras += '<input value="' + esc(cap.max) + '" placeholder="Max" oninput="updateSketchCap(' + i + ',\'max\',this.value)" style="width:3.5rem;' + fieldStyle + '" />';
+        }
+        return '<div style="display:flex;gap:0.3rem;align-items:center;margin-bottom:0.35rem;flex-wrap:wrap;">' +
+          '<span style="width:3.5rem;font-size:0.7rem;color:var(--text-dim);text-transform:capitalize;">' + esc(cap.type) + '</span>' +
+          '<input value="' + esc(cap.id) + '" placeholder="id" oninput="updateSketchCap(' + i + ',\'id\',this.value)" style="width:7rem;' + fieldStyle + '" />' +
+          '<input value="' + esc(cap.label) + '" placeholder="label" oninput="updateSketchCap(' + i + ',\'label\',this.value)" style="flex:1 1 8rem;min-width:6rem;' + fieldStyle + '" />' +
+          extras +
+          '<button onclick="removeSketchCap(' + i + ')" title="Remove" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;line-height:1;padding:0 0.3rem;">&times;</button>' +
+        '</div>';
+      }).join('');
+      const cnt = document.getElementById('sketchCapCount');
+      if (cnt) cnt.textContent = String(sketchState.caps.length);
+    }
+
+    function sketchParseGpio(s) {
+      const n = parseInt(s, 10);
+      return Number.isFinite(n) ? n : 0;
+    }
+    function sketchParseFloatOr(s, fallback) {
+      const n = parseFloat(s);
+      return Number.isFinite(n) ? n : fallback;
+    }
+    function toSketchBackendCap(c) {
+      switch (c.type) {
+        case 'switch':
+          return { kind: 'switch', id: c.id, label: c.label, gpio: sketchParseGpio(c.gpio) };
+        case 'slider':
+          return {
+            kind: 'slider', id: c.id, label: c.label,
+            gpio: sketchParseGpio(c.gpio),
+            min: sketchParseFloatOr(c.min, 0),
+            max: sketchParseFloatOr(c.max, 100),
+          };
+        case 'color':
+          return { kind: 'color', id: c.id, label: c.label };
+        case 'sensor': {
+          const cap = { kind: 'sensor', id: c.id, label: c.label, unit: c.unit };
+          if (c.gpio && c.gpio.trim() !== '') cap.gpio = sketchParseGpio(c.gpio);
+          return cap;
+        }
+        case 'text':
+          return { kind: 'text', id: c.id, label: c.label };
+      }
+      return null;
+    }
+
+    var sketchPreviewSeq = 0;
+    async function regenerateSketchPreview() {
+      const previewEl = document.getElementById('sketchPreview');
+      if (!previewEl) return;
+      const seq = ++sketchPreviewSeq;
+      const spec = {
+        device_name: sketchState.deviceName,
+        board: sketchState.board,
+        capabilities: sketchState.caps.map(toSketchBackendCap),
+      };
+      if (sketchState.firmwareVersion) spec.firmware_version = sketchState.firmwareVersion;
+      try {
+        const r = await api('/api/sketch/generate', { method: 'POST', body: spec });
+        if (seq !== sketchPreviewSeq) return; // a newer call superseded us
+        sketchState.sketch = r.sketch;
+        sketchState.error = '';
+        previewEl.style.color = '';
+        previewEl.textContent = r.sketch;
+      } catch (e) {
+        if (seq !== sketchPreviewSeq) return;
+        sketchState.sketch = '';
+        sketchState.error = e.message;
+        previewEl.style.color = '#fbbf24';
+        previewEl.textContent = "Sketch can't be generated:\n\n" + e.message;
+      }
+    }
+
+    function copySketchToClipboard() {
+      if (!sketchState.sketch) { toast('Nothing to copy', 'error'); return; }
+      navigator.clipboard.writeText(sketchState.sketch).then(
+        () => toast('Sketch copied'),
+        () => toast('Copy failed', 'error'),
+      );
+    }
+
+    function downloadSketchIno() {
+      if (!sketchState.sketch) { toast('Nothing to download', 'error'); return; }
+      const safe = (sketchState.deviceName || 'trellis').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'trellis';
+      const blob = new Blob([sketchState.sketch], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = safe + '.ino';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
     }
 
     /* ────────────────────────── Settings ────────────────────────── */
