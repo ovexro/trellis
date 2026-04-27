@@ -284,6 +284,14 @@ pub struct MqttBridge {
     /// payloads (missing brightness keeps the prior value).
     light_state_cache:
         Arc<Mutex<HashMap<(String, String), (Option<Value>, Option<i64>)>>>,
+    /// Last `_light/state` payload string actually put on the wire per
+    /// linked color cap. The periodic `publish_state` retransmit (~5s)
+    /// drives identity-valued calls into `update_merged_light_state`; this
+    /// cache lets the bridge skip republishing when the merged JSON is
+    /// byte-identical to the prior emit. Lifecycle is in lockstep with
+    /// `light_state_cache` (cleared on hydrate, dropped per-color on
+    /// unlink) so a relink always starts with an unconditional first emit.
+    last_published_light_state: Arc<Mutex<HashMap<(String, String), String>>>,
     /// Wired in by `lib.rs` setup hook (mirrors the Sinric bridge pattern).
     /// The MQTT worker thread needs this to look up scenes from the DB when
     /// an HA button press arrives on the `<base_topic>/_scene/<id>/run` topic
@@ -326,6 +334,7 @@ impl MqttBridge {
             brightness_link_map: Arc::new(Mutex::new(HashMap::new())),
             slider_to_color_link: Arc::new(Mutex::new(HashMap::new())),
             light_state_cache: Arc::new(Mutex::new(HashMap::new())),
+            last_published_light_state: Arc::new(Mutex::new(HashMap::new())),
             app_handle: Arc::new(Mutex::new(None)),
             scene_discovery_published: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -504,9 +513,11 @@ impl MqttBridge {
         let mut fwd = self.brightness_link_map.lock().unwrap();
         let mut rev = self.slider_to_color_link.lock().unwrap();
         let mut cache = self.light_state_cache.lock().unwrap();
+        let mut dedupe = self.last_published_light_state.lock().unwrap();
         fwd.clear();
         rev.clear();
         cache.clear();
+        dedupe.clear();
         for (device_id, color_cap_id, slider_cap_id) in entries {
             fwd.insert(
                 (device_id.clone(), color_cap_id.clone()),
@@ -549,6 +560,10 @@ impl MqttBridge {
                 .unwrap()
                 .remove(&(device_id.to_string(), prev.clone()));
             self.light_state_cache
+                .lock()
+                .unwrap()
+                .remove(&(device_id.to_string(), prev.clone()));
+            self.last_published_light_state
                 .lock()
                 .unwrap()
                 .remove(&(device_id.to_string(), prev.clone()));
@@ -1111,14 +1126,36 @@ impl MqttBridge {
         let merged = build_merged_light_payload(&entry.0, &entry.1);
         drop(cache);
 
+        // Dedupe: the periodic `publish_state` retransmit (~5s tick) lands
+        // here with values that haven't moved since the last emit. HA
+        // tolerates the duplicates but they churn retained-payload
+        // subscribers and add noise to mosquitto observers, so suppress
+        // the publish when the merged JSON is byte-identical to the prior
+        // emit. The cache only updates after a successful publish, so a
+        // transient broker error naturally retries on the next call.
+        if self
+            .last_published_light_state
+            .lock()
+            .unwrap()
+            .get(&key)
+            .map(String::as_str)
+            == Some(merged.as_str())
+        {
+            return;
+        }
+
         let topic =
             format!("{}/{}/{}/_light/state", cfg.base_topic, device_id, color_cap_id);
         if let Err(e) =
-            client.publish(&topic, QoS::AtLeastOnce, true, merged.into_bytes())
+            client.publish(&topic, QoS::AtLeastOnce, true, merged.clone().into_bytes())
         {
             log::warn!("[MQTT] _light publish {} failed: {}", topic, e);
         } else {
             self.status.lock().unwrap().messages_published += 1;
+            self.last_published_light_state
+                .lock()
+                .unwrap()
+                .insert(key, merged);
         }
     }
 
@@ -2964,14 +3001,41 @@ mod tests {
         // publish_state's lookup-by-slider after an unlink.
         let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
         bridge.set_brightness_link("dev1", "brightness", Some("rgb".to_string()));
-        // Prime the cache like publish_state would.
+        // Prime both caches like a successful publish_state would.
         bridge.light_state_cache.lock().unwrap().insert(
             ("dev1".to_string(), "rgb".to_string()),
             (Some(serde_json::json!({"r": 1, "g": 2, "b": 3})), Some(50)),
+        );
+        bridge.last_published_light_state.lock().unwrap().insert(
+            ("dev1".to_string(), "rgb".to_string()),
+            "{\"state\":\"ON\"}".to_string(),
         );
         bridge.set_brightness_link("dev1", "brightness", None);
         assert!(bridge.brightness_link_map.lock().unwrap().is_empty());
         assert!(bridge.slider_to_color_link.lock().unwrap().is_empty());
         assert!(bridge.light_state_cache.lock().unwrap().is_empty());
+        assert!(
+            bridge.last_published_light_state.lock().unwrap().is_empty(),
+            "dedupe cache must drop on unlink so a relink's first emit is unconditional"
+        );
+    }
+
+    #[test]
+    fn hydrate_brightness_links_clears_dedupe_cache() {
+        // hydrate-from-DB is the reload-everything path; any prior
+        // last-published payload is stale and would suppress the first
+        // post-reload emit. Must be cleared in lockstep with the other
+        // maps the function rebuilds.
+        let bridge = MqttBridge::new(Arc::new(ConnectionManager::new()));
+        bridge.last_published_light_state.lock().unwrap().insert(
+            ("devA".to_string(), "rgb".to_string()),
+            "{\"state\":\"ON\",\"brightness\":42}".to_string(),
+        );
+        bridge.hydrate_brightness_links(vec![(
+            "devA".to_string(),
+            "rgb".to_string(),
+            "dim".to_string(),
+        )]);
+        assert!(bridge.last_published_light_state.lock().unwrap().is_empty());
     }
 }
