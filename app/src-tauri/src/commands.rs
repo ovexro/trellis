@@ -9,6 +9,7 @@ use crate::ota::{self, OtaRegistry};
 use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
 use crate::sinric::{SinricBridge, SinricConfig, SinricConfigPublic, SinricStatus};
+use crate::lib_manifest::{self, LibManifest};
 use crate::sketch_gen::{self, SketchSpec};
 use serde::Serialize;
 use serde_json::Value;
@@ -1588,7 +1589,13 @@ pub async fn run_terminal_command(command: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn generate_sketch_command(spec: SketchSpec) -> Result<String, String> {
+    lib_manifest::validate_capability_kinds(&spec)?;
     sketch_gen::generate(&spec)
+}
+
+#[tauri::command]
+pub fn get_sketch_lib_info_command() -> LibManifest {
+    lib_manifest::current().clone()
 }
 
 // ─── Quick Flash (arduino-cli integration) ─────────────────────────────────

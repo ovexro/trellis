@@ -6119,6 +6119,7 @@
       caps: [],
       sketch: '',
       error: '',
+      libManifest: null,
     };
     const SKETCH_CAP_DEFAULTS = {
       switch: { gpio: '2', unit: '', min: '', max: '' },
@@ -6127,6 +6128,13 @@
       sensor: { gpio: '', unit: 'C', min: '', max: '' },
       text: { gpio: '', unit: '', min: '', max: '' },
     };
+    const SKETCH_CAP_LABELS = {
+      switch: 'Switch',
+      slider: 'Slider',
+      color: 'Color',
+      sensor: 'Sensor',
+      text: 'Text',
+    };
 
     async function loadSketchTab() {
       const container = document.getElementById('sketchContent');
@@ -6134,6 +6142,13 @@
       if (isViewer) {
         container.innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text-faint);font-size:0.85rem;">The Sketch Generator requires an admin token.</div>';
         return;
+      }
+      if (!sketchState.libManifest) {
+        try {
+          sketchState.libManifest = await api('/api/sketch/lib-info');
+        } catch (e) {
+          sketchState.libManifest = null;
+        }
       }
       if (!sketchState.rendered) {
         sketchState.rendered = true;
@@ -6146,18 +6161,30 @@
       const fieldStyle = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.6rem;color:var(--text);font-size:0.8rem;';
       const btnSecondary = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.7rem;color:var(--text);font-size:0.75rem;cursor:pointer;';
       const btnPrimary = 'background:var(--accent);border:none;border-radius:6px;padding:0.35rem 0.7rem;color:#fff;font-size:0.75rem;cursor:pointer;';
+      const lm = sketchState.libManifest;
+      const manifestKinds = lm ? lm.capabilities : ['switch', 'slider', 'color', 'sensor', 'text'];
+      const manifestBoards = lm ? lm.boards : [{ id: 'esp32', label: 'ESP32' }, { id: 'picow', label: 'Raspberry Pi Pico W' }];
+      const libBadge = lm
+        ? '<div data-testid="lib-manifest-badge" style="font-size:0.7rem;color:var(--text-faint);margin-top:0.25rem;">Library: ' + esc(lm.library) + ' ' + esc(lm.version) + '</div>'
+        : '';
+      const boardOptions = manifestBoards
+        .map(function (b) { return '<option value="' + esc(b.id) + '">' + esc(b.label) + '</option>'; })
+        .join('');
+      const capButtons = manifestKinds
+        .map(function (k) { return '<button onclick="addSketchCap(\'' + esc(k) + '\')" style="' + btnSecondary + '">+ ' + esc(SKETCH_CAP_LABELS[k] || k) + '</button>'; })
+        .join('');
       container.innerHTML =
         '<div style="margin-bottom:1rem;">' +
           '<h2 style="margin:0 0 0.3rem 0;font-size:1.05rem;">Sketch Generator</h2>' +
           '<div style="font-size:0.8rem;color:var(--text-dim);">Pick capabilities to get a ready-to-flash Arduino sketch. Output is generated and validated by the Trellis backend.</div>' +
+          libBadge +
         '</div>' +
         '<div class="auto-section">' +
           '<div class="section-title">Device</div>' +
           '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">' +
             '<input id="sketchDeviceName" oninput="onSketchInputChange()" placeholder="Device name" value="' + esc(sketchState.deviceName) + '" style="flex:1 1 12rem;' + fieldStyle + '" />' +
             '<select id="sketchBoard" onchange="onSketchInputChange()" style="' + fieldStyle + '">' +
-              '<option value="esp32">ESP32</option>' +
-              '<option value="picow">Raspberry Pi Pico W</option>' +
+              boardOptions +
             '</select>' +
             '<input id="sketchFwVersion" oninput="onSketchInputChange()" placeholder="Firmware version (optional, e.g. 1.0.0)" value="' + esc(sketchState.firmwareVersion) + '" style="flex:1 1 14rem;' + fieldStyle + '" />' +
           '</div>' +
@@ -6165,11 +6192,7 @@
         '<div class="auto-section">' +
           '<div class="section-title">Capabilities (<span id="sketchCapCount">' + sketchState.caps.length + '</span> / 16)</div>' +
           '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.6rem;">' +
-            '<button onclick="addSketchCap(\'switch\')" style="' + btnSecondary + '">+ Switch</button>' +
-            '<button onclick="addSketchCap(\'slider\')" style="' + btnSecondary + '">+ Slider</button>' +
-            '<button onclick="addSketchCap(\'color\')" style="' + btnSecondary + '">+ Color</button>' +
-            '<button onclick="addSketchCap(\'sensor\')" style="' + btnSecondary + '">+ Sensor</button>' +
-            '<button onclick="addSketchCap(\'text\')" style="' + btnSecondary + '">+ Text</button>' +
+            capButtons +
           '</div>' +
           '<div id="sketchCapList"></div>' +
         '</div>' +

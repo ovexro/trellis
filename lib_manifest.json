@@ -1,0 +1,9 @@
+{
+  "library": "Trellis",
+  "version": "0.27.0",
+  "capabilities": ["switch", "slider", "color", "sensor", "text"],
+  "boards": [
+    { "id": "esp32", "label": "ESP32" },
+    { "id": "picow", "label": "Raspberry Pi Pico W" }
+  ]
+}

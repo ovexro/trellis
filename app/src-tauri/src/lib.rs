@@ -7,6 +7,7 @@ mod db;
 mod device;
 mod diagnostics;
 mod discovery;
+mod lib_manifest;
 mod mqtt;
 mod ota;
 mod scheduler;
@@ -236,6 +237,7 @@ pub fn run() {
             compile_sketch,
             flash_sketch,
             generate_sketch_command,
+            get_sketch_lib_info_command,
             get_mqtt_config,
             set_mqtt_config,
             clear_mqtt_password,

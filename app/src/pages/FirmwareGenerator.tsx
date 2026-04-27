@@ -38,6 +38,13 @@ interface CapabilityDef {
   max: string;
 }
 
+interface LibManifest {
+  library: string;
+  version: string;
+  capabilities: string[];
+  boards: { id: string; label: string }[];
+}
+
 const CAP_ICONS = {
   switch: ToggleLeft,
   sensor: Thermometer,
@@ -89,6 +96,7 @@ export default function FirmwareGenerator() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [sketch, setSketch] = useState("");
   const [sketchError, setSketchError] = useState("");
+  const [libManifest, setLibManifest] = useState<LibManifest | null>(null);
 
   // Quick Flash state
   const [cliAvailable, setCliAvailable] = useState<string | null>(null);
@@ -112,6 +120,15 @@ export default function FirmwareGenerator() {
   const onlineDevices = devices.filter((d) => d.online);
 
   useEffect(() => { loadTemplates(); }, []);
+
+  // Library manifest is the source of truth for what capability kinds the
+  // bundled Trellis library supports. Filters the wizard's capability buttons
+  // so we never offer a kind the library doesn't have.
+  useEffect(() => {
+    invoke<LibManifest>("get_sketch_lib_info_command")
+      .then(setLibManifest)
+      .catch(() => setLibManifest(null));
+  }, []);
 
   // Check arduino-cli, deps, and load serial ports on mount
   useEffect(() => {
@@ -393,9 +410,17 @@ export default function FirmwareGenerator() {
         <h1 className="text-xl font-bold text-zinc-100 mb-1">
           New Device
         </h1>
-        <p className="text-sm text-zinc-500 mb-4">
+        <p className="text-sm text-zinc-500 mb-1">
           Pick capabilities and get a ready-to-flash Arduino sketch.
         </p>
+        {libManifest && (
+          <p
+            className="text-[11px] text-zinc-600 mb-4"
+            data-testid="lib-manifest-badge"
+          >
+            Library: {libManifest.library} {libManifest.version}
+          </p>
+        )}
 
         <div className="flex gap-1.5 mb-5">
           <button
@@ -461,19 +486,23 @@ export default function FirmwareGenerator() {
             <div className="flex flex-wrap gap-1.5">
               {(
                 Object.keys(CAP_ICONS) as Array<keyof typeof CAP_ICONS>
-              ).map((type) => {
-                const Icon = CAP_ICONS[type];
-                return (
-                  <button
-                    key={type}
-                    onClick={() => addCapability(type)}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors"
-                  >
-                    <Icon size={12} />
-                    {type}
-                  </button>
-                );
-              })}
+              )
+                .filter((type) =>
+                  libManifest ? libManifest.capabilities.includes(type) : true,
+                )
+                .map((type) => {
+                  const Icon = CAP_ICONS[type];
+                  return (
+                    <button
+                      key={type}
+                      onClick={() => addCapability(type)}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 transition-colors"
+                    >
+                      <Icon size={12} />
+                      {type}
+                    </button>
+                  );
+                })}
             </div>
           </div>
 

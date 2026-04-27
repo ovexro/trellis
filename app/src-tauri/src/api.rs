@@ -1884,6 +1884,10 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
         // handler. See the pre-auth block there for the full rationale.
 
         // ─── Sketch generator ───────────────────────────────────────
+        ("GET", "/api/sketch/lib-info") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_get_sketch_lib_info()
+        }
         ("POST", "/api/sketch/generate") => {
             if let Some(denied) = require_admin(role) { return denied; }
             handle_generate_sketch(&req.body)
@@ -2871,10 +2875,17 @@ fn handle_generate_sketch(body: &str) -> (u16, String) {
         Ok(s) => s,
         Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
     };
+    if let Err(e) = crate::lib_manifest::validate_capability_kinds(&spec) {
+        return json_error(400, &e);
+    }
     match crate::sketch_gen::generate(&spec) {
         Ok(sketch) => json_ok(&serde_json::json!({"sketch": sketch})),
         Err(e) => json_error(400, &e),
     }
+}
+
+fn handle_get_sketch_lib_info() -> (u16, String) {
+    json_ok(crate::lib_manifest::current())
 }
 
 // ─── Web UI (placeholder — will be replaced in Batch 4) ─────────────────────
