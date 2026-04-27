@@ -123,6 +123,9 @@ Single source of truth for all features. Check items as they are implemented and
 - [x] Build output panel (color-coded success/errors)
 - [x] Auto-reset on capability/board changes
 
+### Sketch Generator (post-v0.27.0)
+- [x] **Sketch generator core (post-v0.27.0)** — config-driven `.ino` template engine. New `sketch_gen` module produces a complete Arduino sketch from a `SketchSpec { device_name, firmware_version?, capabilities: [{kind, id, label, ...}] }` — kinds are `switch` / `slider` / `color` / `sensor`. Output includes the canonical `#include <Trellis.h>`, WiFi placeholders, `Trellis trellis(...)` constructor, an `onCommand` handler with stub branches per slider/color (sensors are read-only from firmware, switches are GPIO-driven by the lib), and a `setup()` body emitting one `addX` call per capability. Strict input validation: identifier `[a-zA-Z0-9_]+`, label/device-name reject newlines + quotes + backslashes, GPIO range 0-48, slider min<max with finite values, ≤16 capabilities, unique cap IDs, semver firmware_version. New Tauri command `generate_sketch_command(spec) -> Result<String, String>` + admin-gated REST `POST /api/sketch/generate` returning `{"sketch": "..."}` or `400` with descriptive error. Hardware-verified end-to-end: representative all-kinds spec generated → `arduino-cli compile --fqbn esp32:esp32:esp32` clean (90% flash, 16% RAM) AND `--fqbn rp2040:rp2040:rpipicow` clean (22% flash, 28% RAM) against the published Trellis 0.27.0 library. Wizard UI + library manifest auto-config deferred to subsequent slots. 17 new lib tests (214 → 231).
+
 ### App Shell
 - [x] Sidebar navigation
 - [x] Header with connection status

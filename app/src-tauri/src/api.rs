@@ -1883,6 +1883,12 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
         // bearer token, and the single-use nonce in the URL gates the
         // handler. See the pre-auth block there for the full rationale.
 
+        // ─── Sketch generator ───────────────────────────────────────
+        ("POST", "/api/sketch/generate") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_generate_sketch(&req.body)
+        }
+
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
     }
@@ -2857,6 +2863,17 @@ fn handle_github_ota(ctx: &ApiContext, body: &str) -> (u16, String) {
             }))
         }
         Err(e) => json_error(500, &format!("Failed to serve firmware: {}", e)),
+    }
+}
+
+fn handle_generate_sketch(body: &str) -> (u16, String) {
+    let spec: crate::sketch_gen::SketchSpec = match serde_json::from_str(body) {
+        Ok(s) => s,
+        Err(e) => return json_error(400, &format!("Invalid JSON: {}", e)),
+    };
+    match crate::sketch_gen::generate(&spec) {
+        Ok(sketch) => json_ok(&serde_json::json!({"sketch": sketch})),
+        Err(e) => json_error(400, &e),
     }
 }
 

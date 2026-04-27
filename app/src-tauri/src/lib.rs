@@ -13,6 +13,7 @@ mod scheduler;
 mod secret_store;
 mod serial;
 mod sinric;
+mod sketch_gen;
 mod webhooks;
 
 use commands::*;
@@ -234,6 +235,7 @@ pub fn run() {
             install_arduino_deps,
             compile_sketch,
             flash_sketch,
+            generate_sketch_command,
             get_mqtt_config,
             set_mqtt_config,
             clear_mqtt_password,
