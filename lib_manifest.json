@@ -1,6 +1,6 @@
 {
   "library": "Trellis",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "capabilities": ["switch", "slider", "color", "sensor", "text"],
   "boards": [
     { "id": "esp32", "label": "ESP32" },
