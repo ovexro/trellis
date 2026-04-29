@@ -1685,49 +1685,100 @@ pub fn check_arduino_deps(board: String) -> Result<serde_json::Value, String> {
     let core_list = String::from_utf8_lossy(&core_output.stdout).to_string();
     let core_installed = core_list.contains(core_name);
 
-    // Check Trellis library
-    let lib_output = std::process::Command::new("arduino-cli")
-        .args(["lib", "list"])
+    // Check Trellis library — prefer JSON output so we can surface the
+    // installed version and compare it against the bundled manifest.
+    let lib_output_json = std::process::Command::new("arduino-cli")
+        .args(["lib", "list", "--format", "json"])
         .output()
         .map_err(|e| format!("Failed to check libraries: {}", e))?;
-    let lib_list = String::from_utf8_lossy(&lib_output.stdout).to_string();
-    let trellis_installed = lib_list.contains("Trellis");
-    let ardjson_installed = lib_list.contains("ArduinoJson");
-    let websockets_installed = lib_list.contains("WebSockets");
+    let json_text = String::from_utf8_lossy(&lib_output_json.stdout).to_string();
+    let parsed = serde_json::from_str::<serde_json::Value>(&json_text).ok();
+
+    let manifest_version = lib_manifest::current().version.clone();
+    let trellis_installed_version = installed_lib_version(parsed.as_ref(), "Trellis");
+    let ardjson_installed = installed_lib_version(parsed.as_ref(), "ArduinoJson").is_some();
+    let websockets_installed = installed_lib_version(parsed.as_ref(), "WebSockets").is_some();
+
+    // Fallback: if JSON parse failed, fall back to a substring check on the
+    // text-format `lib list` so the wizard still works on older arduino-cli
+    // versions. In that case we can't compute a version match, so report
+    // `version_match=true` to avoid a false-positive mismatch warning.
+    let (trellis_installed, version_match, installed_version_out) = match parsed {
+        Some(_) => {
+            let installed = trellis_installed_version.is_some();
+            let matches = trellis_installed_version
+                .as_deref()
+                .map(|v| v == manifest_version)
+                .unwrap_or(true); // not installed → no mismatch to flag
+            (installed, matches, trellis_installed_version)
+        }
+        None => {
+            let text_output = std::process::Command::new("arduino-cli")
+                .args(["lib", "list"])
+                .output()
+                .map_err(|e| format!("Failed to check libraries: {}", e))?;
+            let lib_list = String::from_utf8_lossy(&text_output.stdout).to_string();
+            (lib_list.contains("Trellis"), true, None)
+        }
+    };
 
     Ok(serde_json::json!({
         "fqbn": fqbn,
         "core_installed": core_installed,
         "core_name": core_name,
         "trellis_installed": trellis_installed,
+        "trellis_installed_version": installed_version_out,
+        "trellis_expected_version": manifest_version,
+        "trellis_version_match": version_match,
         "arduinojson_installed": ardjson_installed,
         "websockets_installed": websockets_installed,
     }))
 }
 
+/// Look up an installed library's version string in the JSON output of
+/// `arduino-cli lib list --format json`. Returns `None` if the input is
+/// missing/malformed or the library is not installed.
+fn installed_lib_version(parsed: Option<&serde_json::Value>, name: &str) -> Option<String> {
+    let arr = parsed?.get("installed_libraries")?.as_array()?;
+    for entry in arr {
+        let Some(lib) = entry.get("library") else { continue };
+        if lib.get("name").and_then(|v| v.as_str()) == Some(name) {
+            return lib.get("version").and_then(|v| v.as_str()).map(String::from);
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn install_arduino_deps(deps: Vec<String>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
+        let manifest_version = lib_manifest::current().version.clone();
         let mut results = Vec::new();
         for dep in &deps {
-            let (cmd_type, name) = if dep.contains(':') {
-                ("core", dep.as_str())
+            let cmd_type = if dep.contains(':') { "core" } else { "lib" };
+
+            // Pin Trellis to the version declared by the bundled manifest so
+            // the wizard's compile resolves the same library API the desktop
+            // binary was built against. Other libs (ArduinoJson, WebSockets)
+            // and board cores stay unpinned — they're user tooling, not ours.
+            let install_arg = if dep == "Trellis" {
+                format!("Trellis@{}", manifest_version)
             } else {
-                ("lib", dep.as_str())
+                dep.clone()
             };
 
             let output = std::process::Command::new("arduino-cli")
-                .args([cmd_type, "install", name])
+                .args([cmd_type, "install", &install_arg])
                 .output()
-                .map_err(|e| format!("Failed to install {}: {}", name, e))?;
+                .map_err(|e| format!("Failed to install {}: {}", install_arg, e))?;
 
             let out = String::from_utf8_lossy(&output.stdout).to_string();
             let err = String::from_utf8_lossy(&output.stderr).to_string();
 
             if output.status.success() {
-                results.push(format!("Installed {}", name));
+                results.push(format!("Installed {}", install_arg));
             } else {
-                return Err(format!("Failed to install {}: {}{}", name, out, err));
+                return Err(format!("Failed to install {}: {}{}", install_arg, out, err));
             }
         }
         Ok(results.join("\n"))
@@ -1850,4 +1901,66 @@ pub fn duplicate_scene(
         state.mqtt_bridge.publish_scene_discovery(new_id, &scene.name);
     }
     Ok(new_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::installed_lib_version;
+    use serde_json::json;
+
+    fn sample_lib_list() -> serde_json::Value {
+        json!({
+            "installed_libraries": [
+                { "library": { "name": "Trellis", "version": "0.27.0" } },
+                { "library": { "name": "ArduinoJson", "version": "7.0.4" } },
+            ]
+        })
+    }
+
+    #[test]
+    fn extracts_trellis_version() {
+        let v = installed_lib_version(Some(&sample_lib_list()), "Trellis");
+        assert_eq!(v.as_deref(), Some("0.27.0"));
+    }
+
+    #[test]
+    fn returns_none_for_missing_library() {
+        let v = installed_lib_version(Some(&sample_lib_list()), "WebSockets");
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn returns_none_when_input_is_none() {
+        assert_eq!(installed_lib_version(None, "Trellis"), None);
+    }
+
+    #[test]
+    fn returns_none_when_installed_libraries_missing() {
+        let v = installed_lib_version(Some(&json!({})), "Trellis");
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn skips_malformed_entries_and_keeps_searching() {
+        // First entry has no `library` key — must NOT abort the iteration.
+        let blob = json!({
+            "installed_libraries": [
+                { "not_library": "junk" },
+                { "library": { "name": "Trellis", "version": "0.28.0" } },
+            ]
+        });
+        let v = installed_lib_version(Some(&blob), "Trellis");
+        assert_eq!(v.as_deref(), Some("0.28.0"));
+    }
+
+    #[test]
+    fn returns_none_when_library_lacks_version() {
+        let blob = json!({
+            "installed_libraries": [
+                { "library": { "name": "Trellis" } }
+            ]
+        });
+        let v = installed_lib_version(Some(&blob), "Trellis");
+        assert_eq!(v, None);
+    }
 }

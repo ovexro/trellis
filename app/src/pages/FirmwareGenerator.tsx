@@ -112,6 +112,9 @@ export default function FirmwareGenerator() {
   const [depsChecked, setDepsChecked] = useState(false);
   const [missingDeps, setMissingDeps] = useState<string[]>([]);
   const [installingDeps, setInstallingDeps] = useState(false);
+  const [trellisInstalledVersion, setTrellisInstalledVersion] = useState<string | null>(null);
+  const [trellisExpectedVersion, setTrellisExpectedVersion] = useState<string | null>(null);
+  const [trellisVersionMatch, setTrellisVersionMatch] = useState(true);
   const [elapsedTime, setElapsedTime] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
@@ -201,6 +204,9 @@ export default function FirmwareGenerator() {
         core_installed: boolean;
         core_name: string;
         trellis_installed: boolean;
+        trellis_installed_version: string | null;
+        trellis_expected_version: string;
+        trellis_version_match: boolean;
         arduinojson_installed: boolean;
         websockets_installed: boolean;
       }>("check_arduino_deps", { board: boardType });
@@ -211,9 +217,29 @@ export default function FirmwareGenerator() {
       if (!result.arduinojson_installed) missing.push("ArduinoJson");
       if (!result.websockets_installed) missing.push("WebSockets");
       setMissingDeps(missing);
+      setTrellisInstalledVersion(result.trellis_installed_version ?? null);
+      setTrellisExpectedVersion(result.trellis_expected_version);
+      setTrellisVersionMatch(result.trellis_version_match);
       setDepsChecked(true);
     } catch {
       setDepsChecked(true);
+    }
+  };
+
+  const handleUpdateTrellis = async () => {
+    setInstallingDeps(true);
+    setBuildOutput("");
+    try {
+      const output = await invoke<string>("install_arduino_deps", {
+        deps: ["Trellis"],
+      });
+      setBuildOutput(output);
+      checkDeps(board);
+    } catch (err) {
+      setBuildOutput(String(err));
+      setBuildError(true);
+    } finally {
+      setInstallingDeps(false);
     }
   };
 
@@ -706,6 +732,36 @@ export default function FirmwareGenerator() {
                       <Download size={10} />
                     )}
                     {installingDeps ? "Installing..." : "Install"}
+                  </button>
+                </div>
+              )}
+
+              {/* Trellis library version mismatch banner. Compile is not
+                  blocked — user can override and compile against the version
+                  they have, but the wizard surfaces the discrepancy. */}
+              {depsChecked
+                && !missingDeps.includes("Trellis")
+                && !trellisVersionMatch
+                && trellisInstalledVersion
+                && trellisExpectedVersion && (
+                <div
+                  data-testid="trellis-version-mismatch"
+                  className="flex items-center justify-between p-2.5 bg-amber-500/5 border border-amber-500/20 rounded-lg"
+                >
+                  <div className="text-xs text-amber-400">
+                    Trellis {trellisInstalledVersion} installed; this build expects {trellisExpectedVersion}.
+                  </div>
+                  <button
+                    onClick={handleUpdateTrellis}
+                    disabled={installingDeps}
+                    className="flex items-center gap-1 px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 rounded text-xs transition-colors"
+                  >
+                    {installingDeps ? (
+                      <Loader2 size={10} className="animate-spin" />
+                    ) : (
+                      <Download size={10} />
+                    )}
+                    {installingDeps ? "Updating..." : `Update to ${trellisExpectedVersion}`}
                   </button>
                 </div>
               )}
