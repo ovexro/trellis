@@ -6179,6 +6179,12 @@
           '<div style="font-size:0.8rem;color:var(--text-dim);">Pick capabilities to get a ready-to-flash Arduino sketch. Output is generated and validated by the Trellis backend.</div>' +
           libBadge +
         '</div>' +
+        '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">' +
+          '<button id="sketchExportTplBtn" data-testid="export-template-btn" onclick="exportSketchTemplate()" style="' + btnSecondary + '">Export template</button>' +
+          '<button id="sketchImportTplBtn" data-testid="import-template-btn" onclick="importSketchTemplate()" style="' + btnSecondary + '">Import template</button>' +
+          '<input id="sketchImportTplInput" type="file" accept=".json,application/json" onchange="onSketchImportFileChosen(event)" style="display:none;" data-testid="import-template-input" />' +
+        '</div>' +
+        '<div id="sketchImportNotices"></div>' +
         '<div class="auto-section">' +
           '<div class="section-title">Device</div>' +
           '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;">' +
@@ -6356,6 +6362,165 @@
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+    }
+
+    /* Template export/import — JSON-wrapped SketchSpec for share + restore. */
+    const SKETCH_TEMPLATE_FORMAT = 1;
+    function exportSketchTemplate() {
+      if (!sketchState.caps || sketchState.caps.length === 0) {
+        toast('Add at least one capability first', 'error');
+        return;
+      }
+      const payload = {
+        trellis_template_format: SKETCH_TEMPLATE_FORMAT,
+        manifest_version: sketchState.libManifest ? sketchState.libManifest.version : '',
+        spec: {
+          device_name: sketchState.deviceName,
+          board: sketchState.board,
+          capabilities: sketchState.caps.map(function (c) {
+            return {
+              type: c.type, id: c.id, label: c.label,
+              gpio: c.gpio || '', unit: c.unit || '', min: c.min || '', max: c.max || '',
+            };
+          }),
+        },
+      };
+      if (sketchState.firmwareVersion) payload.spec.firmware_version = sketchState.firmwareVersion;
+      const slug = (sketchState.deviceName || 'template').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'template';
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = slug + '.trellis-template.json';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 100);
+    }
+
+    function importSketchTemplate() {
+      renderSketchImportNotices({ error: '', mismatch: '', warnings: [] });
+      const input = document.getElementById('sketchImportTplInput');
+      if (input) input.click();
+    }
+
+    async function onSketchImportFileChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const result = parseSketchTemplate(text);
+        sketchState.deviceName = result.spec.device_name;
+        sketchState.board = result.spec.board;
+        if (result.spec.firmware_version) {
+          sketchState.firmwareVersion = result.spec.firmware_version;
+        } else {
+          sketchState.firmwareVersion = '';
+        }
+        sketchState.caps = result.spec.capabilities;
+        // Re-render to reflect imported state.
+        const container = document.getElementById('sketchContent');
+        if (container) {
+          sketchState.rendered = true;
+          renderSketchTabShell(container);
+        }
+        const installed = sketchState.libManifest ? sketchState.libManifest.version : '';
+        const mismatch = (result.manifestVersionInFile && installed && result.manifestVersionInFile !== installed)
+          ? result.manifestVersionInFile
+          : '';
+        renderSketchImportNotices({ error: '', mismatch: mismatch, warnings: result.warnings });
+        regenerateSketchPreview();
+      } catch (e) {
+        renderSketchImportNotices({ error: e.message || String(e), mismatch: '', warnings: [] });
+      }
+    }
+
+    function parseSketchTemplate(text) {
+      let parsed;
+      try { parsed = JSON.parse(text); } catch (e) { throw new Error('File is not valid JSON.'); }
+      if (!parsed || typeof parsed !== 'object') throw new Error('Template file must be a JSON object.');
+      if (parsed.trellis_template_format !== SKETCH_TEMPLATE_FORMAT) {
+        throw new Error('Unrecognized template format (expected ' + SKETCH_TEMPLATE_FORMAT + ', got ' + String(parsed.trellis_template_format) + ').');
+      }
+      const manifestVersionInFile = typeof parsed.manifest_version === 'string' ? parsed.manifest_version : '';
+      const sr = parsed.spec;
+      if (!sr || typeof sr !== 'object') throw new Error('Template file is missing a "spec" object.');
+      if (typeof sr.device_name !== 'string' || !sr.device_name) throw new Error('Template "spec.device_name" is missing or not a string.');
+      if (!Array.isArray(sr.capabilities)) throw new Error('Template "spec.capabilities" must be an array.');
+      const lm = sketchState.libManifest;
+      const knownKinds = new Set(lm ? lm.capabilities : ['switch','slider','color','sensor','text']);
+      const knownBoards = new Set(lm ? lm.boards.map(function (b) { return b.id; }) : ['esp32','picow']);
+      const warnings = [];
+      let board;
+      if (typeof sr.board === 'string' && knownBoards.has(sr.board)) {
+        board = sr.board;
+      } else {
+        if (typeof sr.board === 'string' && sr.board) {
+          warnings.push('Board "' + sr.board + '" is not supported by the installed library; falling back to esp32.');
+        } else {
+          warnings.push('Template "spec.board" missing; falling back to esp32.');
+        }
+        board = 'esp32';
+      }
+      const caps = [];
+      for (const raw of sr.capabilities) {
+        if (!raw || typeof raw !== 'object') {
+          warnings.push('Skipped a capability that was not an object.');
+          continue;
+        }
+        const type = typeof raw.type === 'string' ? raw.type : '';
+        if (!knownKinds.has(type)) {
+          warnings.push('Skipped capability "' + (raw.id || '?') + '": kind "' + (type || '?') + '" is not supported by the installed library.');
+          continue;
+        }
+        caps.push({
+          type: type,
+          id: typeof raw.id === 'string' ? raw.id : '',
+          label: typeof raw.label === 'string' ? raw.label : '',
+          gpio: typeof raw.gpio === 'string' ? raw.gpio : '',
+          unit: typeof raw.unit === 'string' ? raw.unit : '',
+          min: typeof raw.min === 'string' ? raw.min : '',
+          max: typeof raw.max === 'string' ? raw.max : '',
+        });
+      }
+      const spec = { device_name: sr.device_name, board: board, capabilities: caps };
+      if (typeof sr.firmware_version === 'string') spec.firmware_version = sr.firmware_version;
+      return { spec: spec, manifestVersionInFile: manifestVersionInFile, warnings: warnings };
+    }
+
+    function renderSketchImportNotices(state) {
+      const host = document.getElementById('sketchImportNotices');
+      if (!host) return;
+      let html = '';
+      if (state.error) {
+        html += '<div data-testid="template-import-error" style="margin-bottom:0.6rem;padding:0.5rem 0.7rem;background:rgba(127,29,29,0.25);border:1px solid rgba(153,27,27,0.55);border-radius:6px;color:#fca5a5;font-size:0.75rem;display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start;">' +
+          '<span>Import failed: ' + esc(state.error) + '</span>' +
+          '<button onclick="dismissSketchImportNotice()" style="background:none;border:none;color:#fca5a5;cursor:pointer;font-size:1rem;line-height:1;">&times;</button>' +
+        '</div>';
+      }
+      if (state.mismatch) {
+        const installed = sketchState.libManifest ? sketchState.libManifest.version : '';
+        html += '<div data-testid="template-manifest-mismatch" style="margin-bottom:0.6rem;padding:0.5rem 0.7rem;background:rgba(120,53,15,0.25);border:1px solid rgba(146,64,14,0.55);border-radius:6px;color:#fcd34d;font-size:0.75rem;display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start;">' +
+          '<span>Template was saved against Trellis ' + esc(state.mismatch) + "; you're on " + esc(installed) + '. Capability set may differ.</span>' +
+          '<button onclick="dismissSketchImportNotice()" style="background:none;border:none;color:#fcd34d;cursor:pointer;font-size:1rem;line-height:1;">&times;</button>' +
+        '</div>';
+      }
+      if (state.warnings && state.warnings.length > 0) {
+        html += '<div data-testid="template-import-warnings" style="margin-bottom:0.6rem;padding:0.5rem 0.7rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-size:0.75rem;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.25rem;">' +
+            '<span style="color:var(--text);">Imported with warnings:</span>' +
+            '<button onclick="dismissSketchImportNotice()" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;line-height:1;">&times;</button>' +
+          '</div>' +
+          '<ul style="margin:0;padding-left:1rem;">' +
+            state.warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') +
+          '</ul>' +
+        '</div>';
+      }
+      host.innerHTML = html;
+    }
+
+    function dismissSketchImportNotice() {
+      renderSketchImportNotices({ error: '', mismatch: '', warnings: [] });
     }
 
     /* ────────────────────────── Settings ────────────────────────── */

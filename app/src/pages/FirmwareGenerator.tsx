@@ -4,6 +4,12 @@ import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import type { SerialPortInfo } from "@/lib/types";
 import { generateSketch } from "@/lib/sketchGenerator";
+import {
+  buildTemplateJson,
+  parseTemplateJson,
+  templateFileName,
+  TEMPLATE_FILE_EXT,
+} from "@/lib/sketchTemplate";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   Cpu,
@@ -26,6 +32,8 @@ import {
   Terminal as TerminalIcon,
   Loader2,
   Download,
+  FileDown,
+  FileUp,
 } from "lucide-react";
 
 interface CapabilityDef {
@@ -116,8 +124,12 @@ export default function FirmwareGenerator() {
   const [trellisExpectedVersion, setTrellisExpectedVersion] = useState<string | null>(null);
   const [trellisVersionMatch, setTrellisVersionMatch] = useState(true);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [importManifestMismatch, setImportManifestMismatch] = useState<string | null>(null);
+  const [importError, setImportError] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const { devices } = useDeviceStore();
   const onlineDevices = devices.filter((d) => d.online);
@@ -299,6 +311,70 @@ export default function FirmwareGenerator() {
     loadTemplates();
   };
 
+  const exportTemplate = () => {
+    if (capabilities.length === 0) return;
+    const manifestVersion = libManifest?.version ?? "";
+    const json = buildTemplateJson(
+      { device_name: deviceName, board, capabilities },
+      manifestVersion,
+    );
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = templateFileName(deviceName);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importTemplate = () => {
+    setImportError("");
+    importInputRef.current?.click();
+  };
+
+  const onImportFileChosen = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const knownKinds = libManifest
+        ? libManifest.capabilities
+        : ["switch", "slider", "color", "sensor", "text"];
+      const knownBoards = libManifest
+        ? libManifest.boards.map((b) => b.id)
+        : ["esp32", "picow"];
+      const result = parseTemplateJson(text, knownKinds, knownBoards);
+      setDeviceName(result.spec.device_name);
+      setBoard(result.spec.board);
+      setCapabilities(result.spec.capabilities);
+      setImportWarnings(result.warnings);
+      setImportError("");
+      const installed = libManifest?.version ?? "";
+      if (
+        result.manifestVersionInFile &&
+        installed &&
+        result.manifestVersionInFile !== installed
+      ) {
+        setImportManifestMismatch(result.manifestVersionInFile);
+      } else {
+        setImportManifestMismatch(null);
+      }
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err));
+      setImportWarnings([]);
+      setImportManifestMismatch(null);
+    }
+  };
+
+  const dismissImportNotice = () => {
+    setImportWarnings([]);
+    setImportManifestMismatch(null);
+    setImportError("");
+  };
+
   const addCapability = (type: CapabilityDef["type"]) => {
     const count = capabilities.filter((c) => c.type === type).length;
     const defaults = CAP_DEFAULTS[type];
@@ -448,7 +524,7 @@ export default function FirmwareGenerator() {
           </p>
         )}
 
-        <div className="flex gap-1.5 mb-5">
+        <div className="flex gap-1.5 mb-3 flex-wrap">
           <button
             onClick={() => setShowTemplates(!showTemplates)}
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
@@ -462,7 +538,68 @@ export default function FirmwareGenerator() {
           >
             <Save size={12} /> Save as template
           </button>
+          <button
+            data-testid="export-template-btn"
+            onClick={exportTemplate}
+            disabled={capabilities.length === 0}
+            title={`Export as ${TEMPLATE_FILE_EXT}`}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
+          >
+            <FileDown size={12} /> Export
+          </button>
+          <button
+            data-testid="import-template-btn"
+            onClick={importTemplate}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
+          >
+            <FileUp size={12} /> Import
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={onImportFileChosen}
+            style={{ display: "none" }}
+            data-testid="import-template-input"
+          />
         </div>
+
+        {importError && (
+          <div
+            data-testid="template-import-error"
+            className="mb-3 p-2.5 bg-red-950/40 border border-red-900/50 rounded-lg text-[11px] text-red-300 flex items-start justify-between gap-2"
+          >
+            <span>Import failed: {importError}</span>
+            <button onClick={dismissImportNotice} className="text-red-400 hover:text-red-200">×</button>
+          </div>
+        )}
+        {importManifestMismatch && (
+          <div
+            data-testid="template-manifest-mismatch"
+            className="mb-3 p-2.5 bg-amber-950/40 border border-amber-900/50 rounded-lg text-[11px] text-amber-300 flex items-start justify-between gap-2"
+          >
+            <span>
+              Template was saved against Trellis {importManifestMismatch}; you're on {libManifest?.version}. Capability set may differ.
+            </span>
+            <button onClick={dismissImportNotice} className="text-amber-400 hover:text-amber-200">×</button>
+          </div>
+        )}
+        {importWarnings.length > 0 && (
+          <div
+            data-testid="template-import-warnings"
+            className="mb-3 p-2.5 bg-zinc-800/70 border border-zinc-700/50 rounded-lg text-[11px] text-zinc-400"
+          >
+            <div className="flex items-start justify-between gap-2 mb-1">
+              <span className="text-zinc-300">Imported with warnings:</span>
+              <button onClick={dismissImportNotice} className="text-zinc-500 hover:text-zinc-300">×</button>
+            </div>
+            <ul className="list-disc pl-4 space-y-0.5">
+              {importWarnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {showTemplates && templates.length > 0 && (
           <div className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
