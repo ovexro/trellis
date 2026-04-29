@@ -70,8 +70,14 @@ Then open any example sketch from `examples/` and upload to your board.
 ## Code Style
 
 - **Rust**: `cargo fmt` + `cargo clippy` before committing
-- **TypeScript/React**: ESLint + Prettier (config in app/)
+- **TypeScript/React**: keep imports sorted, prefer functional components, no implicit `any`. Run `npx tsc --noEmit` from `app/` to type-check before committing
 - **C++**: Arduino conventions, PascalCase for classes, camelCase for methods
+
+## Tests
+
+- **Rust** (the desktop backend): `cd app/src-tauri && cargo test --lib` runs the full lib-test suite (currently 246 tests covering db, sketch generator, lib manifest, MQTT bridge, webhooks, alerts, etc.)
+- **Frontend**: no test runner is currently configured; coverage of UI flows is via headless-Chrome CDP smokes during development. If you add a runner (vitest is the natural fit), open an issue first so we can decide on the testing scope together
+- **Integration**: every feature change should be exercised against a real ESP32 or Pico W before merge. The Tauri app's `:9090` embedded web UI is the easiest end-to-end surface to test against
 
 ## Commit Messages
 
@@ -80,8 +86,14 @@ Use concise, descriptive commit messages:
 - `fix: handle WebSocket reconnection on device sleep`
 - `docs: add protocol specification`
 
+Conventional-commit scope prefixes are encouraged for cross-cutting changes: `feat(mqtt): ...`, `feat(sketch-gen): ...`, `chore: bump version to X.Y.Z`.
+
 ## Testing with Hardware
 
 Always test changes against real hardware before marking a feature complete:
 - ESP32 at `/dev/ttyUSB0`
 - Pico 2 at `/dev/ttyACM0`
+
+## Releases
+
+Releases are user-initiated. Each cut bumps version in 7 files (`library.properties`, `library.json`, `app/package.json`, `app/src-tauri/Cargo.toml`, `app/src-tauri/tauri.conf.json`, `src/Trellis.h`, `lib_manifest.json`), refreshes `Cargo.lock`, updates `CHANGELOG.md`, then tags via `scripts/release-library.sh vX.Y.Z`. Three endpoints sync: GitHub Release (.deb/.rpm/.AppImage built by CI), Arduino Library Manager (auto-indexed within hours), PlatformIO Registry (manual `pio pkg publish .`).
