@@ -28,7 +28,7 @@ void setup() {
   trellis.addSwitch("pump", "Water Pump", 13);
   trellis.addSensor("temp", "Temperature", "C");
   trellis.addSlider("fan", "Fan Speed", 0, 100, 25);
-  trellis.begin("MyWiFi", "password");
+  trellis.beginAutoConnect();   // captive-AP WiFi provisioning, no creds in source
 }
 
 void loop() {
@@ -38,6 +38,8 @@ void loop() {
 ```
 
 The desktop app discovers your device via mDNS, reads its capability declaration, and renders the right controls — toggle for the pump, gauge for temperature, slider for fan speed.
+
+**Don't want to write this by hand?** The desktop app and embedded `:9090` web dashboard ship a [**Sketch Generator**](#sketch-generator) — pick capabilities from a form, get a ready-to-flash `.ino`. Save the spec to a portable JSON file, share it, restore it on any install.
 
 ## Dependencies
 
@@ -77,6 +79,17 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 
 ## Features
 
+### Sketch Generator
+
+The flagship of recent releases. Skip the boilerplate — build a device from a form.
+
+- **Form to `.ino`** — pick a board (ESP32 / Pico W), add capabilities (switch, slider, color, sensor, text), set GPIOs and labels, get a complete Arduino sketch with `#include <Trellis.h>`, the constructor, an `onCommand` handler, captive-AP WiFi provisioning, and one `addX` call per capability
+- **Live preview** — every change re-renders the source pane; backend validation surfaces inline ("Sketch can't be generated: …")
+- **Compile & Flash from the app** — `arduino-cli` integration handles board cores + library deps; click once to compile, click again to flash to a USB-connected board
+- **Library version pin (v0.29.0)** — the desktop binary embeds a `lib_manifest.json` declaring exactly which Trellis library version it was built against. The wizard pins `arduino-cli lib install Trellis@<version>` so a wizard-compiled sketch always binds to the same API the manifest advertises. If the installed library drifts from the manifest, an amber banner with a one-click "Update" appears
+- **Portable templates (v0.29.0)** — save your spec to a `.trellis-template.json` file, share it (forum, Slack, Git), import it back on any install. The wrapper format carries a manifest version stamp so an older template imported into a newer Trellis surfaces a "saved against X.Y.Z, you're on A.B.C" warning instead of a silent mismatch
+- **Two surfaces** — both the desktop wizard and the embedded `:9090` web dashboard's Sketch tab call the same backend, so onboarding and standalone generation emit byte-identical sketches
+
 ### Desktop App
 - **Auto-discovery** — continuous mDNS scanning, devices appear automatically
 - **Live updates** — persistent WebSocket connections, real-time sensor data
@@ -84,18 +97,21 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 - **Auto-generated controls** — switches, sliders, sensors, color pickers, text
 - **Interactive charts** — time-series sensor data with range picker, hover tooltips, event annotations (OTA/online/offline markers), click-through to logs
 - **Uptime timeline** — visual ribbon showing online/offline history with stats
+- **Energy tracking** — per-switch nameplate watts + WS-captured on/off transitions yield estimated kWh; offline-aware (won't credit a switch that was on while the device was unreachable). Optional cost-per-kWh + currency renders a $-cost line. 24h / 7d / 30d windows
+- **Floor plans** — drag your devices onto a 2D plan of your space; per-room chips group, filter, and scope automation. Build a "Scene from {Room}" with one click — auto-scaffolds a scene targeting every controllable capability in the filtered room
 - **Severity-filtered logs** — chip row (All/Events/State/Error/Warn/Info/Debug)
 - **Serial monitor** — full USB serial terminal with live streaming
 - **OTA updates** — local file upload or pull firmware from any GitHub Release (.bin/.bin.gz)
-- **Onboarding wizard** — 4-step guided setup with 5 starter templates and Quick Flash
-- **MQTT bridge** — mirror devices to any MQTT broker with Home Assistant auto-discovery
-- **Remote access** — reach devices from anywhere via Cloudflare Tunnel or Tailscale Funnel
+- **Onboarding wizard** — 4-step guided setup with 5 bundled starter templates and Quick Flash; uses the same backend as the standalone Sketch Generator
+- **MQTT bridge + Home Assistant integration** — mirror every device to any MQTT broker with full HA auto-discovery: switches, sliders, sensors (incl. `binary_sensor` opt-in with device classes), sliders routed to HA `cover` for blinds/positions, color caps + brightness sliders combined into a single HA `light` entity with rgb + brightness, and every Trellis scene appears as an HA `button` entity
+- **Voice control via Sinric Pro** — Alexa + Google Assistant work out of the box. Map a Trellis device + capability to a Sinric voice device with one dropdown
+- **Remote access** — reach your devices from anywhere via Cloudflare Tunnel or Tailscale Funnel; token-aware web UI, reachability probe
 - **API tokens + RBAC** — Bearer token auth, admin/viewer roles, rate limiting, token TTL
+- **Automation** — scheduled actions (cron), conditional rules with `if device.metric > threshold then ...`, scenes (multi-action, multi-device), webhooks (POST to URL on real events: device.online, device.offline, ota_applied, alert.triggered, sensor.update — fired by the backend, not the browser, so they keep working when the desktop is closed)
+- **Alerts + push notifications** — threshold alerts evaluated server-side (debounced), ntfy.sh push, desktop notifications, webhook fan-out — all from one rule
 - **Device persistence** — nicknames, tags, known devices survive restarts
 - **Search & filter** — find devices by name, IP, platform, chip, tags
-- **Automation** — scheduled actions (cron), conditional rules, webhooks
-- **Push notifications** — ntfy.sh integration, per-device filtering
-- **Web dashboard** — responsive UI at `:9090` with WebSocket push, works on phones
+- **Web dashboard** — responsive UI at `:9090` with WebSocket push, works on phones; mirrors every desktop feature including the Sketch Generator
 - **System tray** — app runs in background, click to restore
 - **Dark theme** — clean, modern UI with green accent
 
@@ -107,9 +123,9 @@ Download from [GitHub Releases](https://github.com/ovexro/trellis/releases):
 - **WebSocket** — real-time bidirectional communication
 - **Embedded web dashboard** — open `http://<device-ip>/` from any phone or laptop browser. Auto-renders all your switches, sliders, sensors, color picker and text fields with live WebSocket updates. No desktop app required, no install.
 - **NVS persistence** — switch and slider values survive reboots on ESP32
-- **WiFi provisioning** — captive portal AP mode with stored credentials
+- **WiFi provisioning** — `beginAutoConnect()` opens a captive-portal AP on first boot; user picks SSID + password from any phone; credentials stored in NVS for subsequent boots
 - **Live broadcasts** — periodic sensor values + system telemetry
-- **Device logging** — logInfo()/logWarn()/logError() sent to desktop app
+- **Device logging** — `logInfo()` / `logWarn()` / `logError()` sent to desktop app
 - **OTA ready** — firmware updates from the desktop app (ESP32)
 - **System metrics** — RSSI, free heap, uptime reported automatically
 
