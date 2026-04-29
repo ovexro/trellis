@@ -6121,7 +6121,29 @@
       error: '',
       libManifest: null,
       marketplace: null,
+      tplDescription: '',
+      tplIcon: '',
+      tplAuthor: '',
+      showTplMetadata: false,
     };
+    try {
+      const raw = localStorage.getItem('trellis_template_metadata');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.description === 'string') sketchState.tplDescription = parsed.description;
+        if (typeof parsed.icon === 'string') sketchState.tplIcon = parsed.icon;
+        if (typeof parsed.author === 'string') sketchState.tplAuthor = parsed.author;
+      }
+    } catch (e) { /* ignore corrupted localStorage */ }
+    function persistSketchTplMetadata() {
+      try {
+        localStorage.setItem('trellis_template_metadata', JSON.stringify({
+          description: sketchState.tplDescription,
+          icon: sketchState.tplIcon,
+          author: sketchState.tplAuthor,
+        }));
+      } catch (e) { /* ignore */ }
+    }
     const SKETCH_CAP_DEFAULTS = {
       switch: { gpio: '2', unit: '', min: '', max: '' },
       slider: { gpio: '25', unit: '', min: '0', max: '100' },
@@ -6191,9 +6213,16 @@
           '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace' + (sketchState.marketplace && sketchState.marketplace.length ? ' (' + sketchState.marketplace.length + ')' : '') + '</button>' +
           '<button id="sketchExportTplBtn" data-testid="export-template-btn" onclick="exportSketchTemplate()" style="' + btnSecondary + '">Export template</button>' +
           '<button id="sketchImportTplBtn" data-testid="import-template-btn" onclick="importSketchTemplate()" style="' + btnSecondary + '">Import template</button>' +
+          '<button id="sketchTplMetadataBtn" data-testid="template-metadata-btn" onclick="toggleSketchTplMetadata()" style="' + btnSecondary + '">' + (sketchState.showTplMetadata ? '▾' : '▸') + ' Metadata</button>' +
           '<input id="sketchImportTplInput" type="file" accept=".json,application/json" onchange="onSketchImportFileChosen(event)" style="display:none;" data-testid="import-template-input" />' +
         '</div>' +
         '<div id="sketchMarketplacePanel" style="display:none;margin-bottom:0.75rem;"></div>' +
+        '<div id="sketchTplMetadataPanel" data-testid="template-metadata-panel" style="display:' + (sketchState.showTplMetadata ? 'block' : 'none') + ';margin-bottom:0.75rem;padding:0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;">' +
+          '<div style="font-size:0.7rem;color:var(--text-faint);margin-bottom:0.4rem;">Optional metadata travels with the exported template file. Cleared fields are dropped from the JSON.</div>' +
+          '<input id="sketchTplAuthor" data-testid="tpl-meta-author" oninput="onSketchTplMetaInput(\'tplAuthor\', this.value)" placeholder="Author (e.g. your name or @handle)" value="' + esc(sketchState.tplAuthor) + '" style="width:100%;margin-bottom:0.35rem;' + fieldStyle + '" />' +
+          '<input id="sketchTplIcon" data-testid="tpl-meta-icon" oninput="onSketchTplMetaInput(\'tplIcon\', this.value)" placeholder="Icon (lightbulb, thermometer, zap, cloud-sun, sprout, …)" value="' + esc(sketchState.tplIcon) + '" style="width:100%;margin-bottom:0.35rem;' + fieldStyle + '" />' +
+          '<textarea id="sketchTplDescription" data-testid="tpl-meta-description" oninput="onSketchTplMetaInput(\'tplDescription\', this.value)" placeholder="Short description of what this template does" rows="2" style="width:100%;resize:vertical;' + fieldStyle + '">' + esc(sketchState.tplDescription) + '</textarea>' +
+        '</div>' +
         '<div id="sketchImportNotices"></div>' +
         '<div class="auto-section">' +
           '<div class="section-title">Device</div>' +
@@ -6457,6 +6486,9 @@
         },
       };
       if (sketchState.firmwareVersion) payload.spec.firmware_version = sketchState.firmwareVersion;
+      if (sketchState.tplDescription && sketchState.tplDescription.trim()) payload.spec.description = sketchState.tplDescription.trim();
+      if (sketchState.tplIcon && sketchState.tplIcon.trim()) payload.spec.icon = sketchState.tplIcon.trim();
+      if (sketchState.tplAuthor && sketchState.tplAuthor.trim()) payload.spec.author = sketchState.tplAuthor.trim();
       const slug = (sketchState.deviceName || 'template').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'template';
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -6489,6 +6521,15 @@
           sketchState.firmwareVersion = '';
         }
         sketchState.caps = result.spec.capabilities;
+        // Pre-fill metadata fields with imported values so re-export carries them.
+        if (typeof result.spec.description === 'string') sketchState.tplDescription = result.spec.description;
+        if (typeof result.spec.icon === 'string') sketchState.tplIcon = result.spec.icon;
+        if (typeof result.spec.author === 'string') sketchState.tplAuthor = result.spec.author;
+        persistSketchTplMetadata();
+        const importedMeta = {};
+        if (result.spec.description) importedMeta.description = result.spec.description;
+        if (result.spec.icon) importedMeta.icon = result.spec.icon;
+        if (result.spec.author) importedMeta.author = result.spec.author;
         // Re-render to reflect imported state.
         const container = document.getElementById('sketchContent');
         if (container) {
@@ -6499,7 +6540,10 @@
         const mismatch = (result.manifestVersionInFile && installed && result.manifestVersionInFile !== installed)
           ? result.manifestVersionInFile
           : '';
-        renderSketchImportNotices({ error: '', mismatch: mismatch, warnings: result.warnings });
+        renderSketchImportNotices({
+          error: '', mismatch: mismatch, warnings: result.warnings,
+          importedMeta: Object.keys(importedMeta).length > 0 ? importedMeta : null,
+        });
         regenerateSketchPreview();
       } catch (e) {
         renderSketchImportNotices({ error: e.message || String(e), mismatch: '', warnings: [] });
@@ -6556,7 +6600,26 @@
       }
       const spec = { device_name: sr.device_name, board: board, capabilities: caps };
       if (typeof sr.firmware_version === 'string') spec.firmware_version = sr.firmware_version;
+      if (typeof sr.description === 'string') spec.description = sr.description;
+      else if (sr.description !== undefined) warnings.push('Template "spec.description" was not a string; ignored.');
+      if (typeof sr.icon === 'string') spec.icon = sr.icon;
+      else if (sr.icon !== undefined) warnings.push('Template "spec.icon" was not a string; ignored.');
+      if (typeof sr.author === 'string') spec.author = sr.author;
+      else if (sr.author !== undefined) warnings.push('Template "spec.author" was not a string; ignored.');
       return { spec: spec, manifestVersionInFile: manifestVersionInFile, warnings: warnings };
+    }
+
+    function toggleSketchTplMetadata() {
+      sketchState.showTplMetadata = !sketchState.showTplMetadata;
+      const panel = document.getElementById('sketchTplMetadataPanel');
+      const btn = document.getElementById('sketchTplMetadataBtn');
+      if (panel) panel.style.display = sketchState.showTplMetadata ? 'block' : 'none';
+      if (btn) btn.textContent = (sketchState.showTplMetadata ? '▾' : '▸') + ' Metadata';
+    }
+
+    function onSketchTplMetaInput(field, value) {
+      sketchState[field] = value;
+      persistSketchTplMetadata();
     }
 
     function renderSketchImportNotices(state) {
@@ -6585,6 +6648,17 @@
           '<ul style="margin:0;padding-left:1rem;">' +
             state.warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') +
           '</ul>' +
+        '</div>';
+      }
+      if (state.importedMeta) {
+        const m = state.importedMeta;
+        const lines = [];
+        if (m.author) lines.push('Author: <span style="color:var(--text);">' + esc(m.author) + '</span>');
+        if (m.icon) lines.push('Icon: <span style="color:var(--text);">' + esc(m.icon) + '</span>');
+        if (m.description) lines.push('Description: <span style="color:var(--text);">' + esc(m.description) + '</span>');
+        html += '<div data-testid="template-import-metadata" style="margin-bottom:0.6rem;padding:0.5rem 0.7rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-size:0.75rem;display:flex;justify-content:space-between;gap:0.5rem;align-items:flex-start;">' +
+          '<div><div style="color:var(--text);margin-bottom:0.25rem;">Imported template metadata:</div>' + lines.map(function (l) { return '<div>' + l + '</div>'; }).join('') + '</div>' +
+          '<button onclick="dismissSketchImportNotice()" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:1rem;line-height:1;">&times;</button>' +
         '</div>';
       }
       host.innerHTML = html;

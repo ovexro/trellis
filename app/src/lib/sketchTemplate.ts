@@ -9,6 +9,9 @@ export interface SketchTemplateSpec {
   device_name: string;
   board: SketchBoard;
   firmware_version?: string;
+  description?: string;
+  icon?: string;
+  author?: string;
   capabilities: SketchCapability[];
 }
 
@@ -28,10 +31,22 @@ export function buildTemplateJson(
   spec: SketchTemplateSpec,
   manifestVersion: string,
 ): string {
+  // Drop empty optional metadata fields so exported JSON stays clean — an empty
+  // description/icon/author input shouldn't bloat every export. Required fields
+  // (device_name, board, capabilities) are always included.
+  const cleanSpec: SketchTemplateSpec = {
+    device_name: spec.device_name,
+    board: spec.board,
+    capabilities: spec.capabilities,
+  };
+  if (spec.firmware_version) cleanSpec.firmware_version = spec.firmware_version;
+  if (spec.description) cleanSpec.description = spec.description;
+  if (spec.icon) cleanSpec.icon = spec.icon;
+  if (spec.author) cleanSpec.author = spec.author;
   const file: SketchTemplateFile = {
     trellis_template_format: TRELLIS_TEMPLATE_FORMAT,
     manifest_version: manifestVersion,
-    spec,
+    spec: cleanSpec,
   };
   return JSON.stringify(file, null, 2);
 }
@@ -139,6 +154,21 @@ export function parseTemplateJson(
   }
   const fwVersion =
     typeof sr.firmware_version === "string" ? sr.firmware_version : undefined;
+  // Optional metadata: warn-don't-block on type mismatch so a malformed
+  // description doesn't reject an otherwise-valid template.
+  const description =
+    typeof sr.description === "string" ? sr.description : undefined;
+  if (sr.description !== undefined && typeof sr.description !== "string") {
+    warnings.push('Template "spec.description" was not a string; ignored.');
+  }
+  const icon = typeof sr.icon === "string" ? sr.icon : undefined;
+  if (sr.icon !== undefined && typeof sr.icon !== "string") {
+    warnings.push('Template "spec.icon" was not a string; ignored.');
+  }
+  const author = typeof sr.author === "string" ? sr.author : undefined;
+  if (sr.author !== undefined && typeof sr.author !== "string") {
+    warnings.push('Template "spec.author" was not a string; ignored.');
+  }
   const capsRaw = Array.isArray(sr.capabilities) ? sr.capabilities : null;
   if (capsRaw === null) {
     throw new Error('Template "spec.capabilities" must be an array.');
@@ -154,5 +184,8 @@ export function parseTemplateJson(
     capabilities: caps,
   };
   if (fwVersion !== undefined) spec.firmware_version = fwVersion;
+  if (description !== undefined) spec.description = description;
+  if (icon !== undefined) spec.icon = icon;
+  if (author !== undefined) spec.author = author;
   return { spec, manifestVersionInFile, warnings };
 }

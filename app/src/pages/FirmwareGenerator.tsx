@@ -127,6 +127,15 @@ export default function FirmwareGenerator() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [marketplace, setMarketplace] = useState<MarketplaceTemplate[]>([]);
   const [showMarketplace, setShowMarketplace] = useState(false);
+  // Optional template metadata that travels with .trellis-template.json exports.
+  // Persisted in localStorage so a user's author tag survives across sessions
+  // without needing a settings panel for it.
+  const [tplDescription, setTplDescription] = useState("");
+  const [tplIcon, setTplIcon] = useState("");
+  const [tplAuthor, setTplAuthor] = useState("");
+  const [showTplMetadata, setShowTplMetadata] = useState(false);
+  const [importMetadata, setImportMetadata] =
+    useState<{ description?: string; icon?: string; author?: string } | null>(null);
   const [sketch, setSketch] = useState("");
   const [sketchError, setSketchError] = useState("");
   const [libManifest, setLibManifest] = useState<LibManifest | null>(null);
@@ -166,6 +175,33 @@ export default function FirmwareGenerator() {
       .then(setMarketplace)
       .catch(() => setMarketplace([]));
   }, []);
+
+  // Restore last-used template metadata from localStorage on mount.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("trellis_template_metadata");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed.description === "string") setTplDescription(parsed.description);
+        if (typeof parsed.icon === "string") setTplIcon(parsed.icon);
+        if (typeof parsed.author === "string") setTplAuthor(parsed.author);
+      }
+    } catch {
+      // Ignore — corrupted localStorage shouldn't block the wizard.
+    }
+  }, []);
+
+  // Persist whenever the user changes any metadata field.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "trellis_template_metadata",
+        JSON.stringify({ description: tplDescription, icon: tplIcon, author: tplAuthor }),
+      );
+    } catch {
+      // localStorage may be full or disabled — silently skip.
+    }
+  }, [tplDescription, tplIcon, tplAuthor]);
 
   // Library manifest is the source of truth for what capability kinds the
   // bundled Trellis library supports. Filters the wizard's capability buttons
@@ -353,7 +389,14 @@ export default function FirmwareGenerator() {
     if (capabilities.length === 0) return;
     const manifestVersion = libManifest?.version ?? "";
     const json = buildTemplateJson(
-      { device_name: deviceName, board, capabilities },
+      {
+        device_name: deviceName,
+        board,
+        capabilities,
+        description: tplDescription.trim() || undefined,
+        icon: tplIcon.trim() || undefined,
+        author: tplAuthor.trim() || undefined,
+      },
       manifestVersion,
     );
     const blob = new Blob([json], { type: "application/json" });
@@ -390,6 +433,16 @@ export default function FirmwareGenerator() {
       setCapabilities(result.spec.capabilities);
       setImportWarnings(result.warnings);
       setImportError("");
+      const meta: { description?: string; icon?: string; author?: string } = {};
+      if (result.spec.description) meta.description = result.spec.description;
+      if (result.spec.icon) meta.icon = result.spec.icon;
+      if (result.spec.author) meta.author = result.spec.author;
+      setImportMetadata(Object.keys(meta).length > 0 ? meta : null);
+      // Pre-fill the export-side metadata fields with imported values so the
+      // user can edit + re-export without re-typing.
+      if (result.spec.description !== undefined) setTplDescription(result.spec.description);
+      if (result.spec.icon !== undefined) setTplIcon(result.spec.icon);
+      if (result.spec.author !== undefined) setTplAuthor(result.spec.author);
       const installed = libManifest?.version ?? "";
       if (
         result.manifestVersionInFile &&
@@ -404,6 +457,7 @@ export default function FirmwareGenerator() {
       setImportError(err instanceof Error ? err.message : String(err));
       setImportWarnings([]);
       setImportManifestMismatch(null);
+      setImportMetadata(null);
     }
   };
 
@@ -411,6 +465,7 @@ export default function FirmwareGenerator() {
     setImportWarnings([]);
     setImportManifestMismatch(null);
     setImportError("");
+    setImportMetadata(null);
   };
 
   const addCapability = (type: CapabilityDef["type"]) => {
@@ -600,6 +655,13 @@ export default function FirmwareGenerator() {
           >
             <FileUp size={12} /> Import
           </button>
+          <button
+            data-testid="template-metadata-btn"
+            onClick={() => setShowTplMetadata(!showTplMetadata)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
+          >
+            {showTplMetadata ? <ChevronDown size={12} /> : <ChevronRight size={12} />} Metadata
+          </button>
           <input
             ref={importInputRef}
             type="file"
@@ -609,6 +671,55 @@ export default function FirmwareGenerator() {
             data-testid="import-template-input"
           />
         </div>
+
+        {showTplMetadata && (
+          <div
+            data-testid="template-metadata-panel"
+            className="mb-3 p-3 bg-zinc-900/60 border border-zinc-800 rounded-xl space-y-2"
+          >
+            <p className="text-[11px] text-zinc-500 mb-1">
+              Optional metadata travels with the exported template file. Cleared
+              fields are dropped from the JSON.
+            </p>
+            <input
+              data-testid="tpl-meta-author"
+              value={tplAuthor}
+              onChange={(e) => setTplAuthor(e.target.value)}
+              placeholder="Author (e.g. your name or @handle)"
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder:text-zinc-600"
+            />
+            <input
+              data-testid="tpl-meta-icon"
+              value={tplIcon}
+              onChange={(e) => setTplIcon(e.target.value)}
+              placeholder="Icon (lightbulb, thermometer, zap, cloud-sun, sprout, …)"
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder:text-zinc-600"
+            />
+            <textarea
+              data-testid="tpl-meta-description"
+              value={tplDescription}
+              onChange={(e) => setTplDescription(e.target.value)}
+              placeholder="Short description of what this template does"
+              rows={2}
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder:text-zinc-600 resize-none"
+            />
+          </div>
+        )}
+
+        {importMetadata && (
+          <div
+            data-testid="template-import-metadata"
+            className="mb-3 p-2.5 bg-zinc-800/50 border border-zinc-700/50 rounded-lg text-[11px] text-zinc-400 flex items-start justify-between gap-2"
+          >
+            <div className="space-y-0.5">
+              <div className="text-zinc-300">Imported template metadata:</div>
+              {importMetadata.author && <div>Author: <span className="text-zinc-300">{importMetadata.author}</span></div>}
+              {importMetadata.icon && <div>Icon: <span className="text-zinc-300">{importMetadata.icon}</span></div>}
+              {importMetadata.description && <div>Description: <span className="text-zinc-300">{importMetadata.description}</span></div>}
+            </div>
+            <button onClick={dismissImportNotice} className="text-zinc-500 hover:text-zinc-300">×</button>
+          </div>
+        )}
 
         {importError && (
           <div
