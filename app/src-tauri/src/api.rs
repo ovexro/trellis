@@ -1625,6 +1625,51 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
                 Err(e) => json_error(500, &e),
             }
         }
+        ("POST", "/api/templates") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            #[derive(serde::Deserialize)]
+            struct NewTemplate {
+                name: String,
+                #[serde(default)]
+                description: String,
+                capabilities: String,
+                #[serde(default)]
+                icon: String,
+                #[serde(default)]
+                author: String,
+                #[serde(default = "default_board")]
+                board: String,
+            }
+            fn default_board() -> String { "esp32".to_string() }
+            let body: NewTemplate = match serde_json::from_str(&req.body) {
+                Ok(b) => b,
+                Err(e) => return json_error(400, &format!("Invalid template JSON: {}", e)),
+            };
+            if body.name.trim().is_empty() {
+                return json_error(400, "Template name must not be empty");
+            }
+            if body.capabilities.trim().is_empty() {
+                return json_error(400, "Template capabilities must not be empty");
+            }
+            match ctx.db.create_template(
+                &body.name, &body.description, &body.capabilities,
+                &body.icon, &body.author, &body.board,
+            ) {
+                Ok(id) => json_ok(&serde_json::json!({"id": id})),
+                Err(e) => json_error(500, &e),
+            }
+        }
+        ("DELETE", p) if p.starts_with("/api/templates/") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id: i64 = match p["/api/templates/".len()..].parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid template ID"),
+            };
+            match ctx.db.delete_template(id) {
+                Ok(()) => json_ok(&serde_json::json!({"deleted": true})),
+                Err(e) => json_error(500, &e),
+            }
+        }
 
         // ─── Alerts (global) ────────────────────────────────────────
         ("DELETE", p) if p.starts_with("/api/alerts/") => {

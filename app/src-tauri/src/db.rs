@@ -1814,11 +1814,13 @@ impl Database {
 
     pub fn create_template(
         &self, name: &str, description: &str, capabilities: &str,
+        icon: &str, author: &str, board: &str,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO device_templates (name, description, capabilities) VALUES (?1, ?2, ?3)",
-            rusqlite::params![name, description, capabilities],
+            "INSERT INTO device_templates (name, description, capabilities, icon, author, board)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![name, description, capabilities, icon, author, board],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -1826,12 +1828,14 @@ impl Database {
     pub fn get_templates(&self) -> Result<Vec<DeviceTemplate>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, capabilities, created_at FROM device_templates ORDER BY created_at DESC"
+            "SELECT id, name, description, capabilities, icon, author, board, created_at
+             FROM device_templates ORDER BY created_at DESC"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |row| {
             Ok(DeviceTemplate {
                 id: row.get(0)?, name: row.get(1)?, description: row.get(2)?,
-                capabilities: row.get(3)?, created_at: row.get(4)?,
+                capabilities: row.get(3)?, icon: row.get(4)?, author: row.get(5)?,
+                board: row.get(6)?, created_at: row.get(7)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -2992,6 +2996,9 @@ pub struct DeviceTemplate {
     pub name: String,
     pub description: String,
     pub capabilities: String,
+    pub icon: String,
+    pub author: String,
+    pub board: String,
     pub created_at: String,
 }
 
@@ -3271,6 +3278,9 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             capabilities TEXT NOT NULL,
+            icon TEXT NOT NULL DEFAULT '',
+            author TEXT NOT NULL DEFAULT '',
+            board TEXT NOT NULL DEFAULT 'esp32',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -3590,6 +3600,13 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
             ON webhook_deliveries(webhook_id, id DESC);
     ").map_err(|e| e.to_string())?;
+
+    // device_templates: promote saved templates into the marketplace grid (v0.30.0 slot 3/3).
+    // Adds the same icon/author/board metadata bundled templates carry, so saved
+    // templates render as cards alongside the curated set instead of a separate list.
+    let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN icon TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN author TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN board TEXT NOT NULL DEFAULT 'esp32'", []);
 
     // Per-capability metadata (energy tracking phase 1 — nameplate watts on switches)
     conn.execute_batch("
@@ -5086,5 +5103,120 @@ mod tests {
         assert_eq!(rows[0].0, "dev1");
         assert_eq!(rows[0].1, "rgb");
         assert_eq!(rows[0].2, "brightness");
+    }
+
+    // ─── device_templates: marketplace-shape metadata (v0.30.0 slot 3/3) ────
+
+    fn new_templates_test_db() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE device_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                capabilities TEXT NOT NULL,
+                icon TEXT NOT NULL DEFAULT '',
+                author TEXT NOT NULL DEFAULT '',
+                board TEXT NOT NULL DEFAULT 'esp32',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+        Database { conn: Mutex::new(conn) }
+    }
+
+    #[test]
+    fn create_template_round_trips_metadata() {
+        let db = new_templates_test_db();
+        let id = db
+            .create_template(
+                "Greenhouse",
+                "Soil + temp + relay",
+                "[{\"type\":\"sensor\",\"id\":\"soil\"}]",
+                "sprout",
+                "@gardener",
+                "picow",
+            )
+            .unwrap();
+        let rows = db.get_templates().unwrap();
+        assert_eq!(rows.len(), 1);
+        let t = &rows[0];
+        assert_eq!(t.id, id);
+        assert_eq!(t.name, "Greenhouse");
+        assert_eq!(t.description, "Soil + temp + relay");
+        assert_eq!(t.icon, "sprout");
+        assert_eq!(t.author, "@gardener");
+        assert_eq!(t.board, "picow");
+    }
+
+    #[test]
+    fn create_template_empty_metadata_uses_blank_strings() {
+        let db = new_templates_test_db();
+        db.create_template(
+            "Bare",
+            "",
+            "[]",
+            "",
+            "",
+            "esp32",
+        )
+        .unwrap();
+        let rows = db.get_templates().unwrap();
+        assert_eq!(rows.len(), 1);
+        let t = &rows[0];
+        // Empty strings are valid + meaningful: frontend treats "" as "no icon".
+        assert_eq!(t.icon, "");
+        assert_eq!(t.author, "");
+        assert_eq!(t.board, "esp32");
+    }
+
+    #[test]
+    fn alter_table_for_legacy_device_templates_is_idempotent() {
+        // Simulates an upgrade from a pre-v0.30.0 install where the table only had
+        // (id, name, description, capabilities, created_at). The slot 3/3 migration
+        // ADDs three columns; reapplying the migration on a freshly-migrated table
+        // must not crash the boot path.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE device_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                capabilities TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT INTO device_templates (name, description, capabilities) VALUES ('Legacy', '', '[]');",
+        )
+        .unwrap();
+        // First migration pass — adds the three columns.
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN icon TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN author TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN board TEXT NOT NULL DEFAULT 'esp32'", []);
+        // Second pass — idempotent (each ALTER errors silently because the column already exists).
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN icon TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN author TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE device_templates ADD COLUMN board TEXT NOT NULL DEFAULT 'esp32'", []);
+        // Legacy row gets defaults via the ALTER's DEFAULT clause.
+        let (icon, author, board): (String, String, String) = conn
+            .query_row(
+                "SELECT icon, author, board FROM device_templates WHERE name = 'Legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(icon, "");
+        assert_eq!(author, "");
+        assert_eq!(board, "esp32", "legacy rows must get the ESP32 default board");
+    }
+
+    #[test]
+    fn delete_template_removes_row() {
+        let db = new_templates_test_db();
+        let id = db
+            .create_template("To delete", "", "[]", "", "", "esp32")
+            .unwrap();
+        assert_eq!(db.get_templates().unwrap().len(), 1);
+        db.delete_template(id).unwrap();
+        assert_eq!(db.get_templates().unwrap().len(), 0);
     }
 }

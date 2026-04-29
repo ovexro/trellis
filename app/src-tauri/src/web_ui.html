@@ -6121,11 +6121,15 @@
       error: '',
       libManifest: null,
       marketplace: null,
+      savedTemplates: null,
       tplDescription: '',
       tplIcon: '',
       tplAuthor: '',
       showTplMetadata: false,
+      showSavePanel: false,
+      saveForm: { name: '', icon: '', author: '', description: '' },
     };
+    var SKETCH_MARKETPLACE_ICON_KEYS = ['lightbulb', 'thermometer', 'zap', 'cloud-sun', 'sprout'];
     try {
       const raw = localStorage.getItem('trellis_template_metadata');
       if (raw) {
@@ -6180,6 +6184,11 @@
           sketchState.marketplace = [];
         }
       }
+      try {
+        sketchState.savedTemplates = await api('/api/templates');
+      } catch (e) {
+        sketchState.savedTemplates = [];
+      }
       if (!sketchState.rendered) {
         sketchState.rendered = true;
         renderSketchTabShell(container);
@@ -6210,12 +6219,14 @@
           libBadge +
         '</div>' +
         '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">' +
-          '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace' + (sketchState.marketplace && sketchState.marketplace.length ? ' (' + sketchState.marketplace.length + ')' : '') + '</button>' +
+          '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + (sketchState.savedTemplates ? sketchState.savedTemplates.length : 0)) + ')</button>' +
+          '<button id="sketchSaveTplBtn" data-testid="save-template-btn" onclick="openSketchSavePanel()" style="' + btnSecondary + '">Save as template</button>' +
           '<button id="sketchExportTplBtn" data-testid="export-template-btn" onclick="exportSketchTemplate()" style="' + btnSecondary + '">Export template</button>' +
           '<button id="sketchImportTplBtn" data-testid="import-template-btn" onclick="importSketchTemplate()" style="' + btnSecondary + '">Import template</button>' +
           '<button id="sketchTplMetadataBtn" data-testid="template-metadata-btn" onclick="toggleSketchTplMetadata()" style="' + btnSecondary + '">' + (sketchState.showTplMetadata ? '▾' : '▸') + ' Metadata</button>' +
           '<input id="sketchImportTplInput" type="file" accept=".json,application/json" onchange="onSketchImportFileChosen(event)" style="display:none;" data-testid="import-template-input" />' +
         '</div>' +
+        '<div id="sketchSavePanel" data-testid="save-template-panel" style="display:none;margin-bottom:0.75rem;"></div>' +
         '<div id="sketchMarketplacePanel" style="display:none;margin-bottom:0.75rem;"></div>' +
         '<div id="sketchTplMetadataPanel" data-testid="template-metadata-panel" style="display:' + (sketchState.showTplMetadata ? 'block' : 'none') + ';margin-bottom:0.75rem;padding:0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;">' +
           '<div style="font-size:0.7rem;color:var(--text-faint);margin-bottom:0.4rem;">Optional metadata travels with the exported template file. Cleared fields are dropped from the JSON.</div>' +
@@ -6403,7 +6414,7 @@
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
     }
 
-    /* Marketplace — bundled curated catalog, single source of truth across surfaces. */
+    /* Marketplace — bundled curated catalog + saved templates, single source of truth across surfaces. */
     function toggleMarketplacePanel() {
       const panel = document.getElementById('sketchMarketplacePanel');
       if (!panel) return;
@@ -6415,25 +6426,52 @@
       }
     }
     function renderMarketplacePanel(panel) {
-      const items = sketchState.marketplace || [];
-      if (items.length === 0) {
-        panel.innerHTML = '<div style="padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--text-faint);">No marketplace templates available.</div>';
+      const bundled = sketchState.marketplace || [];
+      const saved = sketchState.savedTemplates || [];
+      if (bundled.length === 0 && saved.length === 0) {
+        panel.innerHTML = '<div style="padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--text-faint);">No templates available. Save your current capability set or import a JSON template.</div>';
         return;
       }
-      const cardStyle = 'display:flex;align-items:flex-start;gap:0.6rem;text-align:left;padding:0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text);font:inherit;width:100%;';
-      const cards = items.map(function (t) {
-        const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
-        return '<button data-testid="marketplace-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + '">' +
-          '<div style="flex:1;min-width:0;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
-              '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
-              '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
+      const cardStyle = 'display:flex;align-items:flex-start;gap:0.6rem;text-align:left;padding:0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font:inherit;width:100%;box-sizing:border-box;';
+      const sectionTitle = 'font-size:0.7rem;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;';
+      const grid = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:0.5rem;';
+      let html = '<div data-testid="marketplace-grid">';
+      if (bundled.length > 0) {
+        const bundledCards = bundled.map(function (t) {
+          const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
+          return '<button data-testid="marketplace-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + 'cursor:pointer;">' +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
+                '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
+                '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
+              '</div>' +
+              '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
             '</div>' +
-            '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
-          '</div>' +
-        '</button>';
-      }).join('');
-      panel.innerHTML = '<div data-testid="marketplace-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:0.5rem;">' + cards + '</div>';
+          '</button>';
+        }).join('');
+        html += '<div style="margin-bottom:0.75rem;"><div style="' + sectionTitle + '">Curated</div><div style="' + grid + '">' + bundledCards + '</div></div>';
+      }
+      if (saved.length > 0) {
+        const savedCards = saved.map(function (t) {
+          const idStr = String(t.id);
+          const board = t.board || 'esp32';
+          const author = t.author ? '<div style="font-size:0.65rem;color:var(--text-faint);margin-top:0.15rem;">by ' + esc(t.author) + '</div>' : '';
+          return '<div data-testid="saved-card-' + idStr + '" style="' + cardStyle + 'position:relative;">' +
+            '<button onclick="loadSavedTemplate(' + idStr + ')" style="background:none;border:none;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left;flex:1;min-width:0;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
+                '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
+                '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(board) + '</span>' +
+              '</div>' +
+              '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description || '') + '</div>' +
+              author +
+            '</button>' +
+            '<button data-testid="saved-delete-' + idStr + '" onclick="deleteSavedTemplate(' + idStr + ')" title="Delete saved template" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.85rem;padding:0.1rem 0.3rem;">×</button>' +
+          '</div>';
+        }).join('');
+        html += '<div data-testid="marketplace-saved-section"><div style="' + sectionTitle + '">My Saved</div><div style="' + grid + '">' + savedCards + '</div></div>';
+      }
+      html += '</div>';
+      panel.innerHTML = html;
     }
     function loadMarketplaceTemplate(id) {
       const items = sketchState.marketplace || [];
@@ -6462,6 +6500,128 @@
       if (countEl) countEl.textContent = String(sketchState.caps.length);
       renderSketchCapList();
       regenerateSketchPreview();
+    }
+    function loadSavedTemplate(id) {
+      const items = sketchState.savedTemplates || [];
+      const t = items.find(function (x) { return Number(x.id) === Number(id); });
+      if (!t) return;
+      try {
+        const caps = JSON.parse(t.capabilities);
+        sketchState.deviceName = t.name;
+        if (t.board === 'esp32' || t.board === 'picow') sketchState.board = t.board;
+        sketchState.caps = caps.map(function (c) {
+          return {
+            type: c.type, id: c.id, label: c.label,
+            gpio: c.gpio || '', unit: c.unit || '', min: c.min || '', max: c.max || '',
+          };
+        });
+      } catch (e) {
+        toast('Failed to load template', 'error');
+        return;
+      }
+      const panel = document.getElementById('sketchMarketplacePanel');
+      if (panel) panel.style.display = 'none';
+      const nameEl = document.getElementById('sketchDeviceName');
+      const boardEl = document.getElementById('sketchBoard');
+      if (nameEl) nameEl.value = sketchState.deviceName;
+      if (boardEl) boardEl.value = sketchState.board;
+      const countEl = document.getElementById('sketchCapCount');
+      if (countEl) countEl.textContent = String(sketchState.caps.length);
+      renderSketchCapList();
+      regenerateSketchPreview();
+    }
+    async function deleteSavedTemplate(id) {
+      if (!confirm('Delete this saved template?')) return;
+      try {
+        await api('/api/templates/' + id, { method: 'DELETE' });
+        sketchState.savedTemplates = (sketchState.savedTemplates || []).filter(function (t) { return Number(t.id) !== Number(id); });
+        const panel = document.getElementById('sketchMarketplacePanel');
+        if (panel) renderMarketplacePanel(panel);
+        const btn = document.getElementById('sketchMarketplaceBtn');
+        if (btn) btn.textContent = 'Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + sketchState.savedTemplates.length) + ')';
+      } catch (e) {
+        toast('Failed to delete template: ' + e, 'error');
+      }
+    }
+
+    /* Save-as-template — small form panel, replaces window.prompt(). */
+    function openSketchSavePanel() {
+      if (!sketchState.caps || sketchState.caps.length === 0) {
+        toast('Add at least one capability first', 'error');
+        return;
+      }
+      sketchState.showSavePanel = true;
+      sketchState.saveForm = {
+        name: sketchState.deviceName,
+        icon: '',
+        author: sketchState.tplAuthor || '',
+        description: sketchState.caps.length + ' capabilities',
+      };
+      renderSketchSavePanel();
+    }
+    function renderSketchSavePanel() {
+      const panel = document.getElementById('sketchSavePanel');
+      if (!panel) return;
+      if (!sketchState.showSavePanel) {
+        panel.style.display = 'none';
+        panel.innerHTML = '';
+        return;
+      }
+      const fieldStyle = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.6rem;color:var(--text);font-size:0.8rem;width:100%;box-sizing:border-box;';
+      const btnSecondary = 'background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.7rem;color:var(--text);font-size:0.75rem;cursor:pointer;';
+      const btnPrimary = 'background:var(--accent);border:none;border-radius:6px;padding:0.35rem 0.7rem;color:#fff;font-size:0.75rem;cursor:pointer;';
+      const f = sketchState.saveForm;
+      const iconOptions = ['<option value="">No icon</option>'].concat(SKETCH_MARKETPLACE_ICON_KEYS.map(function (k) {
+        return '<option value="' + esc(k) + '"' + (f.icon === k ? ' selected' : '') + '>' + esc(k) + '</option>';
+      })).join('');
+      panel.style.display = '';
+      panel.innerHTML =
+        '<div style="padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;display:flex;flex-direction:column;gap:0.4rem;">' +
+          '<div style="font-size:0.7rem;color:var(--text-faint);">Save the current capability set as a reusable template. Icon and author show on the card.</div>' +
+          '<input data-testid="save-tpl-name" placeholder="Template name" oninput="sketchState.saveForm.name=this.value" value="' + esc(f.name) + '" style="' + fieldStyle + '" />' +
+          '<select data-testid="save-tpl-icon" oninput="sketchState.saveForm.icon=this.value" style="' + fieldStyle + '">' + iconOptions + '</select>' +
+          '<input data-testid="save-tpl-author" placeholder="Author (optional)" oninput="sketchState.saveForm.author=this.value" value="' + esc(f.author) + '" style="' + fieldStyle + '" />' +
+          '<textarea data-testid="save-tpl-description" placeholder="Short description" rows="2" oninput="sketchState.saveForm.description=this.value" style="' + fieldStyle + 'resize:vertical;">' + esc(f.description) + '</textarea>' +
+          '<div style="display:flex;gap:0.4rem;justify-content:flex-end;">' +
+            '<button onclick="cancelSketchSavePanel()" style="' + btnSecondary + '">Cancel</button>' +
+            '<button data-testid="save-tpl-confirm" onclick="submitSketchSavePanel()" style="' + btnPrimary + '">Save</button>' +
+          '</div>' +
+        '</div>';
+    }
+    function cancelSketchSavePanel() {
+      sketchState.showSavePanel = false;
+      renderSketchSavePanel();
+    }
+    async function submitSketchSavePanel() {
+      const f = sketchState.saveForm;
+      const name = (f.name || '').trim();
+      if (!name || !sketchState.caps || sketchState.caps.length === 0) return;
+      try {
+        await api('/api/templates', {
+          method: 'POST',
+          body: {
+            name: name,
+            description: (f.description || '').trim(),
+            capabilities: JSON.stringify(sketchState.caps.map(function (c) {
+              return {
+                type: c.type, id: c.id, label: c.label,
+                gpio: c.gpio || '', unit: c.unit || '', min: c.min || '', max: c.max || '',
+              };
+            })),
+            icon: (f.icon || '').trim(),
+            author: (f.author || '').trim(),
+            board: sketchState.board,
+          },
+        });
+        sketchState.savedTemplates = await api('/api/templates');
+        sketchState.showSavePanel = false;
+        renderSketchSavePanel();
+        const btn = document.getElementById('sketchMarketplaceBtn');
+        if (btn) btn.textContent = 'Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + sketchState.savedTemplates.length) + ')';
+        toast('Template saved');
+      } catch (e) {
+        toast('Failed to save template: ' + e, 'error');
+      }
     }
 
     /* Template export/import — JSON-wrapped SketchSpec for share + restore. */

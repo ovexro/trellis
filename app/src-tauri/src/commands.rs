@@ -1047,8 +1047,12 @@ pub fn get_webhook_deliveries(
 #[tauri::command]
 pub fn create_template(
     db: State<'_, Database>, name: String, description: String, capabilities: String,
+    icon: Option<String>, author: Option<String>, board: Option<String>,
 ) -> Result<i64, String> {
-    db.create_template(&name, &description, &capabilities)
+    let icon = icon.unwrap_or_default();
+    let author = author.unwrap_or_default();
+    let board = board.unwrap_or_else(|| "esp32".to_string());
+    db.create_template(&name, &description, &capabilities, &icon, &author, &board)
 }
 
 #[tauri::command]

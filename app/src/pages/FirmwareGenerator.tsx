@@ -15,7 +15,6 @@ import {
   Cpu,
   Trash2,
   Save,
-  FolderOpen,
   ToggleLeft,
   Thermometer,
   SlidersHorizontal,
@@ -100,8 +99,13 @@ interface TemplateDef {
   name: string;
   description: string;
   capabilities: string;
+  icon: string;
+  author: string;
+  board: string;
   created_at: string;
 }
+
+const MARKETPLACE_ICON_KEYS = ["lightbulb", "thermometer", "zap", "cloud-sun", "sprout"];
 
 interface MarketplaceTemplate {
   id: string;
@@ -124,9 +128,16 @@ export default function FirmwareGenerator() {
   const [capabilities, setCapabilities] = useState<CapabilityDef[]>([]);
   const [copied, setCopied] = useState(false);
   const [templates, setTemplates] = useState<TemplateDef[]>([]);
-  const [showTemplates, setShowTemplates] = useState(false);
   const [marketplace, setMarketplace] = useState<MarketplaceTemplate[]>([]);
   const [showMarketplace, setShowMarketplace] = useState(false);
+  // Save-as-template panel — replaces window.prompt() with an inline form so users
+  // can pick a marketplace icon, attach an author tag, and fill a description that
+  // shows on the saved card. v0.30.0 slot 3/3.
+  const [showSavePanel, setShowSavePanel] = useState(false);
+  const [saveFormName, setSaveFormName] = useState("");
+  const [saveFormIcon, setSaveFormIcon] = useState("");
+  const [saveFormAuthor, setSaveFormAuthor] = useState("");
+  const [saveFormDescription, setSaveFormDescription] = useState("");
   // Optional template metadata that travels with .trellis-template.json exports.
   // Persisted in localStorage so a user's author tag survives across sessions
   // without needing a settings panel for it.
@@ -349,15 +360,31 @@ export default function FirmwareGenerator() {
     }
   };
 
-  const saveAsTemplate = async () => {
+  const openSavePanel = () => {
     if (capabilities.length === 0) return;
-    const name = prompt("Template name:", deviceName);
-    if (!name) return;
+    setSaveFormName(deviceName);
+    setSaveFormIcon("");
+    setSaveFormAuthor(tplAuthor);
+    setSaveFormDescription(`${capabilities.length} capabilities`);
+    setShowSavePanel(true);
+  };
+
+  const cancelSaveTemplate = () => {
+    setShowSavePanel(false);
+  };
+
+  const submitSaveTemplate = async () => {
+    const name = saveFormName.trim();
+    if (!name || capabilities.length === 0) return;
     await invoke("create_template", {
       name,
-      description: `${capabilities.length} capabilities`,
+      description: saveFormDescription.trim(),
       capabilities: JSON.stringify(capabilities),
+      icon: saveFormIcon.trim(),
+      author: saveFormAuthor.trim(),
+      board,
     });
+    setShowSavePanel(false);
     loadTemplates();
   };
 
@@ -366,7 +393,8 @@ export default function FirmwareGenerator() {
       const caps = JSON.parse(t.capabilities) as CapabilityDef[];
       setCapabilities(caps);
       setDeviceName(t.name);
-      setShowTemplates(false);
+      if (t.board === "esp32" || t.board === "picow") setBoard(t.board);
+      setShowMarketplace(false);
     } catch (err) {
       console.error("Failed to parse template:", err);
     }
@@ -621,19 +649,14 @@ export default function FirmwareGenerator() {
           <button
             data-testid="marketplace-btn"
             onClick={() => setShowMarketplace(!showMarketplace)}
-            disabled={marketplace.length === 0}
+            disabled={marketplace.length === 0 && templates.length === 0}
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
           >
-            <Store size={12} /> Marketplace {marketplace.length > 0 && `(${marketplace.length})`}
+            <Store size={12} /> Marketplace ({marketplace.length + templates.length})
           </button>
           <button
-            onClick={() => setShowTemplates(!showTemplates)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
-          >
-            <FolderOpen size={12} /> Saved {templates.length > 0 && `(${templates.length})`}
-          </button>
-          <button
-            onClick={saveAsTemplate}
+            data-testid="save-template-btn"
+            onClick={openSavePanel}
             disabled={capabilities.length === 0}
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
           >
@@ -758,49 +781,145 @@ export default function FirmwareGenerator() {
           </div>
         )}
 
-        {showMarketplace && marketplace.length > 0 && (
+        {showSavePanel && (
           <div
-            data-testid="marketplace-grid"
-            className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-2"
+            data-testid="save-template-panel"
+            className="mb-3 p-3 bg-zinc-900/70 border border-trellis-800/40 rounded-xl space-y-2"
           >
-            {marketplace.map((t) => {
-              const Icon = MARKETPLACE_ICONS[t.icon] ?? Cpu;
-              return (
-                <button
-                  key={t.id}
-                  data-testid={`marketplace-card-${t.id}`}
-                  onClick={() => loadMarketplaceTemplate(t)}
-                  className="flex items-start gap-2.5 p-2.5 bg-zinc-950/60 hover:bg-zinc-800/70 border border-zinc-800 hover:border-trellis-700/40 rounded-lg text-left transition-colors"
-                >
-                  <div className="shrink-0 w-8 h-8 rounded-md bg-trellis-900/30 border border-trellis-800/40 flex items-center justify-center text-trellis-300">
-                    <Icon size={14} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <p className="text-xs text-zinc-200 font-medium truncate">{t.name}</p>
-                      <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{t.board}</span>
-                    </div>
-                    <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description}</p>
-                  </div>
-                </button>
-              );
-            })}
+            <p className="text-[11px] text-zinc-400">
+              Save the current capability set as a reusable template. Icon and author show on the card.
+            </p>
+            <input
+              data-testid="save-tpl-name"
+              value={saveFormName}
+              onChange={(e) => setSaveFormName(e.target.value)}
+              placeholder="Template name"
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200"
+            />
+            <select
+              data-testid="save-tpl-icon"
+              value={saveFormIcon}
+              onChange={(e) => setSaveFormIcon(e.target.value)}
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200"
+            >
+              <option value="">No icon</option>
+              {MARKETPLACE_ICON_KEYS.map((k) => (
+                <option key={k} value={k}>{k}</option>
+              ))}
+            </select>
+            <input
+              data-testid="save-tpl-author"
+              value={saveFormAuthor}
+              onChange={(e) => setSaveFormAuthor(e.target.value)}
+              placeholder="Author (optional)"
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200"
+            />
+            <textarea
+              data-testid="save-tpl-description"
+              value={saveFormDescription}
+              onChange={(e) => setSaveFormDescription(e.target.value)}
+              placeholder="Short description"
+              rows={2}
+              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-800 rounded-lg text-xs text-zinc-200 resize-none"
+            />
+            <div className="flex gap-1.5 justify-end">
+              <button
+                onClick={cancelSaveTemplate}
+                className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
+              >
+                Cancel
+              </button>
+              <button
+                data-testid="save-tpl-confirm"
+                onClick={submitSaveTemplate}
+                disabled={!saveFormName.trim()}
+                className="px-3 py-1.5 bg-trellis-700 hover:bg-trellis-600 border border-trellis-600/50 rounded-lg text-xs text-white disabled:opacity-30"
+              >
+                Save
+              </button>
+            </div>
           </div>
         )}
 
-        {showTemplates && templates.length > 0 && (
-          <div className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-1.5">
-            {templates.map((t) => (
-              <div key={t.id} className="flex items-center justify-between p-2 hover:bg-zinc-800/50 rounded-lg">
-                <button onClick={() => loadTemplate(t)} className="text-left flex-1">
-                  <p className="text-xs text-zinc-300 font-medium">{t.name}</p>
-                  <p className="text-[11px] text-zinc-600">{t.description}</p>
-                </button>
-                <button onClick={() => deleteTemplate(t.id)} className="p-1 text-zinc-600 hover:text-red-400">
-                  <Trash2 size={11} />
-                </button>
+        {showMarketplace && (marketplace.length > 0 || templates.length > 0) && (
+          <div
+            data-testid="marketplace-grid"
+            className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-3"
+          >
+            {marketplace.length > 0 && (
+              <div>
+                <p className="text-[11px] text-zinc-500 uppercase tracking-wide mb-1.5">Curated</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {marketplace.map((t) => {
+                    const Icon = MARKETPLACE_ICONS[t.icon] ?? Cpu;
+                    return (
+                      <button
+                        key={t.id}
+                        data-testid={`marketplace-card-${t.id}`}
+                        onClick={() => loadMarketplaceTemplate(t)}
+                        className="flex items-start gap-2.5 p-2.5 bg-zinc-950/60 hover:bg-zinc-800/70 border border-zinc-800 hover:border-trellis-700/40 rounded-lg text-left transition-colors"
+                      >
+                        <div className="shrink-0 w-8 h-8 rounded-md bg-trellis-900/30 border border-trellis-800/40 flex items-center justify-center text-trellis-300">
+                          <Icon size={14} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <p className="text-xs text-zinc-200 font-medium truncate">{t.name}</p>
+                            <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{t.board}</span>
+                          </div>
+                          <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
+            )}
+            {templates.length > 0 && (
+              <div data-testid="marketplace-saved-section">
+                <p className="text-[11px] text-zinc-500 uppercase tracking-wide mb-1.5">My Saved</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {templates.map((t) => {
+                    const Icon = MARKETPLACE_ICONS[t.icon] ?? Cpu;
+                    const boardLabel = t.board || "esp32";
+                    return (
+                      <div
+                        key={t.id}
+                        data-testid={`saved-card-${t.id}`}
+                        className="group relative flex items-start gap-2.5 p-2.5 bg-zinc-950/60 hover:bg-zinc-800/70 border border-zinc-800 hover:border-trellis-700/40 rounded-lg transition-colors"
+                      >
+                        <button
+                          onClick={() => loadTemplate(t)}
+                          className="flex items-start gap-2.5 flex-1 min-w-0 text-left"
+                        >
+                          <div className="shrink-0 w-8 h-8 rounded-md bg-trellis-900/30 border border-trellis-800/40 flex items-center justify-center text-trellis-300">
+                            <Icon size={14} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <p className="text-xs text-zinc-200 font-medium truncate">{t.name}</p>
+                              <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{boardLabel}</span>
+                            </div>
+                            <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description || `${capabilities.length} capabilities`}</p>
+                            {t.author && (
+                              <p className="text-[10px] text-zinc-600 mt-0.5 truncate">by {t.author}</p>
+                            )}
+                          </div>
+                        </button>
+                        <button
+                          data-testid={`saved-delete-${t.id}`}
+                          onClick={() => deleteTemplate(t.id)}
+                          aria-label="Delete saved template"
+                          className="shrink-0 p-1 text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

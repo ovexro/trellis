@@ -294,6 +294,7 @@ export default function ConfigSection() {
             try {
               await invoke("create_template", {
                 name: t.name, description: t.description, capabilities: t.capabilities,
+                icon: t.icon ?? "", author: t.author ?? "", board: t.board ?? "esp32",
               });
             } catch (err) {
               console.error("Failed to import template:", err);
