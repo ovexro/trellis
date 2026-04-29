@@ -6120,6 +6120,7 @@
       sketch: '',
       error: '',
       libManifest: null,
+      marketplace: null,
     };
     const SKETCH_CAP_DEFAULTS = {
       switch: { gpio: '2', unit: '', min: '', max: '' },
@@ -6148,6 +6149,13 @@
           sketchState.libManifest = await api('/api/sketch/lib-info');
         } catch (e) {
           sketchState.libManifest = null;
+        }
+      }
+      if (!sketchState.marketplace) {
+        try {
+          sketchState.marketplace = await api('/api/sketch/marketplace');
+        } catch (e) {
+          sketchState.marketplace = [];
         }
       }
       if (!sketchState.rendered) {
@@ -6180,10 +6188,12 @@
           libBadge +
         '</div>' +
         '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">' +
+          '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace' + (sketchState.marketplace && sketchState.marketplace.length ? ' (' + sketchState.marketplace.length + ')' : '') + '</button>' +
           '<button id="sketchExportTplBtn" data-testid="export-template-btn" onclick="exportSketchTemplate()" style="' + btnSecondary + '">Export template</button>' +
           '<button id="sketchImportTplBtn" data-testid="import-template-btn" onclick="importSketchTemplate()" style="' + btnSecondary + '">Import template</button>' +
           '<input id="sketchImportTplInput" type="file" accept=".json,application/json" onchange="onSketchImportFileChosen(event)" style="display:none;" data-testid="import-template-input" />' +
         '</div>' +
+        '<div id="sketchMarketplacePanel" style="display:none;margin-bottom:0.75rem;"></div>' +
         '<div id="sketchImportNotices"></div>' +
         '<div class="auto-section">' +
           '<div class="section-title">Device</div>' +
@@ -6362,6 +6372,67 @@
       document.body.appendChild(a);
       a.click();
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+    }
+
+    /* Marketplace — bundled curated catalog, single source of truth across surfaces. */
+    function toggleMarketplacePanel() {
+      const panel = document.getElementById('sketchMarketplacePanel');
+      if (!panel) return;
+      if (panel.style.display === 'none') {
+        renderMarketplacePanel(panel);
+        panel.style.display = '';
+      } else {
+        panel.style.display = 'none';
+      }
+    }
+    function renderMarketplacePanel(panel) {
+      const items = sketchState.marketplace || [];
+      if (items.length === 0) {
+        panel.innerHTML = '<div style="padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--text-faint);">No marketplace templates available.</div>';
+        return;
+      }
+      const cardStyle = 'display:flex;align-items:flex-start;gap:0.6rem;text-align:left;padding:0.6rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;cursor:pointer;color:var(--text);font:inherit;width:100%;';
+      const cards = items.map(function (t) {
+        const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
+        return '<button data-testid="marketplace-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + '">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
+              '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
+              '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
+            '</div>' +
+            '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
+          '</div>' +
+        '</button>';
+      }).join('');
+      panel.innerHTML = '<div data-testid="marketplace-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:0.5rem;">' + cards + '</div>';
+    }
+    function loadMarketplaceTemplate(id) {
+      const items = sketchState.marketplace || [];
+      const t = items.find(function (x) { return String(x.id) === id; });
+      if (!t) return;
+      sketchState.deviceName = t.name;
+      sketchState.board = t.board;
+      sketchState.caps = (t.capabilities || []).map(function (c) {
+        return {
+          type: c.type,
+          id: c.id,
+          label: c.label,
+          gpio: c.gpio || '',
+          unit: c.unit || '',
+          min: c.min || '',
+          max: c.max || '',
+        };
+      });
+      const panel = document.getElementById('sketchMarketplacePanel');
+      if (panel) panel.style.display = 'none';
+      const nameEl = document.getElementById('sketchDeviceName');
+      const boardEl = document.getElementById('sketchBoard');
+      if (nameEl) nameEl.value = sketchState.deviceName;
+      if (boardEl) boardEl.value = sketchState.board;
+      const countEl = document.getElementById('sketchCapCount');
+      if (countEl) countEl.textContent = String(sketchState.caps.length);
+      renderSketchCapList();
+      regenerateSketchPreview();
     }
 
     /* Template export/import — JSON-wrapped SketchSpec for share + restore. */

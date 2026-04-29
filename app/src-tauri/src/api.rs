@@ -1892,6 +1892,10 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             if let Some(denied) = require_admin(role) { return denied; }
             handle_generate_sketch(&req.body)
         }
+        ("GET", "/api/sketch/marketplace") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_get_marketplace()
+        }
 
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
@@ -2886,6 +2890,10 @@ fn handle_generate_sketch(body: &str) -> (u16, String) {
 
 fn handle_get_sketch_lib_info() -> (u16, String) {
     json_ok(crate::lib_manifest::current())
+}
+
+fn handle_get_marketplace() -> (u16, String) {
+    json_ok(&crate::marketplace::current().to_vec())
 }
 
 // ─── Web UI (placeholder — will be replaced in Batch 4) ─────────────────────

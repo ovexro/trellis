@@ -34,7 +34,20 @@ import {
   Download,
   FileDown,
   FileUp,
+  Lightbulb,
+  Zap,
+  CloudSun,
+  Sprout,
+  Store,
 } from "lucide-react";
+
+const MARKETPLACE_ICONS: Record<string, React.ElementType> = {
+  lightbulb: Lightbulb,
+  thermometer: Thermometer,
+  zap: Zap,
+  "cloud-sun": CloudSun,
+  sprout: Sprout,
+};
 
 interface CapabilityDef {
   id: string;
@@ -90,6 +103,16 @@ interface TemplateDef {
   created_at: string;
 }
 
+interface MarketplaceTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  board: "esp32" | "picow";
+  author?: string;
+  capabilities: CapabilityDef[];
+}
+
 const BOARD_FQBN: Record<string, string> = {
   esp32: "esp32:esp32:esp32",
   picow: "rp2040:rp2040:rpipicow",
@@ -102,6 +125,8 @@ export default function FirmwareGenerator() {
   const [copied, setCopied] = useState(false);
   const [templates, setTemplates] = useState<TemplateDef[]>([]);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [marketplace, setMarketplace] = useState<MarketplaceTemplate[]>([]);
+  const [showMarketplace, setShowMarketplace] = useState(false);
   const [sketch, setSketch] = useState("");
   const [sketchError, setSketchError] = useState("");
   const [libManifest, setLibManifest] = useState<LibManifest | null>(null);
@@ -135,6 +160,12 @@ export default function FirmwareGenerator() {
   const onlineDevices = devices.filter((d) => d.online);
 
   useEffect(() => { loadTemplates(); }, []);
+
+  useEffect(() => {
+    invoke<MarketplaceTemplate[]>("get_marketplace_templates_command")
+      .then(setMarketplace)
+      .catch(() => setMarketplace([]));
+  }, []);
 
   // Library manifest is the source of truth for what capability kinds the
   // bundled Trellis library supports. Filters the wizard's capability buttons
@@ -303,6 +334,13 @@ export default function FirmwareGenerator() {
     } catch (err) {
       console.error("Failed to parse template:", err);
     }
+  };
+
+  const loadMarketplaceTemplate = (t: MarketplaceTemplate) => {
+    setDeviceName(t.name);
+    setBoard(t.board);
+    setCapabilities(t.capabilities);
+    setShowMarketplace(false);
   };
 
   const deleteTemplate = async (id: number) => {
@@ -526,10 +564,18 @@ export default function FirmwareGenerator() {
 
         <div className="flex gap-1.5 mb-3 flex-wrap">
           <button
+            data-testid="marketplace-btn"
+            onClick={() => setShowMarketplace(!showMarketplace)}
+            disabled={marketplace.length === 0}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
+          >
+            <Store size={12} /> Marketplace {marketplace.length > 0 && `(${marketplace.length})`}
+          </button>
+          <button
             onClick={() => setShowTemplates(!showTemplates)}
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300"
           >
-            <FolderOpen size={12} /> Templates {templates.length > 0 && `(${templates.length})`}
+            <FolderOpen size={12} /> Saved {templates.length > 0 && `(${templates.length})`}
           </button>
           <button
             onClick={saveAsTemplate}
@@ -598,6 +644,36 @@ export default function FirmwareGenerator() {
                 <li key={i}>{w}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {showMarketplace && marketplace.length > 0 && (
+          <div
+            data-testid="marketplace-grid"
+            className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-2"
+          >
+            {marketplace.map((t) => {
+              const Icon = MARKETPLACE_ICONS[t.icon] ?? Cpu;
+              return (
+                <button
+                  key={t.id}
+                  data-testid={`marketplace-card-${t.id}`}
+                  onClick={() => loadMarketplaceTemplate(t)}
+                  className="flex items-start gap-2.5 p-2.5 bg-zinc-950/60 hover:bg-zinc-800/70 border border-zinc-800 hover:border-trellis-700/40 rounded-lg text-left transition-colors"
+                >
+                  <div className="shrink-0 w-8 h-8 rounded-md bg-trellis-900/30 border border-trellis-800/40 flex items-center justify-center text-trellis-300">
+                    <Icon size={14} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="text-xs text-zinc-200 font-medium truncate">{t.name}</p>
+                      <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{t.board}</span>
+                    </div>
+                    <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description}</p>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
 

@@ -3,12 +3,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "@/stores/deviceStore";
 import { generateSketch } from "@/lib/sketchGenerator";
-import {
-  starterTemplates,
-  type StarterTemplate,
-  type StarterCapability,
-} from "@/data/starterTemplates";
 import type { SerialPortInfo } from "@/lib/types";
+
+interface StarterCapability {
+  id: string;
+  type: "switch" | "sensor" | "slider" | "color" | "text";
+  label: string;
+  gpio: string;
+  unit: string;
+  min: string;
+  max: string;
+}
+
+interface StarterTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  board: "esp32" | "picow";
+  author?: string;
+  capabilities: StarterCapability[];
+}
 import {
   Lightbulb,
   Thermometer,
@@ -70,6 +85,7 @@ export default function GetStarted() {
   // Step 2: Template selection
   const [selectedTemplate, setSelectedTemplate] =
     useState<StarterTemplate | null>(null);
+  const [starterTemplates, setStarterTemplates] = useState<StarterTemplate[]>([]);
 
   // Step 3: Configure & Flash
   const [deviceName, setDeviceName] = useState("My Device");
@@ -106,6 +122,15 @@ export default function GetStarted() {
         setCliVersion(null);
         setCliChecked(true);
       });
+  }, []);
+
+  // Load curated starter templates from the bundled marketplace catalog
+  // (single source of truth — same set the FirmwareGenerator and :9090
+  // Sketch tab read).
+  useEffect(() => {
+    invoke<StarterTemplate[]>("get_marketplace_templates_command")
+      .then(setStarterTemplates)
+      .catch(() => setStarterTemplates([]));
   }, []);
 
   // Check deps when board changes and cli is available

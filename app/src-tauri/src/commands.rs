@@ -10,6 +10,7 @@ use crate::secret_store::{self, SecretStore};
 use crate::serial::{SerialManager, SerialPortInfo};
 use crate::sinric::{SinricBridge, SinricConfig, SinricConfigPublic, SinricStatus};
 use crate::lib_manifest::{self, LibManifest};
+use crate::marketplace::{self, MarketplaceTemplate};
 use crate::sketch_gen::{self, SketchSpec};
 use serde::Serialize;
 use serde_json::Value;
@@ -1596,6 +1597,11 @@ pub fn generate_sketch_command(spec: SketchSpec) -> Result<String, String> {
 #[tauri::command]
 pub fn get_sketch_lib_info_command() -> LibManifest {
     lib_manifest::current().clone()
+}
+
+#[tauri::command]
+pub fn get_marketplace_templates_command() -> Vec<MarketplaceTemplate> {
+    marketplace::current().to_vec()
 }
 
 // ─── Quick Flash (arduino-cli integration) ─────────────────────────────────
