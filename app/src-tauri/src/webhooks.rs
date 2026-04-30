@@ -165,6 +165,53 @@ fn read_bounded_body(resp: ureq::Response) -> Option<String> {
     }
 }
 
+/// Result of a server-side test fire (`POST /api/webhooks/:id/test`).
+/// Carries enough for the caller to render a toast (`success`, `status_code`,
+/// `error`) and link back to the freshly-logged delivery row (`delivery_id`)
+/// so the UI can highlight or re-fetch the deliveries log.
+#[derive(Debug, serde::Serialize)]
+pub struct TestFireResult {
+    pub delivery_id: i64,
+    pub status_code: Option<i32>,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
+/// Server-side equivalent of the desktop "Test" button. Used by
+/// `POST /api/webhooks/:id/test` so the `:9090` Test button stops being a
+/// browser-side fire-and-forget that bypasses the deliveries log. Synthesizes
+/// a small JSON payload (matches the desktop test button's shape), runs it
+/// through `post_one` so the slot 1/3 body capture path lights up, then
+/// persists via `log_webhook_delivery` with previews.
+pub fn fire_test_delivery(db: &Database, webhook_id: i64) -> Result<TestFireResult, String> {
+    let webhook = db.get_webhook(webhook_id)?.ok_or_else(|| "not found".to_string())?;
+    let body = serde_json::json!({
+        "event": "test",
+        "device_id": serde_json::Value::Null,
+        "message": "Test delivery from Trellis",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })
+    .to_string();
+    let outcome = post_one(&webhook.url, &body);
+    let request_preview = truncate_preview(&body);
+    let delivery_id = db.log_webhook_delivery(
+        webhook.id,
+        "test",
+        outcome.status_code,
+        outcome.success,
+        outcome.error.as_deref(),
+        1,
+        Some(request_preview.as_str()),
+        outcome.response_body.as_deref(),
+    )?;
+    Ok(TestFireResult {
+        delivery_id,
+        status_code: outcome.status_code,
+        success: outcome.success,
+        error: outcome.error,
+    })
+}
+
 /// Bounded UTF-8-safe truncation for outbound preview strings (request bodies
 /// the desktop test button sent, dispatcher payloads). Mirrors
 /// `read_bounded_body`'s overflow trailer so the UI shows the same shape for
@@ -237,4 +284,5 @@ mod tests {
         // be a deliberate decision, not a typo.
         assert_eq!(PREVIEW_BOUND, 4096);
     }
+
 }

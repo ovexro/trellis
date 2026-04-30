@@ -4979,15 +4979,22 @@
       }
     }
 
-    async function testWebhookFromDash(webhookId, url) {
+    async function testWebhookFromDash(webhookId, _url) {
+      // v0.31.0 slot 3/3: server-side fire. Captures request/response previews
+      // via the dispatcher path, persists a webhook_deliveries row so the log
+      // surface lights up with what was actually sent and received. The _url
+      // arg is retained for callsite compatibility (the server already knows it).
       try {
-        var resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ event: 'test', device_id: null, message: 'Test delivery from Trellis', timestamp: new Date().toISOString() }),
-        });
-        await api('/api/webhooks/' + webhookId + '/deliveries').catch(function(){});
-        toast(resp.ok ? 'Test sent \u2714 (' + resp.status + ')' : 'Test failed (' + resp.status + ')', resp.ok ? 'success' : 'error');
+        const result = await api('/api/webhooks/' + webhookId + '/test', { method: 'POST' });
+        const ok = !!(result && result.success);
+        const code = result && result.status_code != null ? result.status_code : 'ERR';
+        toast(ok ? 'Test sent \u2714 (' + code + ')' : 'Test failed (' + code + ')', ok ? 'success' : 'error');
+        const container = document.getElementById('webhook-log-' + webhookId);
+        if (container && container.classList.contains('shown')) {
+          // Refresh open log so the just-fired row appears at the top.
+          container.classList.remove('shown');
+          await toggleWebhookLog(webhookId);
+        }
       } catch (e) {
         toast('Test failed: ' + (e.message || e), 'error');
       }

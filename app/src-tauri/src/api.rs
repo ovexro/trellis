@@ -1550,6 +1550,25 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             }
         }
 
+        // Server-side test fire (v0.31.0 slot 3/3). Mirrors the desktop test
+        // button at server-egress instead of browser-egress so :9090 callers
+        // get a real entry in the deliveries log with request/response previews.
+        ("POST", p) if p.starts_with("/api/webhooks/") && p.ends_with("/test") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            let id_str = &p["/api/webhooks/".len()..p.len() - "/test".len()];
+            let id: i64 = match id_str.parse() {
+                Ok(id) => id,
+                Err(_) => return json_error(400, "Invalid webhook ID"),
+            };
+            match crate::webhooks::fire_test_delivery(&ctx.db, id) {
+                Ok(result) => json_ok(&result),
+                Err(e) => {
+                    let code = if e == "not found" { 404 } else { 500 };
+                    json_error(code, &e)
+                },
+            }
+        }
+
         // ─── Scenes ─────────────────────────────────────────────────
         ("GET", "/api/scenes") => {
             match ctx.db.get_scenes() {

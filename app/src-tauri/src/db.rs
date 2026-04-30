@@ -4318,6 +4318,16 @@ mod tests {
     }
 
     #[test]
+    fn fire_test_delivery_returns_not_found_for_missing_webhook() {
+        // No HTTP server is stood up here on purpose: fire_test_delivery's
+        // not-found branch returns before any network call, so this stays a
+        // pure DB test. Verifies the REST 404 path translates correctly.
+        let db = new_webhooks_test_db();
+        let err = crate::webhooks::fire_test_delivery(&db, 9999).unwrap_err();
+        assert_eq!(err, "not found");
+    }
+
+    #[test]
     fn webhook_delivery_legacy_rows_yield_null_previews() {
         // Reproduces a legacy row inserted without the new columns (pre-v0.31.0 ALTER).
         // The fixture's CREATE TABLE includes the columns; we hit the path by inserting
