@@ -1784,12 +1784,13 @@ impl Database {
     pub fn log_webhook_delivery(
         &self, webhook_id: i64, event_type: &str, status_code: Option<i32>,
         success: bool, error: Option<&str>, attempt: i32,
+        request_body_preview: Option<&str>, response_body_preview: Option<&str>,
     ) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
-            rusqlite::params![webhook_id, event_type, status_code, success, error, attempt],
+            "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, request_body_preview, response_body_preview, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))",
+            rusqlite::params![webhook_id, event_type, status_code, success, error, attempt, request_body_preview, response_body_preview],
         ).map_err(|e| e.to_string())?;
         Ok(conn.last_insert_rowid())
     }
@@ -1797,7 +1798,8 @@ impl Database {
     pub fn get_webhook_deliveries(&self, webhook_id: i64, limit: i64) -> Result<Vec<WebhookDelivery>, String> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, webhook_id, event_type, status_code, success, error, attempt, timestamp
+            "SELECT id, webhook_id, event_type, status_code, success, error, attempt, timestamp,
+                    request_body_preview, response_body_preview
              FROM webhook_deliveries WHERE webhook_id = ?1 ORDER BY id DESC LIMIT ?2"
         ).map_err(|e| e.to_string())?;
         let rows = stmt.query_map(rusqlite::params![webhook_id, limit], |row| {
@@ -1805,6 +1807,8 @@ impl Database {
                 id: row.get(0)?, webhook_id: row.get(1)?, event_type: row.get(2)?,
                 status_code: row.get(3)?, success: row.get(4)?, error: row.get(5)?,
                 attempt: row.get(6)?, timestamp: row.get(7)?,
+                request_body_preview: row.get(8)?,
+                response_body_preview: row.get(9)?,
             })
         }).map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
@@ -2988,6 +2992,8 @@ pub struct WebhookDelivery {
     pub error: Option<String>,
     pub attempt: i32,
     pub timestamp: String,
+    pub request_body_preview: Option<String>,
+    pub response_body_preview: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3601,6 +3607,12 @@ pub fn init_db(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             ON webhook_deliveries(webhook_id, id DESC);
     ").map_err(|e| e.to_string())?;
 
+    // webhook_deliveries: capture size-bounded request/response body previews (v0.31.0 slot 1/3).
+    // Legacy rows pre-upgrade get NULL for both fields and render in the UI as
+    // "(no body captured)". The bound itself lives in webhooks.rs::PREVIEW_BOUND.
+    let _ = conn.execute("ALTER TABLE webhook_deliveries ADD COLUMN request_body_preview TEXT", []);
+    let _ = conn.execute("ALTER TABLE webhook_deliveries ADD COLUMN response_body_preview TEXT", []);
+
     // device_templates: promote saved templates into the marketplace grid (v0.30.0 slot 3/3).
     // Adds the same icon/author/board metadata bundled templates carry, so saved
     // templates render as cards alongside the curated set instead of a separate list.
@@ -4207,7 +4219,9 @@ mod tests {
                 success INTEGER NOT NULL,
                 error TEXT,
                 attempt INTEGER NOT NULL DEFAULT 1,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                request_body_preview TEXT,
+                response_body_preview TEXT
             );",
         )
         .unwrap();
@@ -4260,11 +4274,11 @@ mod tests {
         let id = db
             .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
             .unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
-        db.log_webhook_delivery(id, "device.offline", None, false, Some("timeout"), 2).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1, None, None).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1, None, None).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1, None, None).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1, None, None).unwrap();
+        db.log_webhook_delivery(id, "device.offline", None, false, Some("timeout"), 2, None, None).unwrap();
 
         let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
         assert_eq!(w.success_count, 3, "should have 3 successful deliveries");
@@ -4279,10 +4293,51 @@ mod tests {
         let id = db
             .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
             .unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
-        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(500), false, Some("oops"), 1, None, None).unwrap();
+        db.log_webhook_delivery(id, "device.offline", Some(200), true, None, 1, None, None).unwrap();
         let w = db.get_webhooks().unwrap().into_iter().find(|w| w.id == id).unwrap();
         assert_eq!(w.last_success, Some(true), "last delivery was successful");
+    }
+
+    #[test]
+    fn webhook_delivery_round_trips_body_previews() {
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        let req = r#"{"event":"device.offline","payload":{"id":"abc"}}"#;
+        let resp = "received\n";
+        db.log_webhook_delivery(
+            id, "device.offline", Some(200), true, None, 1,
+            Some(req), Some(resp),
+        ).unwrap();
+        let rows = db.get_webhook_deliveries(id, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].request_body_preview.as_deref(), Some(req));
+        assert_eq!(rows[0].response_body_preview.as_deref(), Some(resp));
+    }
+
+    #[test]
+    fn webhook_delivery_legacy_rows_yield_null_previews() {
+        // Reproduces a legacy row inserted without the new columns (pre-v0.31.0 ALTER).
+        // The fixture's CREATE TABLE includes the columns; we hit the path by inserting
+        // raw SQL that omits them — exactly how cleanup tests build older rows.
+        let db = new_webhooks_test_db();
+        let id = db
+            .create_webhook("device.offline", None, "https://example.com/hook", "Offline ping")
+            .unwrap();
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
+                 VALUES (?1, 'device.offline', 200, 1, NULL, 1, datetime('now'))",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+        let rows = db.get_webhook_deliveries(id, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].request_body_preview.is_none());
+        assert!(rows[0].response_body_preview.is_none());
     }
 
     fn insert_webhook_delivery_at(db: &Database, webhook_id: i64, days_ago: i64) {
@@ -4754,7 +4809,7 @@ mod tests {
         let src_id = db
             .create_webhook("device.offline", Some("dev1"), "https://example.com/hook", "Offline ping")
             .unwrap();
-        db.log_webhook_delivery(src_id, "device.offline", Some(500), false, Some("oops"), 1).unwrap();
+        db.log_webhook_delivery(src_id, "device.offline", Some(500), false, Some("oops"), 1, None, None).unwrap();
         db.toggle_webhook(src_id, false).unwrap();
 
         let new_id = db.duplicate_webhook(src_id).unwrap();

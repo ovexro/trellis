@@ -69,6 +69,8 @@ interface WebhookDelivery {
   error: string | null;
   attempt: number;
   timestamp: string;
+  request_body_preview: string | null;
+  response_body_preview: string | null;
 }
 
 type Tab = "schedules" | "rules" | "webhooks";
@@ -119,6 +121,7 @@ export default function Automation() {
   const [expandedWebhook, setExpandedWebhook] = useState<number | null>(null);
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
+  const [expandedDelivery, setExpandedDelivery] = useState<number | null>(null);
 
   const onlineDevices = devices.filter((d) => d.online);
 
@@ -232,9 +235,12 @@ export default function Automation() {
         signal: controller.signal,
       });
       clearTimeout(timeout);
+      const respText = await resp.text().catch(() => "");
       await invoke("log_webhook_delivery", {
         webhookId: wh.id, eventType: "test", statusCode: resp.status,
         success: resp.ok, error: null, attempt: 1,
+        requestBodyPreview: payload,
+        responseBodyPreview: respText || null,
       });
       if (expandedWebhook === wh.id) await loadDeliveries(wh.id);
     } catch (err) {
@@ -242,6 +248,7 @@ export default function Automation() {
       await invoke("log_webhook_delivery", {
         webhookId: wh.id, eventType: "test", statusCode: null,
         success: false, error: errMsg, attempt: 1,
+        requestBodyPreview: null, responseBodyPreview: null,
       }).catch(() => {});
       if (expandedWebhook === wh.id) await loadDeliveries(wh.id);
     } finally {
@@ -864,17 +871,50 @@ export default function Automation() {
                       ) : deliveries.length === 0 ? (
                         <p className="text-xs text-zinc-600">No deliveries yet</p>
                       ) : (
-                        <div className="space-y-1 max-h-48 overflow-y-auto">
-                          {deliveries.map((d) => (
-                            <div key={d.id} className="flex items-center gap-2 text-xs">
-                              {d.success ? <CheckCircle size={12} className="text-green-500 flex-shrink-0" /> : <XCircle size={12} className="text-red-400 flex-shrink-0" />}
-                              <span className="text-zinc-400 font-mono w-10 flex-shrink-0">{d.status_code || "ERR"}</span>
-                              <span className="text-zinc-500">{d.event_type}</span>
-                              {d.attempt > 1 && <span className="text-amber-500 text-[10px]">retry #{d.attempt}</span>}
-                              <span className="text-zinc-600 ml-auto flex-shrink-0">{d.timestamp}</span>
-                              {d.error && <span className="text-red-400 truncate max-w-[150px]" title={d.error}>{d.error}</span>}
-                            </div>
-                          ))}
+                        <div className="space-y-1 max-h-72 overflow-y-auto">
+                          {deliveries.map((d) => {
+                            const hasPreview = !!(d.request_body_preview || d.response_body_preview);
+                            const isOpen = expandedDelivery === d.id;
+                            return (
+                              <div key={d.id} data-testid={`delivery-row-${d.id}`} className="text-xs">
+                                <button
+                                  type="button"
+                                  onClick={() => hasPreview && setExpandedDelivery(isOpen ? null : d.id)}
+                                  data-testid={`delivery-toggle-${d.id}`}
+                                  className={`w-full flex items-center gap-2 ${hasPreview ? "hover:bg-zinc-900/40" : "cursor-default"} rounded px-1 py-0.5 text-left`}
+                                  disabled={!hasPreview}
+                                >
+                                  {hasPreview ? (
+                                    isOpen ? <ChevronDown size={12} className="text-zinc-500 flex-shrink-0" /> : <ChevronRight size={12} className="text-zinc-500 flex-shrink-0" />
+                                  ) : (
+                                    <span className="w-3 flex-shrink-0" />
+                                  )}
+                                  {d.success ? <CheckCircle size={12} className="text-green-500 flex-shrink-0" /> : <XCircle size={12} className="text-red-400 flex-shrink-0" />}
+                                  <span className="text-zinc-400 font-mono w-10 flex-shrink-0">{d.status_code || "ERR"}</span>
+                                  <span className="text-zinc-500">{d.event_type}</span>
+                                  {d.attempt > 1 && <span className="text-amber-500 text-[10px]">retry #{d.attempt}</span>}
+                                  <span className="text-zinc-600 ml-auto flex-shrink-0">{d.timestamp}</span>
+                                  {d.error && <span className="text-red-400 truncate max-w-[150px]" title={d.error}>{d.error}</span>}
+                                </button>
+                                {isOpen && hasPreview && (
+                                  <div data-testid={`delivery-preview-${d.id}`} className="ml-5 mt-1 mb-2 space-y-2">
+                                    {d.request_body_preview && (
+                                      <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-zinc-600 mb-0.5">Request body</p>
+                                        <pre className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-[11px] font-mono text-zinc-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto" data-testid={`delivery-request-${d.id}`}>{d.request_body_preview}</pre>
+                                      </div>
+                                    )}
+                                    {d.response_body_preview && (
+                                      <div>
+                                        <p className="text-[10px] uppercase tracking-wider text-zinc-600 mb-0.5">Response body</p>
+                                        <pre className="bg-zinc-950 border border-zinc-800 rounded px-2 py-1.5 text-[11px] font-mono text-zinc-300 whitespace-pre-wrap break-all max-h-40 overflow-y-auto" data-testid={`delivery-response-${d.id}`}>{d.response_body_preview}</pre>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                     </div>

@@ -1031,8 +1031,14 @@ pub fn duplicate_webhook(db: State<'_, Database>, id: i64) -> Result<i64, String
 pub fn log_webhook_delivery(
     db: State<'_, Database>, webhook_id: i64, event_type: String,
     status_code: Option<i32>, success: bool, error: Option<String>, attempt: i32,
+    request_body_preview: Option<String>, response_body_preview: Option<String>,
 ) -> Result<i64, String> {
-    db.log_webhook_delivery(webhook_id, &event_type, status_code, success, error.as_deref(), attempt)
+    let req_bounded = request_body_preview.as_deref().map(crate::webhooks::truncate_preview);
+    let resp_bounded = response_body_preview.as_deref().map(crate::webhooks::truncate_preview);
+    db.log_webhook_delivery(
+        webhook_id, &event_type, status_code, success, error.as_deref(), attempt,
+        req_bounded.as_deref(), resp_bounded.as_deref(),
+    )
 }
 
 #[tauri::command]
