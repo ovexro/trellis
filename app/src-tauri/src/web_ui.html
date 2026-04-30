@@ -529,6 +529,34 @@
     .badge-disabled { background: rgba(239,68,68,0.12); color: var(--red); }
     .auto-section { margin-bottom: 2rem; }
 
+    /* ── Webhook delivery log (v0.31.0) ── */
+    .webhook-log-container { display: none; border-top: 1px solid var(--border); margin-top: 0.6rem; padding-top: 0.6rem; }
+    .webhook-log-container.shown { display: block; }
+    .webhook-log-empty { font-size: 0.75rem; color: var(--text-faint); padding: 0.3rem 0.1rem; }
+    .webhook-log-row {
+      display: flex; align-items: center; gap: 0.4rem; padding: 0.2rem 0.25rem;
+      font-size: 0.72rem; border-radius: 4px; cursor: default;
+    }
+    .webhook-log-row.has-preview { cursor: pointer; }
+    .webhook-log-row.has-preview:hover { background: rgba(255,255,255,0.03); }
+    .webhook-log-row .log-chevron { width: 0.7rem; flex-shrink: 0; color: var(--text-faint); transition: transform var(--transition); }
+    .webhook-log-row.expanded .log-chevron { transform: rotate(90deg); }
+    .webhook-log-row .log-status { font-family: monospace; color: var(--text-dim); width: 2.4rem; flex-shrink: 0; }
+    .webhook-log-row .log-event { color: var(--text-dim); }
+    .webhook-log-row .log-retry { color: var(--amber, #f59e0b); font-size: 0.65rem; }
+    .webhook-log-row .log-time { margin-left: auto; color: var(--text-faint); flex-shrink: 0; font-size: 0.68rem; }
+    .webhook-log-row .log-error { color: var(--red, #ef4444); max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .webhook-preview-panel { display: none; padding: 0.35rem 0 0.5rem 1.1rem; gap: 0.4rem; flex-direction: column; }
+    .webhook-log-row.expanded + .webhook-preview-panel { display: flex; }
+    .webhook-preview-panel .preview-label { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 0.1rem; }
+    .webhook-preview-panel pre {
+      background: rgba(0,0,0,0.45); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.4rem 0.55rem; margin: 0;
+      font-size: 0.72rem; font-family: monospace; color: var(--text-dim);
+      white-space: pre-wrap; word-break: break-all;
+      max-height: 11rem; overflow-y: auto;
+    }
+
     /* ── Settings ── */
     .settings-section {
       background: var(--card); border: 1px solid var(--border);
@@ -4904,6 +4932,7 @@
         if (webhooks && webhooks.length) {
           html += webhooks.map(w => {
             var testBtn = isViewer ? '' : `<button onclick="testWebhookFromDash(${w.id}, '${esc(w.url)}')" style="font-size:0.7rem;padding:0.2rem 0.5rem;background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--accent);cursor:pointer;white-space:nowrap;">Test</button>`;
+            const wLogBtn = `<button class="btn btn-sm" data-testid="webhook-log-btn-${w.id}" onclick="toggleWebhookLog(${w.id})" title="Show delivery log">Log</button>`;
             const wToggleLabel = w.enabled !== false ? 'Disable' : 'Enable';
             const wToggleNext = w.enabled !== false ? 'false' : 'true';
             const wCopyBtn = isViewer ? '' : `<button class="btn btn-sm" onclick="duplicateWebhook(${w.id}, this)" title="Duplicate webhook">Copy</button>`;
@@ -4917,7 +4946,7 @@
               const wLastColor = w.last_success === false ? 'var(--danger,#ef4444)' : 'var(--text-faint)';
               wStatsLine = `<div class="auto-card-detail" style="font-size:0.7rem;color:${wLastColor};margin-top:0.1rem;">Last delivery: ${esc(w.last_delivery || '—')} &middot; <span style="color:#22c55e;">${wSuccess}&check;</span> / <span style="color:#ef4444;">${wFailure}&cross;</span></div>`;
             }
-            return `<div class="auto-card">
+            return `<div class="auto-card" data-testid="webhook-card-${w.id}">
               <div style="display:flex;justify-content:space-between;align-items:center;">
                 <div>
                   <div class="auto-card-title">${esc(w.label || w.event_type || 'Webhook')}</div>
@@ -4929,12 +4958,14 @@
                 </div>
                 <div style="display:flex;align-items:center;gap:0.5rem;">
                   ${testBtn}
+                  ${wLogBtn}
                   <span class="auto-card-badge ${w.enabled !== false ? 'badge-enabled' : 'badge-disabled'}">${w.enabled !== false ? 'Enabled' : 'Disabled'}</span>
                   ${wCopyBtn}
                   ${wToggleBtn}
                   ${wDeleteBtn}
                 </div>
               </div>
+              <div id="webhook-log-${w.id}" data-testid="webhook-log-${w.id}" class="webhook-log-container"></div>
             </div>`;
           }).join('');
         } else {
@@ -4960,6 +4991,69 @@
       } catch (e) {
         toast('Test failed: ' + (e.message || e), 'error');
       }
+    }
+
+    async function toggleWebhookLog(webhookId) {
+      const container = document.getElementById('webhook-log-' + webhookId);
+      if (!container) return;
+      if (container.classList.contains('shown')) {
+        container.classList.remove('shown');
+        container.innerHTML = '';
+        return;
+      }
+      container.innerHTML = '<div class="webhook-log-empty">Loading\u2026</div>';
+      container.classList.add('shown');
+      try {
+        const deliveries = await api('/api/webhooks/' + webhookId + '/deliveries');
+        if (!deliveries || !deliveries.length) {
+          container.innerHTML = '<div class="webhook-log-empty">No deliveries yet</div>';
+          return;
+        }
+        container.innerHTML = deliveries.map(renderDeliveryRow).join('');
+      } catch (e) {
+        container.innerHTML = '<div class="webhook-log-empty" style="color:var(--red);">Could not load deliveries: ' + esc(e.message || e) + '</div>';
+      }
+    }
+
+    function renderDeliveryRow(d) {
+      const hasPreview = !!(d.request_body_preview || d.response_body_preview);
+      const ok = d.success ? '<span style="color:#22c55e;">&check;</span>' : '<span style="color:#ef4444;">&times;</span>';
+      const status = d.status_code != null ? esc(String(d.status_code)) : 'ERR';
+      const retry = d.attempt > 1 ? '<span class="log-retry">retry #' + esc(String(d.attempt)) + '</span>' : '';
+      const errSpan = d.error ? '<span class="log-error" title="' + esc(d.error) + '">' + esc(d.error) + '</span>' : '';
+      const chevron = hasPreview ? '<span class="log-chevron">&#x276F;</span>' : '<span class="log-chevron"></span>';
+      const onclick = hasPreview ? ' onclick="toggleDeliveryPreview(' + d.id + ')"' : '';
+      const previewPanel = hasPreview ? renderPreviewPanel(d) : '';
+      return (
+        '<div class="webhook-log-row' + (hasPreview ? ' has-preview' : '') + '" data-testid="delivery-row-' + d.id + '"' + onclick + '>' +
+          chevron + ok +
+          '<span class="log-status">' + status + '</span>' +
+          '<span class="log-event">' + esc(d.event_type || '') + '</span>' +
+          retry +
+          '<span class="log-time">' + esc(d.timestamp || '') + '</span>' +
+          errSpan +
+        '</div>' +
+        previewPanel
+      );
+    }
+
+    function renderPreviewPanel(d) {
+      let panel = '<div class="webhook-preview-panel" data-testid="delivery-preview-' + d.id + '">';
+      if (d.request_body_preview) {
+        panel += '<div><div class="preview-label">Request body</div>' +
+          '<pre data-testid="delivery-request-' + d.id + '">' + esc(d.request_body_preview) + '</pre></div>';
+      }
+      if (d.response_body_preview) {
+        panel += '<div><div class="preview-label">Response body</div>' +
+          '<pre data-testid="delivery-response-' + d.id + '">' + esc(d.response_body_preview) + '</pre></div>';
+      }
+      panel += '</div>';
+      return panel;
+    }
+
+    function toggleDeliveryPreview(deliveryId) {
+      const row = document.querySelector('[data-testid="delivery-row-' + deliveryId + '"]');
+      if (row) row.classList.toggle('expanded');
     }
 
     function getDeviceNameById(id) {
