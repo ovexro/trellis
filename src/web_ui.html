@@ -11,6 +11,7 @@
 <title>Trellis</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235eead4'/%3E%3Ctext x='16' y='22' font-family='system-ui,sans-serif' font-size='20' font-weight='800' text-anchor='middle' fill='%23062c2e'%3ET%3C/text%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%235eead4'/%3E%3Ctext x='90' y='124' font-family='system-ui,sans-serif' font-size='112' font-weight='800' text-anchor='middle' fill='%23062c2e'%3ET%3C/text%3E%3C/svg%3E">
+<link rel="manifest" href="/manifest.webmanifest">
 <style>
 :root{
   --bg:#0b0d10;--panel:#15181d;--panel2:#1c2026;--bd:#252a32;
@@ -124,6 +125,9 @@ footer a{text-decoration:none}
 .pwa .pt span{font-size:11px;color:var(--mut)}
 .pwa .px{background:transparent;border:none;color:var(--mut);font-size:20px;line-height:1;padding:4px 8px;cursor:pointer;border-radius:6px;flex:none}
 .pwa .px:hover{color:var(--fg);background:#ffffff0a}
+.pwa .pgo{display:none;background:var(--accd);color:#06292a;border:none;border-radius:9px;padding:7px 12px;font:700 12px/1 -apple-system,system-ui,sans-serif;cursor:pointer;flex:none;transition:filter .15s}
+.pwa .pgo:hover{filter:brightness(1.1)}
+.pwa .pgo.show{display:inline-block}
 /* peers (LAN-wide control) */
 .peers{margin-top:24px;display:none}
 .peers.show{display:block}
@@ -248,6 +252,7 @@ footer a{text-decoration:none}
 <div class="pwa" id="pwaHint" role="dialog" aria-label="Install hint">
   <div class="pi">T</div>
   <div class="pt"><b id="pwaTitle">Add to Home Screen</b><span id="pwaSub">Install for one-tap access</span></div>
+  <button type="button" class="pgo" id="pwaInstall" aria-label="Install app">Install</button>
   <button type="button" class="px" id="pwaClose" aria-label="Dismiss">×</button>
 </div>
 <script>
@@ -604,26 +609,73 @@ function otaReboot(){
 $("otaDismiss").addEventListener("click",otaHide);
 $("otaOverlay").addEventListener("click",function(e){if(e.target===this&&ota.failed)otaHide()});
 
-/* ---------- Add to Home Screen hint ---------- */
+/* ---------- Add to Home Screen hint + real install prompt ----------
+   Two paths converge on the same #pwaHint UI:
+   - beforeinstallprompt (Android Chrome, desktop Chrome) → real Install button
+     that calls deferredPrompt.prompt(). When this fires, the iOS-style instruction
+     text is swapped for the action affordance.
+   - No event (iOS Safari) → fall back to platform-specific instruction text via
+     maybeShowPwaHint(); Android-without-event also falls into the instruction path.
+   The hint is mobile-only by default; beforeinstallprompt is allowed to force it
+   on desktop too since Trellis devices on a LAN are commonly visited from a laptop. */
+var deferredInstall=null;
+function showPwaHint(){
+  try{
+    if(localStorage.getItem("trellis_pwa_hint_seen")==="1")return;
+    if(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)return;
+    if(window.navigator.standalone)return; /* iOS standalone */
+    $("pwaHint").classList.add("show");
+  }catch(e){}
+}
 function maybeShowPwaHint(){
   try{
     if(localStorage.getItem("trellis_pwa_hint_seen")==="1")return;
     if(window.matchMedia&&window.matchMedia("(display-mode: standalone)").matches)return;
     if(window.navigator.standalone)return; /* iOS */
-    if(window.innerWidth>=768)return; /* mobile only */
+    if(window.innerWidth>=768)return; /* mobile-only fallback path */
     var ua=navigator.userAgent||"";
     var isIOS=/iPad|iPhone|iPod/.test(ua)&&!window.MSStream;
     var isAndroid=/Android/.test(ua);
     if(!isIOS&&!isAndroid)return;
     if(isIOS){$("pwaSub").textContent="Tap Share, then Add to Home Screen"}
     else{$("pwaSub").textContent="Tap menu (⋮), then Add to Home Screen"}
-    setTimeout(function(){$("pwaHint").classList.add("show")},1200);
+    /* Delay slightly so beforeinstallprompt has a chance to upgrade the text first */
+    setTimeout(function(){if(!deferredInstall)$("pwaHint").classList.add("show")},1200);
   }catch(e){}
 }
+window.addEventListener("beforeinstallprompt",function(e){
+  e.preventDefault();
+  deferredInstall=e;
+  $("pwaSub").textContent="One-tap install";
+  $("pwaInstall").classList.add("show");
+  showPwaHint();
+});
+window.addEventListener("appinstalled",function(){
+  deferredInstall=null;
+  $("pwaHint").classList.remove("show");
+  try{localStorage.setItem("trellis_pwa_hint_seen","1")}catch(e){}
+});
+$("pwaInstall").addEventListener("click",function(){
+  if(!deferredInstall)return;
+  deferredInstall.prompt();
+  deferredInstall.userChoice.then(function(c){
+    deferredInstall=null;
+    $("pwaHint").classList.remove("show");
+    if(c&&c.outcome==="accepted"){try{localStorage.setItem("trellis_pwa_hint_seen","1")}catch(e){}}
+  });
+});
 $("pwaClose").addEventListener("click",function(){
   $("pwaHint").classList.remove("show");
   try{localStorage.setItem("trellis_pwa_hint_seen","1")}catch(e){}
 });
+/* Register the service worker so the dashboard precaches and survives brief LAN drops.
+   The SW file is served from origin root → automatic full-origin scope; no header needed.
+   Cache strategy lives in /sw.js. Failures are silent — the page works without a SW. */
+if("serviceWorker" in navigator){
+  window.addEventListener("load",function(){
+    navigator.serviceWorker.register("/sw.js").catch(function(){})
+  });
+}
 
 /* ---------- scenes + schedules (on-device automation) ----------
    The Scenes section captures the current state of all controllable caps

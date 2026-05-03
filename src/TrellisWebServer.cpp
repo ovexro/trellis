@@ -2,6 +2,77 @@
 #include "Trellis.h"
 #include "TrellisWebUI_html.h"
 
+// PWA assets served alongside the embedded dashboard. Together they make the
+// dashboard "Add to Home Screen"-installable on iOS + Android and let the page
+// reload from cache when the LAN drops out for a few seconds.
+//
+// Why colocated here instead of separate header(s): both blobs are tiny
+// (~1.4 KB combined), version-coupled to the firmware (cache key uses
+// TRELLIS_VERSION so OTA invalidates), and only this translation unit reads
+// them. Splitting into TrellisPwa_h would buy nothing and add a build-script
+// step to re-export the lean library tree.
+//
+// SW_BODY_PROGMEM: served at /sw.js with a `self.TRELLIS_VERSION = "..."` line
+// prepended at request time. Cache strategy: precache shell (cache-first),
+// /api/info (network-first with cache fallback), everything else passthrough.
+// Mutating requests (POST, etc.) bypass the SW so failures surface to the UI.
+static const char SW_BODY_PROGMEM[] PROGMEM = R"SWJS(
+const VERSION=self.TRELLIS_VERSION;
+const STATIC_CACHE='trellis-static-'+VERSION;
+const RUNTIME_CACHE='trellis-runtime-'+VERSION;
+const PRECACHE=['/','/icon.svg','/manifest.webmanifest'];
+self.addEventListener('install',(e)=>{
+  e.waitUntil((async()=>{
+    const c=await caches.open(STATIC_CACHE);
+    await c.addAll(PRECACHE);
+    self.skipWaiting();
+  })());
+});
+self.addEventListener('activate',(e)=>{
+  e.waitUntil((async()=>{
+    const keys=await caches.keys();
+    await Promise.all(keys.filter((k)=>k!==STATIC_CACHE&&k!==RUNTIME_CACHE).map((k)=>caches.delete(k)));
+    self.clients.claim();
+  })());
+});
+self.addEventListener('fetch',(e)=>{
+  const req=e.request;
+  if(req.method!=='GET')return;
+  const url=new URL(req.url);
+  if(url.origin!==self.location.origin)return;
+  if(PRECACHE.indexOf(url.pathname)!==-1){
+    e.respondWith(caches.match(req).then((r)=>r||fetch(req)));
+    return;
+  }
+  if(url.pathname==='/api/info'){
+    e.respondWith((async()=>{
+      try{
+        const fresh=await fetch(req);
+        if(fresh&&fresh.ok){
+          const c=await caches.open(RUNTIME_CACHE);
+          c.put(req,fresh.clone());
+        }
+        return fresh;
+      }catch(err){
+        const cached=await caches.match(req);
+        if(cached)return cached;
+        throw err;
+      }
+    })());
+  }
+});
+)SWJS";
+
+// Maskable SVG so Android's adaptive icon can crop without clipping the "T" —
+// dark outer frame acts as the safety zone, teal inner tile is the brand mark.
+static const char ICON_SVG_PROGMEM[] PROGMEM =
+  "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\">"
+  "<rect width=\"512\" height=\"512\" rx=\"96\" fill=\"#0b0d10\"/>"
+  "<rect x=\"96\" y=\"96\" width=\"320\" height=\"320\" rx=\"56\" fill=\"#5eead4\"/>"
+  "<text x=\"256\" y=\"332\" font-family=\"-apple-system,system-ui,sans-serif\" "
+  "font-size=\"240\" font-weight=\"800\" text-anchor=\"middle\" fill=\"#062c2e\">T</text>"
+  "</svg>";
+
 TrellisWebServer::TrellisWebServer(Trellis* trellis)
   : _trellis(trellis), _http(nullptr), _ws(nullptr), _webUIEnabled(true) {}
 
@@ -21,6 +92,13 @@ void TrellisWebServer::begin(uint16_t port) {
   // Always register the route — handler checks _webUIEnabled at request time so
   // enableWebUI(false) works after begin() too.
   _http->on("/", HTTP_GET, [this]() { handleWebUI(); });
+  // PWA assets — manifest carries the device's display name so each Trellis on
+  // the LAN installs as its own home-screen tile; sw.js + icon.svg are static
+  // PROGMEM bodies. All three respect _webUIEnabled (no point installing a PWA
+  // for a UI that's been turned off).
+  _http->on("/manifest.webmanifest", HTTP_GET, [this]() { handleManifest(); });
+  _http->on("/sw.js",                HTTP_GET, [this]() { handleServiceWorker(); });
+  _http->on("/icon.svg",             HTTP_GET, [this]() { handleIcon(); });
 
   // Register the request headers we want to read inside our handlers. The
   // Arduino WebServer library doesn't capture headers by default — anything
@@ -94,6 +172,70 @@ void TrellisWebServer::handleWebUI() {
   // Serve the embedded dashboard from PROGMEM. send_P streams directly from
   // flash so we don't pull the whole HTML into RAM.
   _http->send_P(200, PSTR("text/html; charset=utf-8"), TRELLIS_WEB_UI_HTML);
+}
+
+void TrellisWebServer::handleManifest() {
+  if (!_webUIEnabled) {
+    _http->send(404, PSTR("text/plain"), PSTR("Web UI disabled"));
+    return;
+  }
+  // The manifest is built per-request so each device's display name appears
+  // as its own home-screen tile name. start_url=/ + display=standalone is the
+  // bare minimum that triggers Chrome's installability heuristic alongside a
+  // registered SW; theme + background match the dashboard's dark palette so
+  // the install splash and address bar don't strobe to white during launch.
+  JsonDocument doc;
+  const char* deviceName = _trellis->getName();
+  doc["name"] = deviceName;
+  doc["short_name"] = deviceName;
+  doc["start_url"] = "/";
+  doc["scope"] = "/";
+  doc["display"] = "standalone";
+  doc["orientation"] = "portrait";
+  doc["theme_color"] = "#0b0d10";
+  doc["background_color"] = "#0b0d10";
+  // One SVG with sizes:any covers every density. purpose:any maskable lets
+  // Android crop the safe region without clipping the brand mark.
+  JsonArray icons = doc["icons"].to<JsonArray>();
+  JsonObject icon = icons.add<JsonObject>();
+  icon["src"] = "/icon.svg";
+  icon["sizes"] = "any";
+  icon["type"] = "image/svg+xml";
+  icon["purpose"] = "any maskable";
+  String json;
+  serializeJson(doc, json);
+  _http->sendHeader("Cache-Control", "no-cache");
+  _http->send(200, "application/manifest+json", json);
+}
+
+void TrellisWebServer::handleServiceWorker() {
+  if (!_webUIEnabled) {
+    _http->send(404, PSTR("text/plain"), PSTR("Web UI disabled"));
+    return;
+  }
+  // Prepend the firmware version so the SW byte-content changes on every
+  // release — that triggers the install→activate cycle that cleans up old
+  // caches in handleServiceWorker's `activate` listener.
+  String body;
+  body.reserve(sizeof(SW_BODY_PROGMEM) + 64);
+  body += "self.TRELLIS_VERSION=\"";
+  body += TRELLIS_VERSION;
+  body += "\";";
+  body += FPSTR(SW_BODY_PROGMEM);
+  // SW must be served with a JS content-type and Cache-Control: no-cache so
+  // browsers re-check on every page load. The 24h max-age default would let
+  // an updated firmware ship without the new SW being noticed.
+  _http->sendHeader("Cache-Control", "no-cache");
+  _http->send(200, "text/javascript; charset=utf-8", body);
+}
+
+void TrellisWebServer::handleIcon() {
+  if (!_webUIEnabled) {
+    _http->send(404, PSTR("text/plain"), PSTR("Web UI disabled"));
+    return;
+  }
+  _http->sendHeader("Cache-Control", "public, max-age=86400");
+  _http->send_P(200, PSTR("image/svg+xml"), ICON_SVG_PROGMEM);
 }
 
 String TrellisWebServer::buildInfoJson() {

@@ -31,6 +31,9 @@ private:
   void handleInfo();
   void handlePeers();
   void handleWebUI();
+  void handleManifest();
+  void handleServiceWorker();
+  void handleIcon();
   void handleScenesGet();
   void handleScenesPost();
   void handleSceneRecall();
