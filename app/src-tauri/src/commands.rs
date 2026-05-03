@@ -1044,8 +1044,13 @@ pub fn log_webhook_delivery(
 #[tauri::command]
 pub fn get_webhook_deliveries(
     db: State<'_, Database>, webhook_id: i64, limit: Option<i64>,
+    event_type: Option<String>, success: Option<bool>,
+    since: Option<String>, until: Option<String>,
 ) -> Result<Vec<crate::db::WebhookDelivery>, String> {
-    db.get_webhook_deliveries(webhook_id, limit.unwrap_or(20))
+    let filter = crate::db::DeliveryFilter {
+        event_type, success, since, until,
+    };
+    db.get_webhook_deliveries(webhook_id, limit.unwrap_or(20), Some(&filter))
 }
 
 // ─── Device templates ───────────────────────────────────────────────────────

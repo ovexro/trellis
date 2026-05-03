@@ -1795,22 +1795,59 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_webhook_deliveries(&self, webhook_id: i64, limit: i64) -> Result<Vec<WebhookDelivery>, String> {
+    pub fn get_webhook_deliveries(
+        &self,
+        webhook_id: i64,
+        limit: i64,
+        filter: Option<&DeliveryFilter>,
+    ) -> Result<Vec<WebhookDelivery>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+
+        let mut sql = String::from(
             "SELECT id, webhook_id, event_type, status_code, success, error, attempt, timestamp,
                     request_body_preview, response_body_preview
-             FROM webhook_deliveries WHERE webhook_id = ?1 ORDER BY id DESC LIMIT ?2"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(rusqlite::params![webhook_id, limit], |row| {
-            Ok(WebhookDelivery {
-                id: row.get(0)?, webhook_id: row.get(1)?, event_type: row.get(2)?,
-                status_code: row.get(3)?, success: row.get(4)?, error: row.get(5)?,
-                attempt: row.get(6)?, timestamp: row.get(7)?,
-                request_body_preview: row.get(8)?,
-                response_body_preview: row.get(9)?,
+             FROM webhook_deliveries WHERE webhook_id = ?",
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(webhook_id)];
+
+        if let Some(f) = filter {
+            if let Some(ev) = f.event_type.as_deref().filter(|s| !s.is_empty()) {
+                sql.push_str(" AND event_type = ?");
+                params.push(Box::new(ev.to_string()));
+            }
+            if let Some(s) = f.success {
+                sql.push_str(" AND success = ?");
+                params.push(Box::new(if s { 1i64 } else { 0i64 }));
+            }
+            if let Some(since) = f.since.as_deref().filter(|s| !s.is_empty()) {
+                // datetime(?) normalises ISO 8601 input to the same TEXT shape
+                // SQLite stores via `datetime('now')` ('YYYY-MM-DD HH:MM:SS'),
+                // so callers can pass either 'T'- or space-separated forms
+                // without depending on URL-encoding quirks in the parser.
+                sql.push_str(" AND timestamp >= datetime(?)");
+                params.push(Box::new(since.to_string()));
+            }
+            if let Some(until) = f.until.as_deref().filter(|s| !s.is_empty()) {
+                sql.push_str(" AND timestamp <= datetime(?)");
+                params.push(Box::new(until.to_string()));
+            }
+        }
+
+        sql.push_str(" ORDER BY id DESC LIMIT ?");
+        params.push(Box::new(limit));
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())), |row| {
+                Ok(WebhookDelivery {
+                    id: row.get(0)?, webhook_id: row.get(1)?, event_type: row.get(2)?,
+                    status_code: row.get(3)?, success: row.get(4)?, error: row.get(5)?,
+                    attempt: row.get(6)?, timestamp: row.get(7)?,
+                    request_body_preview: row.get(8)?,
+                    response_body_preview: row.get(9)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
@@ -2994,6 +3031,27 @@ pub struct WebhookDelivery {
     pub timestamp: String,
     pub request_body_preview: Option<String>,
     pub response_body_preview: Option<String>,
+}
+
+/// Filter applied to `get_webhook_deliveries`. Every field is independently
+/// optional; `None` (or the default) means "no constraint on this dimension".
+/// Empty strings inside `Some` are treated as `None` so callers can pass
+/// query-string values directly without re-checking for emptiness.
+#[derive(Debug, Clone, Default)]
+pub struct DeliveryFilter {
+    /// Exact `event_type` match. The dispatcher already canonicalises both
+    /// dot- and underscore-form to dot-form before logging, so an exact
+    /// equality compare against the stored value is correct.
+    pub event_type: Option<String>,
+    /// `Some(true)` keeps only success rows, `Some(false)` keeps only
+    /// failures, `None` keeps both.
+    pub success: Option<bool>,
+    /// Inclusive ISO 8601 lower bound (`timestamp >= ?`). Compared as a
+    /// string — the column stores `datetime('now')` which is sortable
+    /// lexicographically.
+    pub since: Option<String>,
+    /// Inclusive ISO 8601 upper bound (`timestamp <= ?`).
+    pub until: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4311,7 +4369,7 @@ mod tests {
             id, "device.offline", Some(200), true, None, 1,
             Some(req), Some(resp),
         ).unwrap();
-        let rows = db.get_webhook_deliveries(id, 10).unwrap();
+        let rows = db.get_webhook_deliveries(id, 10, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].request_body_preview.as_deref(), Some(req));
         assert_eq!(rows[0].response_body_preview.as_deref(), Some(resp));
@@ -4344,7 +4402,7 @@ mod tests {
                 rusqlite::params![id],
             ).unwrap();
         }
-        let rows = db.get_webhook_deliveries(id, 10).unwrap();
+        let rows = db.get_webhook_deliveries(id, 10, None).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].request_body_preview.is_none());
         assert!(rows[0].response_body_preview.is_none());
@@ -4357,6 +4415,189 @@ mod tests {
              VALUES (?1, 'device.offline', 200, 1, NULL, 1, datetime('now', ?2))",
             rusqlite::params![webhook_id, format!("-{} days", days_ago)],
         ).unwrap();
+    }
+
+    /// v0.32.0 slot 3/3 — filter helpers.
+    /// Build a fixture with a mix of event_types, success/failure, and ages so each
+    /// filter dimension (and combinations) can be exercised against the same rows.
+    fn seed_mixed_deliveries(db: &Database, webhook_id: i64) {
+        // 3 device.offline (2 success, 1 failure)
+        db.log_webhook_delivery(webhook_id, "device.offline", Some(200), true,  None,            1, None, None).unwrap();
+        db.log_webhook_delivery(webhook_id, "device.offline", Some(500), false, Some("oops"),    1, None, None).unwrap();
+        db.log_webhook_delivery(webhook_id, "device.offline", Some(200), true,  None,            1, None, None).unwrap();
+        // 2 device.online (1 success, 1 failure)
+        db.log_webhook_delivery(webhook_id, "device.online",  Some(204), true,  None,            1, None, None).unwrap();
+        db.log_webhook_delivery(webhook_id, "device.online",  None,      false, Some("timeout"), 2, None, None).unwrap();
+        // 1 alert.triggered (success)
+        db.log_webhook_delivery(webhook_id, "alert.triggered", Some(200), true, None,            1, None, None).unwrap();
+    }
+
+    #[test]
+    fn filter_by_event_type_narrows_to_matching_rows() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        let filter = DeliveryFilter { event_type: Some("device.offline".into()), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 3, "three device.offline rows seeded");
+        assert!(rows.iter().all(|r| r.event_type == "device.offline"));
+    }
+
+    #[test]
+    fn filter_by_success_keeps_only_success_rows() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        let filter = DeliveryFilter { success: Some(true), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 4, "4 of 6 seeded rows are success");
+        assert!(rows.iter().all(|r| r.success));
+    }
+
+    #[test]
+    fn filter_by_failure_keeps_only_failure_rows() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        let filter = DeliveryFilter { success: Some(false), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 2, "2 of 6 seeded rows are failures");
+        assert!(rows.iter().all(|r| !r.success));
+    }
+
+    #[test]
+    fn filter_by_since_keeps_rows_at_or_after_bound() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("device.offline", None, "https://example.com/hook", "Offline").unwrap();
+        // 3 rows at days_ago = 10, 5, 0 (today)
+        insert_webhook_delivery_at(&db, id, 10);
+        insert_webhook_delivery_at(&db, id, 5);
+        insert_webhook_delivery_at(&db, id, 0);
+        // since = 7 days ago should keep the 5d + 0d rows (not the 10d row).
+        let conn = db.conn.lock().unwrap();
+        let bound: String = conn.query_row(
+            "SELECT datetime('now', '-7 days')", [], |r| r.get(0),
+        ).unwrap();
+        drop(conn);
+        let filter = DeliveryFilter { since: Some(bound), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 2, "rows from 5 + 0 days ago kept; 10d dropped");
+    }
+
+    #[test]
+    fn filter_since_accepts_both_iso_separators() {
+        // The :9090 dashboard sends 'T'-separated ISO so URL '+'/space encoding
+        // can't bite us; the desktop sender does the same. The DB layer must
+        // accept either via datetime(?). Verify the SQL handles both.
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("device.offline", None, "https://example.com/hook", "Offline").unwrap();
+        insert_webhook_delivery_at(&db, id, 10);
+        insert_webhook_delivery_at(&db, id, 0);
+
+        let conn = db.conn.lock().unwrap();
+        let space_form: String = conn.query_row(
+            "SELECT datetime('now', '-7 days')", [], |r| r.get(0),
+        ).unwrap();
+        drop(conn);
+        let t_form = space_form.replacen(' ', "T", 1);
+
+        for bound in [&space_form, &t_form] {
+            let filter = DeliveryFilter { since: Some(bound.clone()), ..Default::default() };
+            let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+            assert_eq!(rows.len(), 1, "since={bound:?} should keep only the 0-day-old row");
+        }
+    }
+
+    #[test]
+    fn filter_by_until_keeps_rows_at_or_before_bound() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("device.offline", None, "https://example.com/hook", "Offline").unwrap();
+        insert_webhook_delivery_at(&db, id, 10);
+        insert_webhook_delivery_at(&db, id, 5);
+        insert_webhook_delivery_at(&db, id, 0);
+        let conn = db.conn.lock().unwrap();
+        let bound: String = conn.query_row(
+            "SELECT datetime('now', '-3 days')", [], |r| r.get(0),
+        ).unwrap();
+        drop(conn);
+        // until = 3 days ago should keep the 5d + 10d rows (not today).
+        let filter = DeliveryFilter { until: Some(bound), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 2, "rows older than 3d kept; 0d dropped");
+    }
+
+    #[test]
+    fn filter_combined_event_and_status_intersect() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        // Successful device.offline rows only (2 of 6).
+        let filter = DeliveryFilter {
+            event_type: Some("device.offline".into()),
+            success: Some(true),
+            ..Default::default()
+        };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.event_type == "device.offline" && r.success));
+    }
+
+    #[test]
+    fn filter_empty_string_fields_are_ignored() {
+        // The REST handler may pass through `?event=` / `?since=` as empty
+        // strings when the dropdown is on "All". Empty values must be treated
+        // as "no constraint", not as a literal-empty match (which would
+        // return zero rows).
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        let filter = DeliveryFilter {
+            event_type: Some(String::new()),
+            since: Some(String::new()),
+            until: Some(String::new()),
+            ..Default::default()
+        };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 6, "all 6 seeded rows returned when filters are empty strings");
+    }
+
+    #[test]
+    fn filter_no_match_returns_empty_vec() {
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("*", None, "https://example.com/hook", "All events").unwrap();
+        seed_mixed_deliveries(&db, id);
+        let filter = DeliveryFilter {
+            event_type: Some("nope.never.fired".into()),
+            ..Default::default()
+        };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn filter_legacy_rows_remain_addressable() {
+        // Pre-v0.31.0 rows lacking body_preview columns must still be filterable
+        // by the new dimensions — the filter operates on columns that have always
+        // existed (event_type, success, timestamp).
+        let db = new_webhooks_test_db();
+        let id = db.create_webhook("device.offline", None, "https://example.com/hook", "Offline").unwrap();
+        {
+            let c = db.conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
+                 VALUES (?1, 'device.offline', 200, 1, NULL, 1, datetime('now'))",
+                rusqlite::params![id],
+            ).unwrap();
+            c.execute(
+                "INSERT INTO webhook_deliveries (webhook_id, event_type, status_code, success, error, attempt, timestamp)
+                 VALUES (?1, 'device.offline', 500, 0, 'oops', 1, datetime('now'))",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+        let filter = DeliveryFilter { success: Some(false), ..Default::default() };
+        let rows = db.get_webhook_deliveries(id, 100, Some(&filter)).unwrap();
+        assert_eq!(rows.len(), 1, "only the legacy failure row matches success=false");
+        assert!(rows[0].request_body_preview.is_none());
     }
 
     #[test]
@@ -4373,7 +4614,7 @@ mod tests {
         let deleted = db.cleanup_old_webhook_deliveries(30).unwrap();
         assert_eq!(deleted, 2, "rows at 100d + 60d should be deleted, 5d + 0d kept");
 
-        let remaining = db.get_webhook_deliveries(id, 100).unwrap();
+        let remaining = db.get_webhook_deliveries(id, 100, None).unwrap();
         assert_eq!(remaining.len(), 2, "two recent rows should remain");
     }
 
@@ -4389,7 +4630,7 @@ mod tests {
         let deleted = db.cleanup_old_webhook_deliveries(365).unwrap();
         assert_eq!(deleted, 0, "no rows older than 365d");
 
-        let remaining = db.get_webhook_deliveries(id, 100).unwrap();
+        let remaining = db.get_webhook_deliveries(id, 100, None).unwrap();
         assert_eq!(remaining.len(), 2);
     }
 

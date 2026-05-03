@@ -557,6 +557,26 @@
       max-height: 11rem; overflow-y: auto;
     }
 
+    /* ── Webhook delivery filter (v0.32.0 slot 3/3) ── */
+    .webhook-log-filters {
+      display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;
+      padding-bottom: 0.5rem; margin-bottom: 0.4rem;
+      border-bottom: 1px dashed var(--border);
+    }
+    .webhook-log-filters select {
+      background: rgba(0,0,0,0.35); color: var(--text-dim);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 0.15rem 0.35rem; font-size: 0.7rem;
+      font-family: inherit;
+    }
+    .webhook-log-filters .filter-reset {
+      background: transparent; border: none; color: var(--text-faint);
+      font-size: 0.7rem; text-decoration: underline; cursor: pointer;
+      padding: 0;
+    }
+    .webhook-log-filters .filter-reset:hover { color: var(--accent); }
+    .webhook-log-filters .filter-reset[hidden] { display: none; }
+
     /* ── Settings ── */
     .settings-section {
       background: var(--card); border: 1px solid var(--border);
@@ -4992,12 +5012,116 @@
         const container = document.getElementById('webhook-log-' + webhookId);
         if (container && container.classList.contains('shown')) {
           // Refresh open log so the just-fired row appears at the top.
-          container.classList.remove('shown');
-          await toggleWebhookLog(webhookId);
+          // Preserve current filter state (v0.32.0 slot 3/3) — collapsing/
+          // re-expanding would wipe it.
+          await refreshWebhookLogList(webhookId, false);
         }
       } catch (e) {
         toast('Test failed: ' + (e.message || e), 'error');
       }
+    }
+
+    /* v0.32.0 slot 3/3: per-webhook delivery-log filter state.
+       Mirrors Automation.tsx loadDeliveries: event-type dropdown options are
+       captured on first (unfiltered) expand so filtering down to one event
+       doesn't shrink the dropdown; subsequent fetches union-merge new event
+       types so a test fire that introduces a new event type still appears. */
+    const webhookLogState = new Map();
+    function getWebhookLogState(id) {
+      if (!webhookLogState.has(id)) {
+        webhookLogState.set(id, { event: '', status: 'all', range: 'all', options: [] });
+      }
+      return webhookLogState.get(id);
+    }
+    function sinceForWebhookRange(r) {
+      if (r === 'all') return null;
+      const ms = r === '24h' ? 86400000 : r === '7d' ? 7*86400000 : 30*86400000;
+      // The backend normalises via datetime(?) so 'T'-separated ISO works
+      // directly and sidesteps the URL '+'/space encoding ambiguity.
+      return new Date(Date.now() - ms).toISOString().slice(0, 19);
+    }
+    function buildDeliveriesPath(id) {
+      const s = getWebhookLogState(id);
+      const params = new URLSearchParams();
+      if (s.event) params.set('event', s.event);
+      if (s.status !== 'all') params.set('status', s.status);
+      const since = sinceForWebhookRange(s.range);
+      if (since) params.set('since', since);
+      const qs = params.toString();
+      return '/api/webhooks/' + id + '/deliveries' + (qs ? '?' + qs : '');
+    }
+
+    function renderWebhookLogFilters(id) {
+      const s = getWebhookLogState(id);
+      const opts = ['<option value="">All events</option>']
+        .concat(s.options.map(ev => '<option value="' + esc(ev) + '"' + (s.event === ev ? ' selected' : '') + '>' + esc(ev) + '</option>'))
+        .join('');
+      const sel = (val, cur) => cur === val ? ' selected' : '';
+      const isFiltered = !!(s.event || s.status !== 'all' || s.range !== 'all');
+      return (
+        '<div class="webhook-log-filters" data-testid="delivery-filters-' + id + '">' +
+          '<select data-testid="delivery-filter-event-' + id + '" onchange="applyWebhookLogFilter(' + id + ',\'event\',this.value)" aria-label="Filter by event">' + opts + '</select>' +
+          '<select data-testid="delivery-filter-status-' + id + '" onchange="applyWebhookLogFilter(' + id + ',\'status\',this.value)" aria-label="Filter by status">' +
+            '<option value="all"' + sel('all', s.status) + '>All</option>' +
+            '<option value="success"' + sel('success', s.status) + '>Success</option>' +
+            '<option value="failure"' + sel('failure', s.status) + '>Failure</option>' +
+          '</select>' +
+          '<select data-testid="delivery-filter-range-' + id + '" onchange="applyWebhookLogFilter(' + id + ',\'range\',this.value)" aria-label="Filter by date range">' +
+            '<option value="all"' + sel('all', s.range) + '>All time</option>' +
+            '<option value="24h"' + sel('24h', s.range) + '>Last 24h</option>' +
+            '<option value="7d"' + sel('7d', s.range) + '>Last 7d</option>' +
+            '<option value="30d"' + sel('30d', s.range) + '>Last 30d</option>' +
+          '</select>' +
+          '<button class="filter-reset" data-testid="delivery-filter-reset-' + id + '" onclick="resetWebhookLogFilter(' + id + ')"' + (isFiltered ? '' : ' hidden') + '>Reset</button>' +
+        '</div>'
+      );
+    }
+
+    async function refreshWebhookLogList(id, captureOptions) {
+      const list = document.getElementById('webhook-log-list-' + id);
+      if (!list) return;
+      list.innerHTML = '<div class="webhook-log-empty">Loading\u2026</div>';
+      try {
+        const deliveries = await api(buildDeliveriesPath(id));
+        const s = getWebhookLogState(id);
+        if (captureOptions) {
+          const seen = new Set();
+          (deliveries || []).forEach(d => d.event_type && seen.add(d.event_type));
+          s.options = Array.from(seen).sort();
+        } else {
+          const merged = new Set(s.options);
+          (deliveries || []).forEach(d => d.event_type && merged.add(d.event_type));
+          s.options = Array.from(merged).sort();
+        }
+        if (!deliveries || !deliveries.length) {
+          const isFiltered = !!(s.event || s.status !== 'all' || s.range !== 'all');
+          list.innerHTML = '<div class="webhook-log-empty" data-testid="delivery-empty-' + id + '">' +
+            (isFiltered ? 'No deliveries match the current filter' : 'No deliveries yet') +
+            '</div>';
+        } else {
+          list.innerHTML = deliveries.map(renderDeliveryRow).join('');
+        }
+        // Refresh filter row in case event-type options changed (e.g. test fire).
+        const filtersEl = document.querySelector('[data-testid="delivery-filters-' + id + '"]');
+        if (filtersEl) filtersEl.outerHTML = renderWebhookLogFilters(id);
+      } catch (e) {
+        list.innerHTML = '<div class="webhook-log-empty" style="color:var(--red);">Could not load deliveries: ' + esc(e.message || e) + '</div>';
+      }
+    }
+
+    async function applyWebhookLogFilter(id, key, value) {
+      const s = getWebhookLogState(id);
+      s[key] = value;
+      await refreshWebhookLogList(id, false);
+    }
+
+    async function resetWebhookLogFilter(id) {
+      const s = getWebhookLogState(id);
+      s.event = ''; s.status = 'all'; s.range = 'all';
+      // Re-render the filter row immediately so the selects + Reset button update.
+      const filtersEl = document.querySelector('[data-testid="delivery-filters-' + id + '"]');
+      if (filtersEl) filtersEl.outerHTML = renderWebhookLogFilters(id);
+      await refreshWebhookLogList(id, false);
     }
 
     async function toggleWebhookLog(webhookId) {
@@ -5006,20 +5130,17 @@
       if (container.classList.contains('shown')) {
         container.classList.remove('shown');
         container.innerHTML = '';
+        // Drop persisted filter state on collapse so a re-expand starts clean.
+        webhookLogState.delete(webhookId);
         return;
       }
-      container.innerHTML = '<div class="webhook-log-empty">Loading\u2026</div>';
+      // Reset filter state (re-expand starts unfiltered) and render scaffold.
+      webhookLogState.delete(webhookId);
+      container.innerHTML = renderWebhookLogFilters(webhookId) +
+        '<div class="webhook-log-list" id="webhook-log-list-' + webhookId + '">' +
+        '<div class="webhook-log-empty">Loading\u2026</div></div>';
       container.classList.add('shown');
-      try {
-        const deliveries = await api('/api/webhooks/' + webhookId + '/deliveries');
-        if (!deliveries || !deliveries.length) {
-          container.innerHTML = '<div class="webhook-log-empty">No deliveries yet</div>';
-          return;
-        }
-        container.innerHTML = deliveries.map(renderDeliveryRow).join('');
-      } catch (e) {
-        container.innerHTML = '<div class="webhook-log-empty" style="color:var(--red);">Could not load deliveries: ' + esc(e.message || e) + '</div>';
-      }
+      await refreshWebhookLogList(webhookId, true);
     }
 
     function renderDeliveryRow(d) {

@@ -243,12 +243,43 @@ fn parse_query_string(qs: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for pair in qs.split('&') {
         if let Some(idx) = pair.find('=') {
-            let key = &pair[..idx];
-            let val = &pair[idx + 1..];
-            map.insert(key.to_string(), val.to_string());
+            let key = pct_decode(&pair[..idx]);
+            let val = pct_decode(&pair[idx + 1..]);
+            map.insert(key, val);
         }
     }
     map
+}
+
+/// Minimal application/x-www-form-urlencoded decoder. `+` → space, `%XX` →
+/// byte. Invalid escapes pass through unchanged so the parser is total.
+/// Added v0.32.0 slot 3/3 — prior callers (`limit`, `hours`, `severity`,
+/// alphanumeric values only) are unaffected since percent-encoding is a no-op
+/// for unreserved characters. The new webhook delivery filter sends ISO
+/// timestamps where `:` is percent-encoded by `URLSearchParams`, which is
+/// what motivated lifting the parser to actually decode.
+fn pct_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => { out.push(b' '); i += 1; }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                if let (Some(h), Some(l)) = (hi, lo) {
+                    out.push((h * 16 + l) as u8);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())
 }
 
 // ─── HTTP response helpers ──────────────────────────────────────────────────
@@ -1538,13 +1569,39 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
         }
 
         // ─── Webhook deliveries ────────────────────────────────────
+        // v0.32.0 slot 3/3: optional filter params narrow the returned set.
+        //   ?event=device.offline      exact event_type match
+        //   ?status=success|failure    success column = 1 / 0
+        //   ?since=2026-05-03T00:00    inclusive ISO timestamp lower bound
+        //   ?until=2026-05-03T23:59    inclusive ISO timestamp upper bound
+        //   ?limit=N                   capped at MAX_DELIVERY_LIMIT
+        // Unknown `status` values are ignored (treated as "no constraint")
+        // rather than rejected, so the desktop / :9090 dropdown can send the
+        // raw selection without sanitising. Empty strings are also no-ops.
         ("GET", p) if p.starts_with("/api/webhooks/") && p.ends_with("/deliveries") => {
             let middle = &p["/api/webhooks/".len()..p.len()-"/deliveries".len()];
             let wh_id: i64 = match middle.parse() {
                 Ok(id) => id,
                 Err(_) => return json_error(400, "Invalid webhook ID"),
             };
-            match ctx.db.get_webhook_deliveries(wh_id, 50) {
+            const DEFAULT_DELIVERY_LIMIT: i64 = 50;
+            const MAX_DELIVERY_LIMIT: i64 = 200;
+            let limit = req.query.get("limit")
+                .and_then(|l| l.parse::<i64>().ok())
+                .map(|l| l.clamp(1, MAX_DELIVERY_LIMIT))
+                .unwrap_or(DEFAULT_DELIVERY_LIMIT);
+            let success = match req.query.get("status").map(|s| s.as_str()) {
+                Some("success") => Some(true),
+                Some("failure") => Some(false),
+                _ => None,
+            };
+            let filter = crate::db::DeliveryFilter {
+                event_type: req.query.get("event").cloned(),
+                success,
+                since: req.query.get("since").cloned(),
+                until: req.query.get("until").cloned(),
+            };
+            match ctx.db.get_webhook_deliveries(wh_id, limit, Some(&filter)) {
                 Ok(d) => json_ok(&d),
                 Err(e) => json_error(500, &e),
             }
@@ -2980,4 +3037,43 @@ fn handle_refresh_marketplace_remote(ctx: &ApiContext) -> (u16, String) {
 
 fn get_web_ui() -> String {
     include_str!("web_ui.html").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pct_decode_passes_unreserved_through() {
+        assert_eq!(pct_decode("hello"), "hello");
+        assert_eq!(pct_decode("device.offline"), "device.offline");
+    }
+
+    #[test]
+    fn pct_decode_plus_to_space() {
+        assert_eq!(pct_decode("a+b"), "a b");
+    }
+
+    #[test]
+    fn pct_decode_percent_escapes() {
+        // `:` → %3A is what URLSearchParams emits inside ISO timestamps.
+        assert_eq!(pct_decode("2026-04-03T08%3A42%3A00"), "2026-04-03T08:42:00");
+        assert_eq!(pct_decode("a%2Bb"), "a+b");
+        assert_eq!(pct_decode("%20"), " ");
+    }
+
+    #[test]
+    fn pct_decode_invalid_escape_passes_through() {
+        // Malformed input must not panic; the parser stays total.
+        assert_eq!(pct_decode("%ZZ"), "%ZZ");
+        assert_eq!(pct_decode("%"), "%");
+        assert_eq!(pct_decode("%2"), "%2");
+    }
+
+    #[test]
+    fn parse_query_string_decodes_iso_timestamp() {
+        let q = parse_query_string("since=2026-04-03T08%3A42%3A00&event=device.offline");
+        assert_eq!(q.get("since").map(|s| s.as_str()), Some("2026-04-03T08:42:00"));
+        assert_eq!(q.get("event").map(|s| s.as_str()), Some("device.offline"));
+    }
 }

@@ -123,6 +123,26 @@ export default function Automation() {
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   const [expandedDelivery, setExpandedDelivery] = useState<number | null>(null);
 
+  // v0.32.0 slot 3/3: delivery log filter. Range presets convert to a `since`
+  // ISO timestamp at fetch time; "all" sends no since. Event-type dropdown
+  // options are captured on first (unfiltered) expand so filtering down to one
+  // event type doesn't shrink the dropdown.
+  type DeliveryRange = "all" | "24h" | "7d" | "30d";
+  type DeliveryStatus = "all" | "success" | "failure";
+  const [filterEvent, setFilterEvent] = useState<string>("");
+  const [filterStatus, setFilterStatus] = useState<DeliveryStatus>("all");
+  const [filterRange, setFilterRange] = useState<DeliveryRange>("all");
+  const [eventOptions, setEventOptions] = useState<string[]>([]);
+
+  const sinceForRange = (r: DeliveryRange): string | null => {
+    if (r === "all") return null;
+    const now = new Date();
+    const ms = r === "24h" ? 86400000 : r === "7d" ? 7 * 86400000 : 30 * 86400000;
+    // SQL normalises via datetime(?) so 'T'-separated ISO works directly and
+    // sidesteps the URL '+'/space encoding ambiguity in the :9090 query string.
+    return new Date(now.getTime() - ms).toISOString().slice(0, 19);
+  };
+
   const onlineDevices = devices.filter((d) => d.online);
 
   useEffect(() => {
@@ -256,11 +276,40 @@ export default function Automation() {
     }
   };
 
-  const loadDeliveries = async (webhookId: number) => {
+  const loadDeliveries = async (
+    webhookId: number,
+    overrides?: { event?: string; status?: DeliveryStatus; range?: DeliveryRange; captureOptions?: boolean },
+  ) => {
     setDeliveriesLoading(true);
+    const eventArg = overrides?.event !== undefined ? overrides.event : filterEvent;
+    const statusArg = overrides?.status !== undefined ? overrides.status : filterStatus;
+    const rangeArg = overrides?.range !== undefined ? overrides.range : filterRange;
     try {
-      const d = await invoke<WebhookDelivery[]>("get_webhook_deliveries", { webhookId, limit: 20 });
+      const d = await invoke<WebhookDelivery[]>("get_webhook_deliveries", {
+        webhookId,
+        limit: 100,
+        eventType: eventArg || null,
+        success: statusArg === "all" ? null : statusArg === "success",
+        since: sinceForRange(rangeArg),
+        until: null,
+      });
       setDeliveries(d);
+      // First-load capture: build event-type dropdown from the unfiltered set
+      // so users can pick an event that no longer matches the current filter
+      // without having to clear filters first.
+      if (overrides?.captureOptions) {
+        const seen = new Set<string>();
+        d.forEach((row) => row.event_type && seen.add(row.event_type));
+        setEventOptions(Array.from(seen).sort());
+      } else {
+        // Union-merge so new event types observed in subsequent fetches (e.g.
+        // after a test fire) appear in the dropdown without a re-expand.
+        setEventOptions((prev) => {
+          const merged = new Set(prev);
+          d.forEach((row) => row.event_type && merged.add(row.event_type));
+          return Array.from(merged).sort();
+        });
+      }
     } catch {
       setDeliveries([]);
     } finally {
@@ -271,10 +320,29 @@ export default function Automation() {
   const toggleDeliveryLog = async (webhookId: number) => {
     if (expandedWebhook === webhookId) {
       setExpandedWebhook(null);
+      setEventOptions([]);
     } else {
       setExpandedWebhook(webhookId);
-      await loadDeliveries(webhookId);
+      // Reset filters when opening a new webhook so prior selections don't bleed
+      // through into a different webhook's log.
+      setFilterEvent("");
+      setFilterStatus("all");
+      setFilterRange("all");
+      setExpandedDelivery(null);
+      await loadDeliveries(webhookId, {
+        event: "", status: "all", range: "all", captureOptions: true,
+      });
     }
+  };
+
+  const applyDeliveryFilter = async (
+    webhookId: number,
+    next: { event?: string; status?: DeliveryStatus; range?: DeliveryRange },
+  ) => {
+    if (next.event !== undefined) setFilterEvent(next.event);
+    if (next.status !== undefined) setFilterStatus(next.status);
+    if (next.range !== undefined) setFilterRange(next.range);
+    await loadDeliveries(webhookId, next);
   };
 
   const isValidUrl = (url: string): boolean => {
@@ -865,11 +933,61 @@ export default function Automation() {
                   </div>
                   {expandedWebhook === w.id && (
                     <div className="border-t border-zinc-800 px-4 py-3">
-                      <p className="text-[11px] text-zinc-500 uppercase tracking-wider mb-2">Delivery Log</p>
+                      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                        <p className="text-[11px] text-zinc-500 uppercase tracking-wider">Delivery Log</p>
+                        <div className="flex items-center gap-1.5" data-testid={`delivery-filters-${w.id}`}>
+                          <select
+                            data-testid={`delivery-filter-event-${w.id}`}
+                            value={filterEvent}
+                            onChange={(e) => applyDeliveryFilter(w.id, { event: e.target.value })}
+                            className="bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[11px] text-zinc-300"
+                            aria-label="Filter by event"
+                          >
+                            <option value="">All events</option>
+                            {eventOptions.map((ev) => (
+                              <option key={ev} value={ev}>{ev}</option>
+                            ))}
+                          </select>
+                          <select
+                            data-testid={`delivery-filter-status-${w.id}`}
+                            value={filterStatus}
+                            onChange={(e) => applyDeliveryFilter(w.id, { status: e.target.value as DeliveryStatus })}
+                            className="bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[11px] text-zinc-300"
+                            aria-label="Filter by status"
+                          >
+                            <option value="all">All</option>
+                            <option value="success">Success</option>
+                            <option value="failure">Failure</option>
+                          </select>
+                          <select
+                            data-testid={`delivery-filter-range-${w.id}`}
+                            value={filterRange}
+                            onChange={(e) => applyDeliveryFilter(w.id, { range: e.target.value as DeliveryRange })}
+                            className="bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-[11px] text-zinc-300"
+                            aria-label="Filter by date range"
+                          >
+                            <option value="all">All time</option>
+                            <option value="24h">Last 24h</option>
+                            <option value="7d">Last 7d</option>
+                            <option value="30d">Last 30d</option>
+                          </select>
+                          {(filterEvent || filterStatus !== "all" || filterRange !== "all") && (
+                            <button
+                              data-testid={`delivery-filter-reset-${w.id}`}
+                              onClick={() => applyDeliveryFilter(w.id, { event: "", status: "all", range: "all" })}
+                              className="text-[11px] text-zinc-500 hover:text-trellis-400 underline"
+                            >Reset</button>
+                          )}
+                        </div>
+                      </div>
                       {deliveriesLoading ? (
                         <Loader2 size={14} className="animate-spin text-zinc-500" />
                       ) : deliveries.length === 0 ? (
-                        <p className="text-xs text-zinc-600">No deliveries yet</p>
+                        <p className="text-xs text-zinc-600" data-testid={`delivery-empty-${w.id}`}>
+                          {(filterEvent || filterStatus !== "all" || filterRange !== "all")
+                            ? "No deliveries match the current filter"
+                            : "No deliveries yet"}
+                        </p>
                       ) : (
                         <div className="space-y-1 max-h-72 overflow-y-auto">
                           {deliveries.map((d) => {
