@@ -1614,6 +1614,20 @@ pub fn get_marketplace_templates_command() -> Vec<MarketplaceTemplate> {
     marketplace::current().to_vec()
 }
 
+#[tauri::command]
+pub fn get_marketplace_remote_command(
+    db: State<'_, Database>,
+) -> crate::marketplace_remote::RemoteResponse {
+    crate::marketplace_remote::get_response(&db)
+}
+
+#[tauri::command]
+pub fn refresh_marketplace_remote_command(
+    db: State<'_, Database>,
+) -> crate::marketplace_remote::RemoteResponse {
+    crate::marketplace_remote::refresh(&db)
+}
+
 // ─── Quick Flash (arduino-cli integration) ─────────────────────────────────
 
 #[tauri::command]

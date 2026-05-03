@@ -9,6 +9,7 @@ mod diagnostics;
 mod discovery;
 mod lib_manifest;
 mod marketplace;
+mod marketplace_remote;
 mod mqtt;
 mod ota;
 mod scheduler;
@@ -240,6 +241,8 @@ pub fn run() {
             generate_sketch_command,
             get_sketch_lib_info_command,
             get_marketplace_templates_command,
+            get_marketplace_remote_command,
+            refresh_marketplace_remote_command,
             get_mqtt_config,
             set_mqtt_config,
             clear_mqtt_password,

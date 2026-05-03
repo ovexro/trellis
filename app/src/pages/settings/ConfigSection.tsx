@@ -13,6 +13,10 @@ export default function ConfigSection() {
   const [webhookRetention, setWebhookRetention] = useState("30");
   const [costPerKwh, setCostPerKwh] = useState("");
   const [currency, setCurrency] = useState("USD");
+  const [marketplaceRemoteEnabled, setMarketplaceRemoteEnabled] = useState(false);
+  const [marketplaceRemoteUrl, setMarketplaceRemoteUrl] = useState("");
+  const [marketplaceRefreshing, setMarketplaceRefreshing] = useState(false);
+  const [marketplaceRefreshNotice, setMarketplaceRefreshNotice] = useState("");
 
   useEffect(() => {
     invoke<string | null>("get_setting", { key: "scan_interval" }).then((val) => {
@@ -29,6 +33,12 @@ export default function ConfigSection() {
     }).catch(() => {});
     invoke<string | null>("get_setting", { key: "currency" }).then((val) => {
       if (val) setCurrency(val);
+    }).catch(() => {});
+    invoke<string | null>("get_setting", { key: "marketplace_remote_enabled" }).then((val) => {
+      setMarketplaceRemoteEnabled(val === "true");
+    }).catch(() => {});
+    invoke<string | null>("get_setting", { key: "marketplace_remote_url" }).then((val) => {
+      if (val) setMarketplaceRemoteUrl(val);
     }).catch(() => {});
   }, []);
 
@@ -494,6 +504,117 @@ export default function ConfigSection() {
         </div>
         <p className="text-xs text-zinc-600 mt-2">
           Optional. When set, device Energy cards estimate a cost alongside the measured Wh. Leave blank to show energy only.
+        </p>
+      </div>
+
+      {/* Remote marketplace manifest (v0.32.0 slot 1) — opt-in fetch of community
+          templates merged into the Sketch Generator's marketplace grid. Local
+          (bundled + saved) always wins on id collision; entries with unknown
+          capability kinds are filtered server-side. */}
+      <div>
+        <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wide mb-3">
+          Marketplace
+        </h2>
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-zinc-300">Community templates</label>
+          <button
+            data-testid="marketplace-remote-toggle"
+            onClick={async () => {
+              const next = !marketplaceRemoteEnabled;
+              setMarketplaceRemoteEnabled(next);
+              try {
+                await invoke("set_setting", {
+                  key: "marketplace_remote_enabled",
+                  value: next ? "true" : "false",
+                });
+              } catch (err) {
+                console.error("Failed to save marketplace toggle:", err);
+              }
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs border ${
+              marketplaceRemoteEnabled
+                ? "bg-trellis-700 border-trellis-600 text-white"
+                : "bg-zinc-800 border-zinc-700 text-zinc-300"
+            }`}
+          >
+            {marketplaceRemoteEnabled ? "Enabled" : "Disabled"}
+          </button>
+        </div>
+        <div className="flex items-center gap-3 mt-3">
+          <label
+            htmlFor="marketplaceRemoteUrl"
+            className="text-sm text-zinc-300 shrink-0"
+          >
+            Manifest URL
+          </label>
+          <input
+            id="marketplaceRemoteUrl"
+            data-testid="marketplace-remote-url"
+            type="url"
+            placeholder="https://example.com/marketplace_templates.json"
+            value={marketplaceRemoteUrl}
+            onChange={(e) => setMarketplaceRemoteUrl(e.target.value)}
+            onBlur={async () => {
+              const trimmed = marketplaceRemoteUrl.trim();
+              try {
+                await invoke("set_setting", {
+                  key: "marketplace_remote_url",
+                  value: trimmed,
+                });
+                setMarketplaceRemoteUrl(trimmed);
+              } catch (err) {
+                console.error("Failed to save marketplace URL:", err);
+              }
+            }}
+            className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-zinc-300"
+          />
+          <button
+            data-testid="marketplace-remote-refresh"
+            disabled={!marketplaceRemoteEnabled || marketplaceRefreshing}
+            onClick={async () => {
+              setMarketplaceRefreshing(true);
+              setMarketplaceRefreshNotice("");
+              try {
+                const resp = await invoke<{
+                  templates: unknown[];
+                  error: string | null;
+                }>("refresh_marketplace_remote_command");
+                if (resp.error) {
+                  setMarketplaceRefreshNotice(`Error: ${resp.error}`);
+                } else {
+                  setMarketplaceRefreshNotice(
+                    `Loaded ${resp.templates.length} community template${resp.templates.length === 1 ? "" : "s"}.`
+                  );
+                }
+              } catch (err) {
+                setMarketplaceRefreshNotice(`Refresh failed: ${err}`);
+              } finally {
+                setMarketplaceRefreshing(false);
+              }
+            }}
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
+          >
+            {marketplaceRefreshing ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+        {marketplaceRefreshNotice && (
+          <p
+            data-testid="marketplace-remote-notice"
+            className={`text-xs mt-2 ${
+              marketplaceRefreshNotice.startsWith("Error") ||
+              marketplaceRefreshNotice.startsWith("Refresh failed")
+                ? "text-red-400"
+                : "text-zinc-500"
+            }`}
+          >
+            {marketplaceRefreshNotice}
+          </p>
+        )}
+        <p className="text-xs text-zinc-600 mt-2">
+          When enabled, the Sketch Generator&rsquo;s Marketplace grid merges
+          entries from this URL alongside bundled and saved templates. Local
+          templates always win on id collision; results are cached for 5
+          minutes.
         </p>
       </div>
     </>

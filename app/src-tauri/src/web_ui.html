@@ -6286,6 +6286,11 @@
         }
       }
       try {
+        sketchState.remoteMarketplace = await api('/api/sketch/marketplace/remote');
+      } catch (e) {
+        sketchState.remoteMarketplace = null;
+      }
+      try {
         sketchState.savedTemplates = await api('/api/templates');
       } catch (e) {
         sketchState.savedTemplates = [];
@@ -6320,7 +6325,7 @@
           libBadge +
         '</div>' +
         '<div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">' +
-          '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + (sketchState.savedTemplates ? sketchState.savedTemplates.length : 0)) + ')</button>' +
+          '<button id="sketchMarketplaceBtn" data-testid="marketplace-btn" onclick="toggleMarketplacePanel()" style="' + btnSecondary + '">Marketplace (' + sketchMarketplaceCount() + ')</button>' +
           '<button id="sketchSaveTplBtn" data-testid="save-template-btn" onclick="openSketchSavePanel()" style="' + btnSecondary + '">Save as template</button>' +
           '<button id="sketchExportTplBtn" data-testid="export-template-btn" onclick="exportSketchTemplate()" style="' + btnSecondary + '">Export template</button>' +
           '<button id="sketchImportTplBtn" data-testid="import-template-btn" onclick="importSketchTemplate()" style="' + btnSecondary + '">Import template</button>' +
@@ -6515,7 +6520,38 @@
       setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
     }
 
-    /* Marketplace — bundled curated catalog + saved templates, single source of truth across surfaces. */
+    /* Marketplace — bundled curated catalog + saved templates + opt-in remote
+       community templates (v0.32.0 slot 1), single source of truth across
+       surfaces. The remote list is fetched via /api/sketch/marketplace/remote;
+       local always wins on id collision (filtered server-side). */
+    function sketchMarketplaceCount() {
+      const bundled = (sketchState.marketplace || []).length;
+      const saved = (sketchState.savedTemplates || []).length;
+      const community = (sketchState.remoteMarketplace && sketchState.remoteMarketplace.templates)
+        ? sketchState.remoteMarketplace.templates.length
+        : 0;
+      return bundled + saved + community;
+    }
+    function updateSketchMarketplaceBtn() {
+      const btn = document.getElementById('sketchMarketplaceBtn');
+      if (btn) btn.textContent = 'Marketplace (' + sketchMarketplaceCount() + ')';
+    }
+    async function refreshSketchCommunity() {
+      try {
+        sketchState.remoteMarketplace = await api('/api/sketch/marketplace/refresh', { method: 'POST' });
+      } catch (e) {
+        sketchState.remoteMarketplace = {
+          enabled: true,
+          url: '',
+          templates: [],
+          error: String(e),
+          fetched_at: null,
+        };
+      }
+      updateSketchMarketplaceBtn();
+      const panel = document.getElementById('sketchMarketplacePanel');
+      if (panel && panel.style.display !== 'none') renderMarketplacePanel(panel);
+    }
     function toggleMarketplacePanel() {
       const panel = document.getElementById('sketchMarketplacePanel');
       if (!panel) return;
@@ -6529,7 +6565,10 @@
     function renderMarketplacePanel(panel) {
       const bundled = sketchState.marketplace || [];
       const saved = sketchState.savedTemplates || [];
-      if (bundled.length === 0 && saved.length === 0) {
+      const remote = sketchState.remoteMarketplace || null;
+      const community = remote && remote.templates ? remote.templates : [];
+      const remoteEnabled = !!(remote && remote.enabled);
+      if (bundled.length === 0 && saved.length === 0 && community.length === 0 && !remoteEnabled) {
         panel.innerHTML = '<div style="padding:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;font-size:0.75rem;color:var(--text-faint);">No templates available. Save your current capability set or import a JSON template.</div>';
         return;
       }
@@ -6571,11 +6610,44 @@
         }).join('');
         html += '<div data-testid="marketplace-saved-section"><div style="' + sectionTitle + '">My Saved</div><div style="' + grid + '">' + savedCards + '</div></div>';
       }
+      if (remoteEnabled) {
+        const refreshBtn = '<button data-testid="marketplace-community-refresh" onclick="refreshSketchCommunity()" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.7rem;padding:0;">Refresh</button>';
+        const headerRow = '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.4rem;"><div style="' + sectionTitle + 'margin:0;">Community</div>' + refreshBtn + '</div>';
+        let body = '';
+        if (remote && remote.error) {
+          body = '<div data-testid="marketplace-community-error" style="font-size:0.7rem;color:#fca5a5;margin-bottom:0.4rem;">' + esc(remote.error) + '</div>';
+        }
+        if (community.length === 0 && !(remote && remote.error)) {
+          body += '<div style="font-size:0.7rem;color:var(--text-faint);">No community templates available.</div>';
+        }
+        if (community.length > 0) {
+          const communityCards = community.map(function (t) {
+            const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
+            const author = t.author ? '<div style="font-size:0.65rem;color:var(--text-faint);margin-top:0.15rem;">by ' + esc(t.author) + '</div>' : '';
+            return '<button data-testid="community-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + 'cursor:pointer;">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
+                  '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
+                  '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
+                '</div>' +
+                '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
+                author +
+              '</div>' +
+            '</button>';
+          }).join('');
+          body += '<div style="' + grid + '">' + communityCards + '</div>';
+        }
+        html += '<div data-testid="marketplace-community-section">' + headerRow + body + '</div>';
+      }
       html += '</div>';
       panel.innerHTML = html;
     }
     function loadMarketplaceTemplate(id) {
-      const items = sketchState.marketplace || [];
+      const bundled = sketchState.marketplace || [];
+      const community = (sketchState.remoteMarketplace && sketchState.remoteMarketplace.templates)
+        ? sketchState.remoteMarketplace.templates
+        : [];
+      const items = bundled.concat(community);
       const t = items.find(function (x) { return String(x.id) === id; });
       if (!t) return;
       sketchState.deviceName = t.name;
@@ -6639,7 +6711,7 @@
         const panel = document.getElementById('sketchMarketplacePanel');
         if (panel) renderMarketplacePanel(panel);
         const btn = document.getElementById('sketchMarketplaceBtn');
-        if (btn) btn.textContent = 'Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + sketchState.savedTemplates.length) + ')';
+        if (btn) btn.textContent = 'Marketplace (' + sketchMarketplaceCount() + ')';
       } catch (e) {
         toast('Failed to delete template: ' + e, 'error');
       }
@@ -6718,7 +6790,7 @@
         sketchState.showSavePanel = false;
         renderSketchSavePanel();
         const btn = document.getElementById('sketchMarketplaceBtn');
-        if (btn) btn.textContent = 'Marketplace (' + ((sketchState.marketplace ? sketchState.marketplace.length : 0) + sketchState.savedTemplates.length) + ')';
+        if (btn) btn.textContent = 'Marketplace (' + sketchMarketplaceCount() + ')';
         toast('Template saved');
       } catch (e) {
         toast('Failed to save template: ' + e, 'error');

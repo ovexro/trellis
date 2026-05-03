@@ -1960,6 +1960,14 @@ fn route(req: &HttpRequest, ctx: &ApiContext, role: Role, token_id: Option<i64>)
             if let Some(denied) = require_admin(role) { return denied; }
             handle_get_marketplace()
         }
+        ("GET", "/api/sketch/marketplace/remote") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_get_marketplace_remote(ctx)
+        }
+        ("POST", "/api/sketch/marketplace/refresh") => {
+            if let Some(denied) = require_admin(role) { return denied; }
+            handle_refresh_marketplace_remote(ctx)
+        }
 
         // ─── Fallback ───────────────────────────────────────────────
         _ => json_error(404, &format!("Not found: {} {}", req.method, req.path)),
@@ -2958,6 +2966,14 @@ fn handle_get_sketch_lib_info() -> (u16, String) {
 
 fn handle_get_marketplace() -> (u16, String) {
     json_ok(&crate::marketplace::current().to_vec())
+}
+
+fn handle_get_marketplace_remote(ctx: &ApiContext) -> (u16, String) {
+    json_ok(&crate::marketplace_remote::get_response(&ctx.db))
+}
+
+fn handle_refresh_marketplace_remote(ctx: &ApiContext) -> (u16, String) {
+    json_ok(&crate::marketplace_remote::refresh(&ctx.db))
 }
 
 // ─── Web UI (placeholder — will be replaced in Batch 4) ─────────────────────

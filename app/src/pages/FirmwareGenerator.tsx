@@ -117,6 +117,14 @@ interface MarketplaceTemplate {
   capabilities: CapabilityDef[];
 }
 
+interface RemoteMarketplaceResponse {
+  enabled: boolean;
+  url: string;
+  templates: MarketplaceTemplate[];
+  error: string | null;
+  fetched_at: number | null;
+}
+
 const BOARD_FQBN: Record<string, string> = {
   esp32: "esp32:esp32:esp32",
   picow: "rp2040:rp2040:rpipicow",
@@ -130,6 +138,9 @@ export default function FirmwareGenerator() {
   const [templates, setTemplates] = useState<TemplateDef[]>([]);
   const [marketplace, setMarketplace] = useState<MarketplaceTemplate[]>([]);
   const [showMarketplace, setShowMarketplace] = useState(false);
+  const [remoteMarketplace, setRemoteMarketplace] =
+    useState<RemoteMarketplaceResponse | null>(null);
+  const [refreshingRemote, setRefreshingRemote] = useState(false);
   // Save-as-template panel — replaces window.prompt() with an inline form so users
   // can pick a marketplace icon, attach an author tag, and fill a description that
   // shows on the saved card. v0.30.0 slot 3/3.
@@ -186,6 +197,28 @@ export default function FirmwareGenerator() {
       .then(setMarketplace)
       .catch(() => setMarketplace([]));
   }, []);
+
+  useEffect(() => {
+    invoke<RemoteMarketplaceResponse>("get_marketplace_remote_command")
+      .then(setRemoteMarketplace)
+      .catch(() => setRemoteMarketplace(null));
+  }, []);
+
+  const refreshRemoteMarketplace = async () => {
+    setRefreshingRemote(true);
+    try {
+      const resp = await invoke<RemoteMarketplaceResponse>(
+        "refresh_marketplace_remote_command"
+      );
+      setRemoteMarketplace(resp);
+    } catch {
+      // Errors are surfaced via the response shape; a hard rejection here is
+      // unexpected (Tauri command never returns Err) — swallow to avoid a
+      // noisy toast.
+    } finally {
+      setRefreshingRemote(false);
+    }
+  };
 
   // Restore last-used template metadata from localStorage on mount.
   useEffect(() => {
@@ -649,10 +682,18 @@ export default function FirmwareGenerator() {
           <button
             data-testid="marketplace-btn"
             onClick={() => setShowMarketplace(!showMarketplace)}
-            disabled={marketplace.length === 0 && templates.length === 0}
+            disabled={
+              marketplace.length === 0 &&
+              templates.length === 0 &&
+              (remoteMarketplace?.templates.length ?? 0) === 0
+            }
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700/50 rounded-lg text-xs text-zinc-300 disabled:opacity-30"
           >
-            <Store size={12} /> Marketplace ({marketplace.length + templates.length})
+            <Store size={12} /> Marketplace (
+            {marketplace.length +
+              templates.length +
+              (remoteMarketplace?.templates.length ?? 0)}
+            )
           </button>
           <button
             data-testid="save-template-btn"
@@ -841,7 +882,11 @@ export default function FirmwareGenerator() {
           </div>
         )}
 
-        {showMarketplace && (marketplace.length > 0 || templates.length > 0) && (
+        {showMarketplace &&
+          (marketplace.length > 0 ||
+            templates.length > 0 ||
+            (remoteMarketplace?.templates.length ?? 0) > 0 ||
+            remoteMarketplace?.enabled) && (
           <div
             data-testid="marketplace-grid"
             className="mb-4 p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-3"
@@ -918,6 +963,74 @@ export default function FirmwareGenerator() {
                     );
                   })}
                 </div>
+              </div>
+            )}
+            {remoteMarketplace?.enabled && (
+              <div data-testid="marketplace-community-section">
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-[11px] text-zinc-500 uppercase tracking-wide">
+                    Community
+                  </p>
+                  <button
+                    data-testid="marketplace-community-refresh"
+                    onClick={refreshRemoteMarketplace}
+                    disabled={refreshingRemote}
+                    className="text-[10px] text-zinc-500 hover:text-zinc-300 disabled:opacity-30"
+                  >
+                    {refreshingRemote ? "Refreshing…" : "Refresh"}
+                  </button>
+                </div>
+                {remoteMarketplace.error && (
+                  <p
+                    data-testid="marketplace-community-error"
+                    className="text-[11px] text-red-400 mb-1.5"
+                  >
+                    {remoteMarketplace.error}
+                  </p>
+                )}
+                {remoteMarketplace.templates.length === 0 &&
+                  !remoteMarketplace.error && (
+                    <p className="text-[11px] text-zinc-600 mb-1.5">
+                      No community templates available.
+                    </p>
+                  )}
+                {remoteMarketplace.templates.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {remoteMarketplace.templates.map((t) => {
+                      const Icon = MARKETPLACE_ICONS[t.icon] ?? Cpu;
+                      return (
+                        <button
+                          key={t.id}
+                          data-testid={`community-card-${t.id}`}
+                          onClick={() => loadMarketplaceTemplate(t)}
+                          className="flex items-start gap-2.5 p-2.5 bg-zinc-950/60 hover:bg-zinc-800/70 border border-zinc-800 hover:border-trellis-700/40 rounded-lg text-left transition-colors"
+                        >
+                          <div className="shrink-0 w-8 h-8 rounded-md bg-trellis-900/30 border border-trellis-800/40 flex items-center justify-center text-trellis-300">
+                            <Icon size={14} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-baseline justify-between gap-2">
+                              <p className="text-xs text-zinc-200 font-medium truncate">
+                                {t.name}
+                              </p>
+                              <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">
+                                {t.board}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">
+                              {t.description}
+                            </p>
+                            {t.author && (
+                              <p className="text-[10px] text-zinc-600 mt-0.5 truncate">
+                                by {t.author}
+                              </p>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
