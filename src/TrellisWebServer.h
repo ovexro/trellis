@@ -31,10 +31,24 @@ private:
   void handleInfo();
   void handlePeers();
   void handleWebUI();
+  void handleScenesGet();
+  void handleScenesPost();
+  void handleSceneRecall();
+  void handleSceneDelete();
+  void handleSchedulesGet();
+  void handleSchedulesPost();
+  void handleScheduleDelete();
   void handleWebSocket(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
   void processCommand(uint8_t num, const char* json);
   String buildInfoJson();
   String buildPeersJson();
+  String buildScenesJson();
+  String buildSchedulesJson();
+  // Read the request body — Arduino WebServer's plain() returns "" for empty
+  // POSTs and the full payload otherwise. Centralised so error handling stays
+  // consistent across the four POST routes that accept JSON bodies.
+  String readJsonBody();
+  void   sendJsonError(int code, const char* message);
 };
 
 #endif

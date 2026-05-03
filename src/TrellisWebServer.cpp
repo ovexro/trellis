@@ -11,6 +11,13 @@ void TrellisWebServer::begin(uint16_t port) {
 
   _http->on("/api/info", HTTP_GET, [this]() { handleInfo(); });
   _http->on("/api/peers", HTTP_GET, [this]() { handlePeers(); });
+  _http->on("/api/scenes",         HTTP_GET,  [this]() { handleScenesGet(); });
+  _http->on("/api/scenes",         HTTP_POST, [this]() { handleScenesPost(); });
+  _http->on("/api/scenes/recall",  HTTP_POST, [this]() { handleSceneRecall(); });
+  _http->on("/api/scenes/delete",  HTTP_POST, [this]() { handleSceneDelete(); });
+  _http->on("/api/schedules",        HTTP_GET,  [this]() { handleSchedulesGet(); });
+  _http->on("/api/schedules",        HTTP_POST, [this]() { handleSchedulesPost(); });
+  _http->on("/api/schedules/delete", HTTP_POST, [this]() { handleScheduleDelete(); });
   // Always register the route — handler checks _webUIEnabled at request time so
   // enableWebUI(false) works after begin() too.
   _http->on("/", HTTP_GET, [this]() { handleWebUI(); });
@@ -200,63 +207,9 @@ void TrellisWebServer::processCommand(uint8_t num, const char* json) {
   if (strcmp(command, "set") == 0) {
     const char* id = doc["id"];
     if (!id) return;
-
-    Capability* cap = _trellis->findCapability(id);
-    if (!cap) return;
-
-    switch (cap->type) {
-      case CapabilityType::SWITCH: {
-        bool val = doc["value"].as<bool>();
-        _trellis->setSwitch(id, val);
-        // Persist to NVS so the value survives reboots (ESP32 only)
-#if defined(ESP32)
-        {
-          Preferences prefs;
-          prefs.begin("trellis_cap", false);
-          prefs.putBool(id, val);
-          prefs.end();
-          _trellis->incrementNvsWrites();
-        }
-#endif
-        broadcastUpdate(id, val);
-        break;
-      }
-      case CapabilityType::SLIDER: {
-        float val = doc["value"].as<float>();
-        _trellis->setSlider(id, val);
-        // Persist to NVS so the value survives reboots (ESP32 only)
-#if defined(ESP32)
-        {
-          Preferences prefs;
-          prefs.begin("trellis_cap", false);
-          prefs.putFloat(id, val);
-          prefs.end();
-          _trellis->incrementNvsWrites();
-        }
-#endif
-        broadcastUpdate(id, val);
-        break;
-      }
-      case CapabilityType::COLOR: {
-        const char* val = doc["value"].as<const char*>();
-        if (val) _trellis->setColor(id, val);
-        broadcastUpdate(id, val ? val : "#000000");
-        break;
-      }
-      case CapabilityType::TEXT: {
-        const char* val = doc["value"].as<const char*>();
-        if (val) _trellis->setText(id, val);
-        broadcastUpdate(id, val ? val : "");
-        break;
-      }
-      default:
-        break;
-    }
-
-    // Call user callback if registered
-    if (_trellis->getCommandCallback()) {
-      _trellis->getCommandCallback()(id, doc["value"]);
-    }
+    // Single canonical apply path — same code TrellisScenes::recallScene
+    // calls so manual control and scene recall stay in lockstep.
+    _trellis->applyCapabilityValue(id, doc["value"]);
   }
 #if defined(ESP32)
   else if (strcmp(command, "ota") == 0) {
@@ -349,6 +302,249 @@ void TrellisWebServer::broadcastHeartbeat(const TelemetryData& telemetry) {
   String json;
   serializeJson(doc, json);
   _ws->broadcastTXT(json);
+}
+
+String TrellisWebServer::readJsonBody() {
+  // arg("plain") is how Arduino WebServer exposes the raw POST body when the
+  // Content-Type isn't form-urlencoded. Returns "" if no body was sent.
+  if (_http->hasArg("plain")) return _http->arg("plain");
+  return String();
+}
+
+void TrellisWebServer::sendJsonError(int code, const char* message) {
+  JsonDocument doc;
+  doc["error"] = message;
+  String out;
+  serializeJson(doc, out);
+  _http->sendHeader("Cache-Control", "no-store");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(code, "application/json", out);
+}
+
+String TrellisWebServer::buildScenesJson() {
+  JsonDocument doc;
+  JsonObject root = doc.to<JsonObject>();
+  JsonArray arr = root["scenes"].to<JsonArray>();
+  TrellisScenes* sc = _trellis->getScenes();
+  if (sc) {
+    std::vector<Scene> all = sc->listScenes();
+    for (const Scene& s : all) {
+      JsonObject obj = arr.add<JsonObject>();
+      obj["id"]   = s.id;
+      obj["name"] = s.name;
+      JsonArray sps = obj["setpoints"].to<JsonArray>();
+      for (const SceneSetpoint& sp : s.setpoints) {
+        JsonObject spo = sps.add<JsonObject>();
+        spo["capId"] = sp.capId;
+        // Re-parse so we ship the typed value, not the JSON-as-string. The
+        // client never has to know we store it as a string for round-trip.
+        JsonDocument vd;
+        if (deserializeJson(vd, sp.valueJson) == DeserializationError::Ok) {
+          spo["value"] = vd.as<JsonVariant>();
+        } else {
+          spo["value"] = nullptr;
+        }
+      }
+    }
+  }
+  root["max"]           = TrellisScenes::maxScenes();
+  root["maxSetpoints"]  = TrellisScenes::maxSetpoints();
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+String TrellisWebServer::buildSchedulesJson() {
+  JsonDocument doc;
+  JsonObject root = doc.to<JsonObject>();
+  JsonArray arr = root["schedules"].to<JsonArray>();
+  TrellisScenes* sc = _trellis->getScenes();
+  if (sc) {
+    std::vector<Schedule> all = sc->listSchedules();
+    for (const Schedule& s : all) {
+      JsonObject obj = arr.add<JsonObject>();
+      obj["id"]      = s.id;
+      obj["sceneId"] = s.sceneId;
+      obj["hour"]    = s.hour;
+      obj["minute"]  = s.minute;
+      obj["dow"]     = s.daysOfWeekMask;
+    }
+  }
+  root["max"] = TrellisScenes::maxSchedules();
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
+void TrellisWebServer::handleScenesGet() {
+  String out = buildScenesJson();
+  _http->sendHeader("Cache-Control", "no-store");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", out);
+}
+
+void TrellisWebServer::handleSchedulesGet() {
+  String out = buildSchedulesJson();
+  _http->sendHeader("Cache-Control", "no-store");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", out);
+}
+
+void TrellisWebServer::handleScenesPost() {
+  TrellisScenes* sc = _trellis->getScenes();
+  if (!sc) return sendJsonError(503, "scenes not initialised");
+  String body = readJsonBody();
+  if (body.length() == 0) return sendJsonError(400, "empty body");
+
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return sendJsonError(400, "invalid json");
+
+  const char* name = doc["name"] | (const char*)nullptr;
+  if (!name || !*name) return sendJsonError(400, "name required");
+
+  std::vector<SceneSetpoint> setpoints;
+  // Two accepted shapes:
+  //   1) {name, setpoints:[{capId, value}, ...]} — explicit
+  //   2) {name, capture:true} — snapshot all current cap values now
+  // Shape 2 is what the embedded UI uses for "Capture current state". Shape 1
+  // is for explicit programmatic creation (future external tooling).
+  if (doc["capture"] | false) {
+    Capability* caps = _trellis->getCapabilities();
+    uint8_t n = _trellis->getCapabilityCount();
+    for (uint8_t i = 0; i < n && setpoints.size() < TrellisScenes::maxSetpoints(); i++) {
+      Capability* cap = &caps[i];
+      // Sensors are read-only; capturing them is allowed but doesn't recall
+      // (applyCapabilityValue is silent on SENSOR). Keep them out of the
+      // capture so the scene reads cleanly to the user as "what I set".
+      if (cap->type == CapabilityType::SENSOR) continue;
+      SceneSetpoint sp;
+      sp.capId = cap->id;
+      JsonDocument vd;
+      switch (cap->type) {
+        case CapabilityType::SWITCH: vd.set(cap->boolValue);   break;
+        case CapabilityType::SLIDER: vd.set(cap->floatValue);  break;
+        case CapabilityType::COLOR:
+        case CapabilityType::TEXT:   vd.set((const char*)cap->stringValue); break;
+        default: continue;
+      }
+      String vjson;
+      serializeJson(vd, vjson);
+      sp.valueJson = vjson;
+      setpoints.push_back(sp);
+    }
+  } else {
+    JsonArray arr = doc["setpoints"].as<JsonArray>();
+    if (!arr) return sendJsonError(400, "setpoints required");
+    for (JsonObject sp : arr) {
+      const char* capId = sp["capId"] | (const char*)nullptr;
+      if (!capId) continue;
+      // Validate the capability exists at submit time so a typo is loud
+      // instead of mysteriously no-oping at recall.
+      if (!_trellis->findCapability(capId)) {
+        return sendJsonError(400, "unknown capId in setpoints");
+      }
+      SceneSetpoint s;
+      s.capId = capId;
+      String vjson;
+      // Re-serialize the value field so we store byte-clean canonical JSON
+      // regardless of how the client encoded it.
+      serializeJson(sp["value"], vjson);
+      s.valueJson = vjson;
+      setpoints.push_back(s);
+      if (setpoints.size() >= TrellisScenes::maxSetpoints()) break;
+    }
+  }
+
+  String id, err;
+  if (!sc->createScene(name, setpoints, &id, &err)) {
+    int code = err.indexOf("limit") >= 0 ? 409 : 400;
+    return sendJsonError(code, err.c_str());
+  }
+  JsonDocument out;
+  out["ok"] = true;
+  out["id"] = id;
+  String body2;
+  serializeJson(out, body2);
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", body2);
+}
+
+void TrellisWebServer::handleSceneRecall() {
+  TrellisScenes* sc = _trellis->getScenes();
+  if (!sc) return sendJsonError(503, "scenes not initialised");
+  String body = readJsonBody();
+  if (body.length() == 0) return sendJsonError(400, "empty body");
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return sendJsonError(400, "invalid json");
+  const char* id = doc["id"] | (const char*)nullptr;
+  if (!id) return sendJsonError(400, "id required");
+  String err;
+  if (!sc->recallScene(id, &err)) {
+    int code = err == "scene not found" ? 404 : 400;
+    return sendJsonError(code, err.c_str());
+  }
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", "{\"ok\":true}");
+}
+
+void TrellisWebServer::handleSceneDelete() {
+  TrellisScenes* sc = _trellis->getScenes();
+  if (!sc) return sendJsonError(503, "scenes not initialised");
+  String body = readJsonBody();
+  if (body.length() == 0) return sendJsonError(400, "empty body");
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return sendJsonError(400, "invalid json");
+  const char* id = doc["id"] | (const char*)nullptr;
+  if (!id) return sendJsonError(400, "id required");
+  if (!sc->deleteScene(id)) return sendJsonError(404, "scene not found");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", "{\"ok\":true}");
+}
+
+void TrellisWebServer::handleSchedulesPost() {
+  TrellisScenes* sc = _trellis->getScenes();
+  if (!sc) return sendJsonError(503, "scenes not initialised");
+  String body = readJsonBody();
+  if (body.length() == 0) return sendJsonError(400, "empty body");
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return sendJsonError(400, "invalid json");
+  const char* sceneId = doc["sceneId"] | (const char*)nullptr;
+  if (!sceneId) return sendJsonError(400, "sceneId required");
+  int hour   = doc["hour"]   | -1;
+  int minute = doc["minute"] | -1;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return sendJsonError(400, "hour/minute out of range");
+  }
+  // Default to "every day" if the client omits dow — common convenience for
+  // a "once per day at HH:MM" schedule that's the most likely first use.
+  uint8_t dow = doc["dow"] | 0x7F;
+  String id, err;
+  if (!sc->createSchedule(sceneId, (uint8_t)hour, (uint8_t)minute, dow, &id, &err)) {
+    int code = err.indexOf("limit") >= 0 ? 409 :
+               (err == "scene not found" ? 404 : 400);
+    return sendJsonError(code, err.c_str());
+  }
+  JsonDocument out;
+  out["ok"] = true;
+  out["id"] = id;
+  String body2;
+  serializeJson(out, body2);
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", body2);
+}
+
+void TrellisWebServer::handleScheduleDelete() {
+  TrellisScenes* sc = _trellis->getScenes();
+  if (!sc) return sendJsonError(503, "scenes not initialised");
+  String body = readJsonBody();
+  if (body.length() == 0) return sendJsonError(400, "empty body");
+  JsonDocument doc;
+  if (deserializeJson(doc, body)) return sendJsonError(400, "invalid json");
+  const char* id = doc["id"] | (const char*)nullptr;
+  if (!id) return sendJsonError(400, "id required");
+  if (!sc->deleteSchedule(id)) return sendJsonError(404, "schedule not found");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", "{\"ok\":true}");
 }
 
 void TrellisWebServer::broadcastLog(const char* severity, const char* message) {

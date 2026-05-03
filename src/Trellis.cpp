@@ -1,5 +1,9 @@
 #include "Trellis.h"
 
+#if defined(ESP32)
+  #include <Preferences.h>
+#endif
+
 Trellis::Trellis(const char* name, uint16_t port)
   : _name(name),
     _firmwareVersion("0.0.0"),
@@ -8,6 +12,7 @@ Trellis::Trellis(const char* name, uint16_t port)
     _commandCallback(nullptr),
     _webServer(nullptr),
     _discovery(nullptr),
+    _scenes(nullptr),
     _provisioning(nullptr),
     _webUIEnabled(true),
     _lastBroadcast(0),
@@ -46,6 +51,11 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
   _discovery->begin(_name, _port);
   _discovery->beginBrowse();
 
+  // Scenes + schedules. Auto-init (no opt-in) so any existing sketch picks
+  // up the feature on rebuild — matches discovery's transparent shape.
+  _scenes = new TrellisScenes();
+  _scenes->begin(this);
+
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);
   _webServer->setWebUIEnabled(_webUIEnabled);
@@ -79,6 +89,11 @@ bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
   _discovery = new TrellisDiscovery();
   _discovery->begin(_name, _port);
   _discovery->beginBrowse();
+
+  // Scenes + schedules. Auto-init (no opt-in) so any existing sketch picks
+  // up the feature on rebuild — matches discovery's transparent shape.
+  _scenes = new TrellisScenes();
+  _scenes->begin(this);
 
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);
@@ -120,6 +135,7 @@ void Trellis::loop() {
 
   _webServer->loop();
   _telemetry.update();
+  if (_scenes) _scenes->tick();
 
   unsigned long now = millis();
 
@@ -310,4 +326,61 @@ Capability* Trellis::findCapability(const char* id) {
     }
   }
   return nullptr;
+}
+
+void Trellis::applyCapabilityValue(const char* id, JsonVariant value) {
+  Capability* cap = findCapability(id);
+  if (!cap) return;
+
+  switch (cap->type) {
+    case CapabilityType::SWITCH: {
+      bool val = value.as<bool>();
+      setSwitch(id, val);
+#if defined(ESP32)
+      Preferences prefs;
+      prefs.begin("trellis_cap", false);
+      prefs.putBool(id, val);
+      prefs.end();
+      incrementNvsWrites();
+#endif
+      if (_webServer) _webServer->broadcastUpdate(id, val);
+      break;
+    }
+    case CapabilityType::SLIDER: {
+      float val = value.as<float>();
+      setSlider(id, val);
+#if defined(ESP32)
+      Preferences prefs;
+      prefs.begin("trellis_cap", false);
+      prefs.putFloat(id, val);
+      prefs.end();
+      incrementNvsWrites();
+#endif
+      if (_webServer) _webServer->broadcastUpdate(id, val);
+      break;
+    }
+    case CapabilityType::COLOR: {
+      const char* val = value.as<const char*>();
+      if (val) setColor(id, val);
+      if (_webServer) _webServer->broadcastUpdate(id, val ? val : "#000000");
+      break;
+    }
+    case CapabilityType::TEXT: {
+      const char* val = value.as<const char*>();
+      if (val) setText(id, val);
+      if (_webServer) _webServer->broadcastUpdate(id, val ? val : "");
+      break;
+    }
+    case CapabilityType::SENSOR:
+    default:
+      // Sensors are read-only from the user perspective; intentionally
+      // silent rather than failing loudly so a scene snapshotting a sensor
+      // (legitimate, just preserves the read at capture time) doesn't
+      // break recall on the rest of the setpoints.
+      break;
+  }
+
+  if (_commandCallback) {
+    _commandCallback(id, value);
+  }
 }

@@ -142,6 +142,34 @@ footer a{text-decoration:none}
 @media(min-width:560px){.peer .bgrid{grid-template-columns:1fr 1fr}.peer .bgrid .full{grid-column:1/-1}}
 .peer .pmsg{color:var(--mut);font-size:12px;padding:14px 0 4px}
 .peer .pmsg.err{color:var(--err)}
+/* scenes + schedules — on-device automation surface */
+.auto{margin-top:24px}
+.auto h2{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);font-weight:600;display:flex;align-items:center;gap:8px}
+.auto h2 .ct{font-weight:500;color:var(--mut);font-size:10px;letter-spacing:.4px}
+.row-card{background:var(--panel2);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;box-shadow:var(--shadow);transition:border-color .15s}
+.row-card:hover{border-color:#2f3540}
+.row-card .lbl{flex:1;min-width:0;overflow:hidden}
+.row-card .lbl b{display:block;font-size:13px;font-weight:600;color:var(--fg);text-overflow:ellipsis;overflow:hidden;white-space:nowrap}
+.row-card .lbl span{display:block;font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums;margin-top:1px}
+.row-card .acts{display:flex;gap:6px;flex:none}
+.btn-sm{background:var(--panel);border:1px solid var(--bd);color:var(--fg);font:600 11px/1 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.5px;padding:6px 10px;border-radius:7px;cursor:pointer;transition:.15s}
+.btn-sm:hover{border-color:#3a4150;background:#1f242c}
+.btn-sm.go{background:var(--accd);color:#06292a;border-color:var(--accd);font-weight:700}
+.btn-sm.go:hover{filter:brightness(1.1)}
+.btn-sm.danger:hover{border-color:var(--err);color:var(--err)}
+.add-form{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:12px;margin-top:6px;box-shadow:var(--shadow)}
+.add-form .frow{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.add-form .frow:last-child{margin-bottom:0}
+.add-form input[type=text],.add-form input[type=time],.add-form select{background:var(--panel2);border:1px solid var(--bd);color:var(--fg);border-radius:8px;padding:8px 10px;font:inherit;outline:none;flex:1;min-width:0;transition:border-color .15s}
+.add-form input[type=text]:focus,.add-form input[type=time]:focus,.add-form select:focus{border-color:var(--acc)}
+.add-form input[type=time]{flex:0 0 110px;font-variant-numeric:tabular-nums}
+.add-form .lab{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);font-weight:600;flex:0 0 auto}
+.dow{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+.dow label{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:28px;padding:0 7px;background:var(--panel2);border:1px solid var(--bd);border-radius:7px;font:600 11px/1 -apple-system,system-ui,sans-serif;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);cursor:pointer;transition:.12s;user-select:none}
+.dow label:hover{border-color:#3a4150;color:var(--fg)}
+.dow input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.dow label.on{background:#5eead418;color:var(--acc);border-color:var(--acc)}
+.empty-mini{color:var(--mut);font-size:12px;text-align:center;padding:14px 8px;border:1px dashed var(--bd);border-radius:10px;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -165,6 +193,33 @@ footer a{text-decoration:none}
     <div><b>Uptime</b><span id="up">—</span></div>
   </div>
   <div class="grid" id="grid"></div>
+  <section class="auto" id="scenesSec" aria-label="Scenes">
+    <h2>Scenes <span class="ct" id="scenesCt"></span></h2>
+    <div id="scenesList"></div>
+    <div class="add-form" id="sceneAdd">
+      <div class="frow">
+        <input type="text" id="sceneName" placeholder="Name this scene…" maxlength="32">
+        <button type="button" class="btn-sm go" id="sceneCapture">Capture current state</button>
+      </div>
+    </div>
+  </section>
+  <section class="auto" id="schedSec" aria-label="Schedules">
+    <h2>Schedules <span class="ct" id="schedCt"></span></h2>
+    <div id="schedList"></div>
+    <div class="add-form" id="schedAdd">
+      <div class="frow">
+        <span class="lab">Scene</span>
+        <select id="schedScene"></select>
+        <span class="lab">At</span>
+        <input type="time" id="schedTime" value="08:00">
+      </div>
+      <div class="frow">
+        <span class="lab">Days</span>
+        <div class="dow" id="schedDow"></div>
+        <button type="button" class="btn-sm go" id="schedAddBtn">Add schedule</button>
+      </div>
+    </div>
+  </section>
   <section class="peers" id="peers" aria-label="Other Trellis devices on this network">
     <h2 class="ph">Devices on this network</h2>
     <div id="peerList"></div>
@@ -570,8 +625,185 @@ $("pwaClose").addEventListener("click",function(){
   try{localStorage.setItem("trellis_pwa_hint_seen","1")}catch(e){}
 });
 
+/* ---------- scenes + schedules (on-device automation) ----------
+   The Scenes section captures the current state of all controllable caps
+   (switch / slider / color / text) into a named bundle that can be
+   recalled later or fired at a scheduled time. Persisted in NVS by the
+   library. Bounded counts come from the GET response so the UI hides the
+   capture button when full. */
+var scenesState={max:8,maxSetpoints:5,scenes:[]};
+var schedState={max:8,schedules:[],dowMask:0x7F};
+var DOW_LABELS=["S","M","T","W","T","F","S"];
+var DOW_FULL=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+function loadScenes(){
+  fetch("/api/scenes").then(function(r){return r.json()}).then(function(d){
+    if(!d||!Array.isArray(d.scenes))return;
+    scenesState.scenes=d.scenes;
+    if(typeof d.max==="number")scenesState.max=d.max;
+    if(typeof d.maxSetpoints==="number")scenesState.maxSetpoints=d.maxSetpoints;
+    renderScenes();
+    renderSchedSceneOptions();
+    /* Schedule add-form visibility depends on whether scenes exist, and
+       schedule rows show "(deleted scene)" if their scene was removed.
+       Re-render the schedule UI from the in-memory list whenever scenes
+       change — no network call needed. */
+    renderSchedules();
+  }).catch(function(){});
+}
+function loadSchedules(){
+  fetch("/api/schedules").then(function(r){return r.json()}).then(function(d){
+    if(!d||!Array.isArray(d.schedules))return;
+    schedState.schedules=d.schedules;
+    if(typeof d.max==="number")schedState.max=d.max;
+    renderSchedules();
+  }).catch(function(){});
+}
+function renderScenes(){
+  var list=$("scenesList");list.innerHTML="";
+  $("scenesCt").textContent=scenesState.scenes.length+" / "+scenesState.max;
+  if(!scenesState.scenes.length){
+    list.innerHTML='<div class="empty-mini">No scenes yet. Capture the current state to create one.</div>';
+  }else{
+    scenesState.scenes.forEach(function(s){
+      var n=(s.setpoints||[]).length;
+      var row=document.createElement("div");row.className="row-card";row.dataset.testid="scene-row-"+s.id;
+      row.innerHTML='<div class="lbl"><b></b><span></span></div>'+
+        '<div class="acts"><button type="button" class="btn-sm go" data-act="recall">Recall</button>'+
+        '<button type="button" class="btn-sm danger" data-act="delete">Delete</button></div>';
+      row.querySelector("b").textContent=s.name;
+      row.querySelector("span").textContent=n+(n===1?" setpoint":" setpoints");
+      row.querySelector('[data-act="recall"]').addEventListener("click",function(){recallScene(s.id,s.name)});
+      row.querySelector('[data-act="delete"]').addEventListener("click",function(){deleteScene(s.id,s.name)});
+      list.appendChild(row);
+    });
+  }
+  /* hide capture form when at the cap so the user gets a clear "full" signal */
+  $("sceneAdd").style.display=scenesState.scenes.length>=scenesState.max?"none":"";
+}
+function renderSchedules(){
+  var list=$("schedList");list.innerHTML="";
+  $("schedCt").textContent=schedState.schedules.length+" / "+schedState.max;
+  if(!schedState.schedules.length){
+    list.innerHTML='<div class="empty-mini">No schedules yet. Pick a scene and a time to fire it automatically.</div>';
+  }else{
+    schedState.schedules.forEach(function(s){
+      var scene=findScene(s.sceneId);
+      var name=scene?scene.name:"(deleted scene)";
+      var hh=("0"+s.hour).slice(-2),mm=("0"+s.minute).slice(-2);
+      var dow=formatDow(s.dow);
+      var row=document.createElement("div");row.className="row-card";row.dataset.testid="schedule-row-"+s.id;
+      row.innerHTML='<div class="lbl"><b></b><span></span></div>'+
+        '<div class="acts"><button type="button" class="btn-sm danger" data-act="delete">Delete</button></div>';
+      row.querySelector("b").textContent=name+" — "+hh+":"+mm+" UTC";
+      row.querySelector("span").textContent=dow;
+      row.querySelector('[data-act="delete"]').addEventListener("click",function(){deleteSchedule(s.id)});
+      list.appendChild(row);
+    });
+  }
+  $("schedAdd").style.display=(schedState.schedules.length>=schedState.max||!scenesState.scenes.length)?"none":"";
+}
+function findScene(id){for(var i=0;i<scenesState.scenes.length;i++){if(scenesState.scenes[i].id===id)return scenesState.scenes[i]}return null}
+function formatDow(mask){
+  if((mask&0x7F)===0x7F)return"Every day";
+  var parts=[];
+  for(var i=0;i<7;i++)if(mask&(1<<i))parts.push(DOW_FULL[i]);
+  return parts.length?parts.join(", "):"(never)";
+}
+function renderSchedSceneOptions(){
+  var sel=$("schedScene");
+  /* preserve current selection if it still exists, otherwise pick first */
+  var prev=sel.value;
+  sel.innerHTML="";
+  scenesState.scenes.forEach(function(s){
+    var o=document.createElement("option");o.value=s.id;o.textContent=s.name;sel.appendChild(o);
+  });
+  if(prev){
+    for(var i=0;i<sel.options.length;i++){if(sel.options[i].value===prev){sel.value=prev;break}}
+  }
+}
+function captureScene(){
+  var name=($("sceneName").value||"").trim();
+  if(!name){toast("Please name the scene first");return}
+  fetch("/api/scenes",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({name:name,capture:true})})
+    .then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})
+    .then(function(x){
+      if(!x.ok){toast(x.d&&x.d.error?x.d.error:"Could not save");return}
+      $("sceneName").value="";
+      toast('Saved "'+name+'"');
+      loadScenes();
+    }).catch(function(){toast("Could not save")});
+}
+function recallScene(id,name){
+  fetch("/api/scenes/recall",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:id})})
+    .then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})
+    .then(function(x){
+      if(!x.ok){toast(x.d&&x.d.error?x.d.error:"Recall failed");return}
+      toast('Recalled "'+name+'"');
+    }).catch(function(){toast("Recall failed")});
+}
+function deleteScene(id,name){
+  if(!confirm('Delete scene "'+name+'"?\n\nAny schedule pointing at it will be removed too.'))return;
+  fetch("/api/scenes/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:id})})
+    .then(function(r){if(!r.ok)throw 0;return r.json()})
+    .then(function(){loadScenes();loadSchedules()})
+    .catch(function(){toast("Delete failed")});
+}
+function buildDowPicker(){
+  var c=$("schedDow");c.innerHTML="";
+  for(var i=0;i<7;i++){
+    var lab=document.createElement("label");
+    lab.innerHTML='<input type="checkbox" data-bit="'+i+'" checked><span>'+DOW_LABELS[i]+'</span>';
+    lab.classList.add("on");
+    var box=lab.querySelector("input");
+    box.addEventListener("change",function(e){
+      e.target.parentNode.classList.toggle("on",e.target.checked);
+    });
+    c.appendChild(lab);
+  }
+}
+function readDowMask(){
+  var mask=0;
+  $("schedDow").querySelectorAll("input").forEach(function(b){if(b.checked)mask|=(1<<parseInt(b.dataset.bit,10))});
+  return mask;
+}
+function addSchedule(){
+  if(!scenesState.scenes.length){toast("Create a scene first");return}
+  var sceneId=$("schedScene").value;
+  if(!sceneId){toast("Pick a scene");return}
+  var t=($("schedTime").value||"").split(":");
+  if(t.length!==2){toast("Pick a time");return}
+  var h=parseInt(t[0],10),m=parseInt(t[1],10);
+  if(isNaN(h)||isNaN(m)){toast("Pick a valid time");return}
+  var dow=readDowMask();
+  if(!dow){toast("Pick at least one day");return}
+  fetch("/api/schedules",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({sceneId:sceneId,hour:h,minute:m,dow:dow})})
+    .then(function(r){return r.json().then(function(d){return{ok:r.ok,d:d}})})
+    .then(function(x){
+      if(!x.ok){toast(x.d&&x.d.error?x.d.error:"Could not add");return}
+      toast("Schedule added");
+      loadSchedules();
+    }).catch(function(){toast("Could not add")});
+}
+function deleteSchedule(id){
+  fetch("/api/schedules/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({id:id})})
+    .then(function(r){if(!r.ok)throw 0;return r.json()})
+    .then(function(){loadSchedules()})
+    .catch(function(){toast("Delete failed")});
+}
+$("sceneCapture").addEventListener("click",captureScene);
+$("sceneName").addEventListener("keydown",function(e){if(e.key==="Enter")captureScene()});
+$("schedAddBtn").addEventListener("click",addSchedule);
+buildDowPicker();
+
 loadInfo();
 loadPeers();
+loadScenes();
+loadSchedules();
 setInterval(loadPeers,30000);
 maybeShowPwaHint();
 })();

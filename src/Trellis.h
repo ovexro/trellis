@@ -22,6 +22,7 @@
 #include "Capability.h"
 #include "TrellisWebServer.h"
 #include "TrellisDiscovery.h"
+#include "TrellisScenes.h"
 #include "TrellisTelemetry.h"
 #include "TrellisOTA.h"
 #include "TrellisProvisioning.h"
@@ -55,6 +56,13 @@ public:
   void setText(const char* id, const char* value);
   void setColor(const char* id, const char* value);
 
+  // Single end-to-end "apply this value to this capability" path used by both
+  // the WebSocket "set" command and TrellisScenes::recallScene. Performs:
+  // type-correct set + (ESP32) NVS persist + WS broadcast + user callback.
+  // Keeping one helper means scene recall can never drift from manual control
+  // semantics — they are byte-for-byte the same path.
+  void applyCapabilityValue(const char* id, JsonVariant value);
+
   // Read values
   float getSensor(const char* id);
   bool getSwitch(const char* id);
@@ -86,6 +94,7 @@ public:
   CommandCallback getCommandCallback() const { return _commandCallback; }
   TrellisTelemetry& getTelemetry() { return _telemetry; }
   TrellisDiscovery* getDiscovery() { return _discovery; }
+  TrellisScenes*    getScenes()    { return _scenes; }
 
   // Cumulative count of NVS persist operations in this session. Incremented
   // by TrellisWebServer after each putBool/putFloat in the capability-persist
@@ -108,6 +117,7 @@ private:
 
   TrellisWebServer* _webServer;
   TrellisDiscovery* _discovery;
+  TrellisScenes*    _scenes;
   TrellisTelemetry _telemetry;
   TrellisProvisioning* _provisioning;
 
