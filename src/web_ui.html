@@ -124,6 +124,24 @@ footer a{text-decoration:none}
 .pwa .pt span{font-size:11px;color:var(--mut)}
 .pwa .px{background:transparent;border:none;color:var(--mut);font-size:20px;line-height:1;padding:4px 8px;cursor:pointer;border-radius:6px;flex:none}
 .pwa .px:hover{color:var(--fg);background:#ffffff0a}
+/* peers (LAN-wide control) */
+.peers{margin-top:24px;display:none}
+.peers.show{display:block}
+.peers .ph{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);font-weight:600;display:flex;align-items:center;gap:8px}
+.peer{background:var(--panel2);border:1px solid var(--bd);border-radius:14px;margin-bottom:10px;overflow:hidden;box-shadow:var(--shadow);transition:border-color .15s}
+.peer:hover{border-color:#2f3540}
+.peer .head{display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;user-select:none}
+.peer .head:hover{background:#1f242c}
+.peer .head .pn{flex:1;font-weight:600;font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.peer .head .pmeta{font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+.peer .head .chev{color:var(--mut);font-size:16px;line-height:1;transition:transform .2s;flex:none}
+.peer.open .head .chev{transform:rotate(90deg)}
+.peer .body{display:none;padding:0 14px 14px;border-top:1px solid var(--bd)}
+.peer.open .body{display:block}
+.peer .bgrid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}
+@media(min-width:560px){.peer .bgrid{grid-template-columns:1fr 1fr}.peer .bgrid .full{grid-column:1/-1}}
+.peer .pmsg{color:var(--mut);font-size:12px;padding:14px 0 4px}
+.peer .pmsg.err{color:var(--err)}
 </style>
 </head>
 <body>
@@ -147,6 +165,10 @@ footer a{text-decoration:none}
     <div><b>Uptime</b><span id="up">—</span></div>
   </div>
   <div class="grid" id="grid"></div>
+  <section class="peers" id="peers" aria-label="Other Trellis devices on this network">
+    <h2 class="ph">Devices on this network</h2>
+    <div id="peerList"></div>
+  </section>
   <section class="logp" id="logPanel" aria-label="Device logs">
     <div class="lh">
       <b>Live Logs</b>
@@ -270,6 +292,156 @@ function connectWs(){
   };
 }
 function scheduleReconnect(){clearTimeout(reconnectT);reconnectT=setTimeout(connectWs,2000)}
+
+/* ---------- peers (LAN-wide control) ----------
+   Each peer is collapsed by default. On expand we fetch the peer's
+   /api/info, render its capabilities, and open a WS to the peer for
+   live updates and commands. Collapse closes the WS so we don't hold N
+   sockets open across all discovered devices. */
+var peers={};
+function loadPeers(){
+  fetch("/api/peers").then(function(r){return r.json()}).then(function(arr){
+    var sec=$("peers"),list=$("peerList");
+    if(!Array.isArray(arr))arr=[];
+    var seen={};
+    arr.forEach(function(p){
+      if(!p||!p.id)return;
+      seen[p.id]=true;
+      var s=peers[p.id];
+      if(!s){peers[p.id]={peer:p,expanded:false,caps:{},ws:null};list.appendChild(buildPeerCard(p))}
+      else{s.peer=p}
+    });
+    Object.keys(peers).forEach(function(id){
+      if(seen[id])return;
+      closePeerWs(id);
+      var el=document.getElementById("peer_"+id);if(el)el.remove();
+      delete peers[id];
+    });
+    sec.classList.toggle("show",Object.keys(peers).length>0);
+  }).catch(function(){});
+}
+function buildPeerCard(p){
+  var card=document.createElement("div");card.className="peer";card.id="peer_"+p.id;
+  var head=document.createElement("div");head.className="head";
+  var nm=document.createElement("div");nm.className="pn";nm.textContent=p.name||p.id;
+  var meta=document.createElement("div");meta.className="pmeta";meta.textContent=p.host+":"+p.port;
+  var chev=document.createElement("span");chev.className="chev";chev.textContent="›";
+  head.appendChild(nm);head.appendChild(meta);head.appendChild(chev);
+  head.addEventListener("click",function(){togglePeer(p.id)});
+  card.appendChild(head);
+  var body=document.createElement("div");body.className="body";
+  card.appendChild(body);
+  return card;
+}
+function togglePeer(id){
+  var s=peers[id];if(!s)return;
+  var card=document.getElementById("peer_"+id);if(!card)return;
+  s.expanded=!s.expanded;
+  card.classList.toggle("open",s.expanded);
+  if(s.expanded)loadPeerInfo(id);
+  else closePeerWs(id);
+}
+function loadPeerInfo(id){
+  var s=peers[id];if(!s)return;
+  var p=s.peer,card=document.getElementById("peer_"+id);if(!card)return;
+  var body=card.querySelector(".body");
+  body.innerHTML='<div class="pmsg">Loading capabilities…</div>';
+  fetch("http://"+p.host+":"+p.port+"/api/info").then(function(r){return r.json()}).then(function(d){
+    s.caps={};
+    var grid=document.createElement("div");grid.className="bgrid";
+    if(!d.capabilities||!d.capabilities.length){
+      body.innerHTML='<div class="pmsg">This device exposes no capabilities.</div>';
+      return;
+    }
+    d.capabilities.forEach(function(c){s.caps[c.id]=c;grid.appendChild(buildPeerCapCard(id,c))});
+    body.innerHTML="";body.appendChild(grid);
+    openPeerWs(id);
+  }).catch(function(){
+    body.innerHTML='<div class="pmsg err">Could not reach this device. It may be offline or blocking cross-origin reads.</div>';
+  });
+}
+function buildPeerCapCard(pid,c){
+  /* Mirrors buildCard but with peer-scoped DOM ids ("pv_<pid>_<capid>") and
+     a peer-aware send (peerSend) so commands route to that peer's WS, not
+     the local device's. Kept separate to avoid touching the local renderer. */
+  var card=document.createElement("div");card.className="card";
+  if(c.type==="text")card.classList.add("full");
+  var h=document.createElement("h3");h.textContent=c.label||c.id;card.appendChild(h);
+  var vid="pv_"+pid+"_"+c.id;
+  if(c.type==="switch"){
+    var row=document.createElement("div");row.className="row";
+    var v=document.createElement("div");v.className="val";v.id=vid;v.textContent=c.value?"On":"Off";
+    var sw=document.createElement("label");sw.className="sw";
+    sw.innerHTML='<input type="checkbox" '+(c.value?"checked":"")+'><span class="slot"></span>';
+    sw.querySelector("input").addEventListener("change",function(e){peerSend(pid,c.id,e.target.checked)});
+    row.appendChild(v);row.appendChild(sw);card.appendChild(row);
+  }else if(c.type==="slider"){
+    var row2=document.createElement("div");row2.className="row";
+    var unitSpan='<span class="unit">'+esc(c.min)+"–"+esc(c.max)+"</span>";
+    var vv=document.createElement("div");vv.className="val";vv.id=vid;vv.innerHTML=Math.round(c.value)+unitSpan;
+    row2.appendChild(vv);card.appendChild(row2);
+    var r=document.createElement("input");r.type="range";r.min=c.min;r.max=c.max;r.value=c.value;r.step=(c.max-c.min)>10?1:0.1;
+    var commit;
+    r.addEventListener("input",function(e){vv.innerHTML=Math.round(e.target.value)+unitSpan;clearTimeout(commit);commit=setTimeout(function(){peerSend(pid,c.id,parseFloat(e.target.value))},80)});
+    card.appendChild(r);
+  }else if(c.type==="sensor"){
+    var row3=document.createElement("div");row3.className="row";
+    var sv=document.createElement("div");sv.className="val";sv.id=vid;
+    var unitS=c.unit?'<span class="unit">'+esc(c.unit)+"</span>":"";
+    sv.innerHTML=(typeof c.value==="number"?(Math.abs(c.value)<10?c.value.toFixed(2):c.value.toFixed(1)):"—")+unitS;
+    sv.dataset.unit=unitS;
+    row3.appendChild(sv);card.appendChild(row3);
+  }else if(c.type==="color"){
+    var row4=document.createElement("div");row4.className="row";
+    var cp=document.createElement("input");cp.type="color";cp.value=c.value||"#000000";cp.id=vid;
+    var hx=document.createElement("div");hx.className="hex";hx.id="phx_"+pid+"_"+c.id;hx.textContent=(c.value||"#000000").toUpperCase();
+    var commit2;
+    cp.addEventListener("input",function(e){hx.textContent=e.target.value.toUpperCase();clearTimeout(commit2);commit2=setTimeout(function(){peerSend(pid,c.id,e.target.value)},80)});
+    row4.appendChild(hx);row4.appendChild(cp);card.appendChild(row4);
+  }else if(c.type==="text"){
+    var disp=document.createElement("div");disp.className="tdisp";disp.id=vid;disp.textContent=c.value||"";
+    card.appendChild(disp);
+    var bx=document.createElement("div");bx.className="tx";
+    var ti=document.createElement("input");ti.type="text";ti.placeholder="Enter text…";ti.maxLength=31;
+    var bt=document.createElement("button");bt.textContent="Set";
+    function go(){if(!ti.value)return;peerSend(pid,c.id,ti.value);ti.value=""}
+    bt.addEventListener("click",go);
+    ti.addEventListener("keydown",function(e){if(e.key==="Enter")go()});
+    bx.appendChild(ti);bx.appendChild(bt);card.appendChild(bx);
+  }
+  return card;
+}
+function openPeerWs(id){
+  var s=peers[id];if(!s)return;
+  closePeerWs(id);
+  var p=s.peer;
+  try{s.ws=new WebSocket("ws://"+p.host+":"+(p.port+1)+"/")}catch(e){return}
+  s.ws.onmessage=function(ev){
+    try{var m=JSON.parse(ev.data)}catch(e){return}
+    if(m.event==="update")peerApplyUpdate(id,m.id,m.value);
+  };
+  s.ws.onerror=function(){};
+  s.ws.onclose=function(){};
+}
+function closePeerWs(id){
+  var s=peers[id];if(!s||!s.ws)return;
+  try{s.ws.close()}catch(e){}
+  s.ws=null;
+}
+function peerSend(pid,capId,value){
+  var s=peers[pid];if(!s||!s.ws||s.ws.readyState!==1){toast("Peer not connected");return}
+  s.ws.send(JSON.stringify({command:"set",id:capId,value:value}));
+}
+function peerApplyUpdate(pid,capId,value){
+  var s=peers[pid];if(!s)return;
+  var c=s.caps[capId];if(!c)return;
+  var el=document.getElementById("pv_"+pid+"_"+capId);if(!el)return;
+  if(c.type==="switch"){el.textContent=value?"On":"Off";var i=el.parentNode.querySelector("input");if(i)i.checked=!!value}
+  else if(c.type==="slider"){el.innerHTML=Math.round(value)+'<span class="unit">'+esc(c.min)+"–"+esc(c.max)+"</span>";var rr=el.parentNode.parentNode.querySelector('input[type=range]');if(rr&&document.activeElement!==rr)rr.value=value}
+  else if(c.type==="sensor"){el.innerHTML=(typeof value==="number"?(Math.abs(value)<10?value.toFixed(2):value.toFixed(1)):esc(value))+(el.dataset.unit||"")}
+  else if(c.type==="color"){if(document.activeElement!==el)el.value=value;var hh=document.getElementById("phx_"+pid+"_"+capId);if(hh)hh.textContent=(""+value).toUpperCase()}
+  else if(c.type==="text"){el.textContent=value}
+}
 
 /* ---------- log panel ---------- */
 var logState={open:false,paused:false,lines:[],unread:0,MAX:200};
@@ -399,6 +571,8 @@ $("pwaClose").addEventListener("click",function(){
 });
 
 loadInfo();
+loadPeers();
+setInterval(loadPeers,30000);
 maybeShowPwaHint();
 })();
 </script>

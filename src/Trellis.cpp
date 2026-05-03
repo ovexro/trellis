@@ -40,9 +40,11 @@ bool Trellis::begin(const char* ssid, const char* password, unsigned long timeou
   // transient POST stall (5s timeout) doesn't block command handling.
   TrellisOTA::sendPendingAck(_firmwareVersion);
 
-  // Start mDNS
+  // Start mDNS — advertise this device, then start the periodic peer
+  // browse so the embedded UI can render other Trellis devices on the LAN.
   _discovery = new TrellisDiscovery();
   _discovery->begin(_name, _port);
+  _discovery->beginBrowse();
 
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);
@@ -72,9 +74,11 @@ bool Trellis::beginAutoConnect(unsigned long timeout_ms) {
   // Two-phase OTA ack — see begin() for the rationale.
   TrellisOTA::sendPendingAck(_firmwareVersion);
 
-  // Start mDNS
+  // Start mDNS — advertise this device, then start the periodic peer
+  // browse so the embedded UI can render other Trellis devices on the LAN.
   _discovery = new TrellisDiscovery();
   _discovery->begin(_name, _port);
+  _discovery->beginBrowse();
 
   // Start web server + WebSocket
   _webServer = new TrellisWebServer(this);

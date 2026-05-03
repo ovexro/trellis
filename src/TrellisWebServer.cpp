@@ -10,6 +10,7 @@ void TrellisWebServer::begin(uint16_t port) {
   _ws = new WebSocketsServer(port + 1);
 
   _http->on("/api/info", HTTP_GET, [this]() { handleInfo(); });
+  _http->on("/api/peers", HTTP_GET, [this]() { handlePeers(); });
   // Always register the route — handler checks _webUIEnabled at request time so
   // enableWebUI(false) works after begin() too.
   _http->on("/", HTTP_GET, [this]() { handleWebUI(); });
@@ -40,6 +41,17 @@ void TrellisWebServer::loop() {
 void TrellisWebServer::handleInfo() {
   String json = buildInfoJson();
   _http->sendHeader("Cache-Control", "no-store");
+  // Allow cross-origin reads so the embedded dashboard loaded from a peer
+  // device can fetch this device's /api/info to render its capabilities.
+  // The endpoint is read-only and intended to be discoverable LAN-wide.
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
+  _http->send(200, "application/json", json);
+}
+
+void TrellisWebServer::handlePeers() {
+  String json = buildPeersJson();
+  _http->sendHeader("Cache-Control", "no-store");
+  _http->sendHeader("Access-Control-Allow-Origin", "*");
   _http->send(200, "application/json", json);
 }
 
@@ -131,6 +143,27 @@ String TrellisWebServer::buildInfoJson() {
 #if defined(ESP32)
   sys["nvs_writes"] = _trellis->getNvsWrites();
 #endif
+
+  String output;
+  serializeJson(doc, output);
+  return output;
+}
+
+String TrellisWebServer::buildPeersJson() {
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+
+  TrellisDiscovery* d = _trellis->getDiscovery();
+  if (d) {
+    std::vector<TrellisPeer> peers = d->getPeers();
+    for (const TrellisPeer& p : peers) {
+      JsonObject obj = arr.add<JsonObject>();
+      obj["id"]   = p.id;
+      obj["name"] = p.name;
+      obj["host"] = p.host;
+      obj["port"] = p.port;
+    }
+  }
 
   String output;
   serializeJson(doc, output);

@@ -29,10 +29,12 @@ private:
   bool _webUIEnabled;
 
   void handleInfo();
+  void handlePeers();
   void handleWebUI();
   void handleWebSocket(uint8_t num, WStype_t type, uint8_t* payload, size_t length);
   void processCommand(uint8_t num, const char* json);
   String buildInfoJson();
+  String buildPeersJson();
 };
 
 #endif

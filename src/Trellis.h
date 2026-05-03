@@ -85,6 +85,7 @@ public:
   Capability* findCapability(const char* id);
   CommandCallback getCommandCallback() const { return _commandCallback; }
   TrellisTelemetry& getTelemetry() { return _telemetry; }
+  TrellisDiscovery* getDiscovery() { return _discovery; }
 
   // Cumulative count of NVS persist operations in this session. Incremented
   // by TrellisWebServer after each putBool/putFloat in the capability-persist
