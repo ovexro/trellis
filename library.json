@@ -1,6 +1,6 @@
 {
   "name": "Trellis",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Self-describing device control library for ESP32 and Pico W. Devices declare capabilities, desktop app auto-generates controls.",
   "keywords": "iot,esp32,pico,dashboard,control,mdns,websocket,ota",
   "repository": {
@@ -25,8 +25,7 @@
       "library.properties",
       "library.json",
       "LICENSE",
-      "README.md",
-      "CHANGELOG.md"
+      "README.md"
     ]
   },
   "dependencies": {
