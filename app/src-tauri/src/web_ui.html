@@ -6562,6 +6562,43 @@
         panel.style.display = 'none';
       }
     }
+    // Mirrors app/src/lib/capabilitySummary.ts. Surfaces a one-line capability
+    // breakdown ("3 caps · 2 switches · 1 sensor") on every marketplace card so
+    // users can skim contents before clicking. Keep in sync with the TS module.
+    function summarizeCapabilities(caps) {
+      const KIND_ORDER = ['switch', 'sensor', 'slider', 'color', 'text'];
+      const PLURALS = { switch: 'switches', sensor: 'sensors', slider: 'sliders', color: 'colors', text: 'texts' };
+      const list = Array.isArray(caps) ? caps : [];
+      const total = list.length;
+      const totalLabel = total + ' cap' + (total === 1 ? '' : 's');
+      if (total === 0) return totalLabel;
+      const counts = {};
+      for (const c of list) {
+        const t = c && typeof c.type === 'string' ? c.type : '';
+        if (t) counts[t] = (counts[t] || 0) + 1;
+      }
+      const parts = [totalLabel];
+      for (const kind of KIND_ORDER) {
+        const n = counts[kind];
+        if (!n) continue;
+        parts.push(n + ' ' + (n === 1 ? kind : PLURALS[kind]));
+      }
+      for (const kind of Object.keys(counts).sort()) {
+        if (KIND_ORDER.indexOf(kind) !== -1) continue;
+        parts.push(counts[kind] + ' ' + kind);
+      }
+      return parts.join(' · ');
+    }
+    function summarizeCapabilitiesJson(json) {
+      if (!json) return summarizeCapabilities([]);
+      try {
+        const parsed = JSON.parse(json);
+        if (Array.isArray(parsed)) return summarizeCapabilities(parsed);
+      } catch (e) {
+        // fall through
+      }
+      return summarizeCapabilities([]);
+    }
     function renderMarketplacePanel(panel) {
       const bundled = sketchState.marketplace || [];
       const saved = sketchState.savedTemplates || [];
@@ -6579,6 +6616,7 @@
       if (bundled.length > 0) {
         const bundledCards = bundled.map(function (t) {
           const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
+          const summary = summarizeCapabilities(t.capabilities);
           return '<button data-testid="marketplace-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + 'cursor:pointer;">' +
             '<div style="flex:1;min-width:0;">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
@@ -6586,6 +6624,7 @@
                 '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
               '</div>' +
               '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
+              '<div data-testid="marketplace-card-summary-' + safeId + '" style="font-size:0.65rem;color:var(--text-faint);margin-top:0.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(summary) + '</div>' +
             '</div>' +
           '</button>';
         }).join('');
@@ -6596,13 +6635,16 @@
           const idStr = String(t.id);
           const board = t.board || 'esp32';
           const author = t.author ? '<div style="font-size:0.65rem;color:var(--text-faint);margin-top:0.15rem;">by ' + esc(t.author) + '</div>' : '';
+          const description = t.description ? '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' : '';
+          const summary = summarizeCapabilitiesJson(t.capabilities);
           return '<div data-testid="saved-card-' + idStr + '" style="' + cardStyle + 'position:relative;">' +
             '<button onclick="loadSavedTemplate(' + idStr + ')" style="background:none;border:none;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:left;flex:1;min-width:0;">' +
               '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
                 '<span style="font-size:0.8rem;font-weight:600;">' + esc(t.name) + '</span>' +
                 '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(board) + '</span>' +
               '</div>' +
-              '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description || '') + '</div>' +
+              description +
+              '<div data-testid="saved-card-summary-' + idStr + '" style="font-size:0.65rem;color:var(--text-faint);margin-top:0.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(summary) + '</div>' +
               author +
             '</button>' +
             '<button data-testid="saved-delete-' + idStr + '" onclick="deleteSavedTemplate(' + idStr + ')" title="Delete saved template" style="background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:0.85rem;padding:0.1rem 0.3rem;">×</button>' +
@@ -6624,6 +6666,7 @@
           const communityCards = community.map(function (t) {
             const safeId = String(t.id || '').replace(/[^a-z0-9_-]/gi, '');
             const author = t.author ? '<div style="font-size:0.65rem;color:var(--text-faint);margin-top:0.15rem;">by ' + esc(t.author) + '</div>' : '';
+            const summary = summarizeCapabilities(t.capabilities);
             return '<button data-testid="community-card-' + safeId + '" onclick="loadMarketplaceTemplate(\'' + safeId + '\')" style="' + cardStyle + 'cursor:pointer;">' +
               '<div style="flex:1;min-width:0;">' +
                 '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;">' +
@@ -6631,6 +6674,7 @@
                   '<span style="font-size:0.65rem;color:var(--text-faint);text-transform:uppercase;">' + esc(t.board) + '</span>' +
                 '</div>' +
                 '<div style="font-size:0.7rem;color:var(--text-dim);margin-top:0.2rem;line-height:1.35;">' + esc(t.description) + '</div>' +
+                '<div data-testid="community-card-summary-' + safeId + '" style="font-size:0.65rem;color:var(--text-faint);margin-top:0.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(summary) + '</div>' +
                 author +
               '</div>' +
             '</button>';

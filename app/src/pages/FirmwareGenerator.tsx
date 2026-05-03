@@ -10,6 +10,10 @@ import {
   templateFileName,
   TEMPLATE_FILE_EXT,
 } from "@/lib/sketchTemplate";
+import {
+  summarizeCapabilities,
+  summarizeCapabilitiesJson,
+} from "@/lib/capabilitySummary";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   Cpu,
@@ -913,6 +917,12 @@ export default function FirmwareGenerator() {
                             <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{t.board}</span>
                           </div>
                           <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description}</p>
+                          <p
+                            data-testid={`marketplace-card-summary-${t.id}`}
+                            className="text-[10px] text-zinc-600 mt-0.5 truncate"
+                          >
+                            {summarizeCapabilities(t.capabilities)}
+                          </p>
                         </div>
                       </button>
                     );
@@ -945,7 +955,15 @@ export default function FirmwareGenerator() {
                               <p className="text-xs text-zinc-200 font-medium truncate">{t.name}</p>
                               <span className="text-[10px] text-zinc-500 uppercase tracking-wide shrink-0">{boardLabel}</span>
                             </div>
-                            <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description || `${capabilities.length} capabilities`}</p>
+                            {t.description && (
+                              <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">{t.description}</p>
+                            )}
+                            <p
+                              data-testid={`saved-card-summary-${t.id}`}
+                              className="text-[10px] text-zinc-600 mt-0.5 truncate"
+                            >
+                              {summarizeCapabilitiesJson(t.capabilities)}
+                            </p>
                             {t.author && (
                               <p className="text-[10px] text-zinc-600 mt-0.5 truncate">by {t.author}</p>
                             )}
@@ -1019,6 +1037,12 @@ export default function FirmwareGenerator() {
                             </div>
                             <p className="text-[11px] text-zinc-500 leading-snug mt-0.5 line-clamp-2">
                               {t.description}
+                            </p>
+                            <p
+                              data-testid={`community-card-summary-${t.id}`}
+                              className="text-[10px] text-zinc-600 mt-0.5 truncate"
+                            >
+                              {summarizeCapabilities(t.capabilities)}
                             </p>
                             {t.author && (
                               <p className="text-[10px] text-zinc-600 mt-0.5 truncate">
